@@ -665,12 +665,12 @@ final class CodexUsageFetcher: @unchecked Sendable {
         let pRemain = pUsed.map { max(0, 100 - $0) }
         let sRemain = sUsed.map { max(0, 100 - $0) }
         let title: String
-        if limitReached {
-            title = "5h 0% / 7d 0%"
-        } else if let pRemain, let sRemain {
+        if let pRemain, let sRemain {
             title = "5h \(pRemain)% / 7d \(sRemain)%"
         } else if let pRemain {
             title = "5h \(pRemain)%"
+        } else if let sRemain {
+            title = "5h ? / 7d \(sRemain)%"
         } else {
             title = "5h ? / 7d ?"
         }
@@ -813,14 +813,14 @@ final class UsageCardView: NSView {
 
         if summary.isAPIAccount {
             let api = summary.apiUsage
-            drawColumn(icon: .none, label: L10n.shared.t("balance"), value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
-            drawColumn(icon: .none, label: L10n.shared.t("todayCost"), value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
-            drawColumn(icon: .none, label: L10n.shared.t("todayTokens"), value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
+            drawColumn(icon: .none, label: "Bal", value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
+            drawColumn(icon: .none, label: "Cost", value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
+            drawColumn(icon: .none, label: "Tok", value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
             drawText(L10n.shared.t("total") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
             drawText(L10n.shared.t("total") + " " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
         } else {
-            drawColumn(icon: .timer, label: L10n.shared.t("remaining"), value: percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
-            drawColumn(icon: .week, label: L10n.shared.t("remaining"), value: percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
+            drawColumn(icon: .timer, label: "5h", value: percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
+            drawColumn(icon: .week, label: "7d", value: percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
             let credits = summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0")
             drawColumn(icon: .none, label: L10n.shared.t("credits"), value: credits, x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
             if let pReset = summary.primaryResetAfterSeconds {
@@ -830,7 +830,7 @@ final class UsageCardView: NSView {
                 drawResetBlock(seconds: sReset, timestamp: summary.secondaryResetAt, x: 156)
             }
         }
-        let update = L10n.shared.t("updated") + " " + timeString(summary.fetchedAt)
+        let update = timeString(summary.fetchedAt)
         if let errorText {
             drawText(errorText, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10, weight: .regular), color: NSColor(calibratedRed: 1, green: 0.72, blue: 0.52, alpha: 1), alignment: .right)
         } else {
@@ -1007,7 +1007,7 @@ final class CodexPanelViewController: NSViewController {
                 addInfoRow(root, y: 64, title: l.t("credits"), value: credits, detail: resetCredits)
 
                 if summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
-                    let spark = l.t("remaining") + " 5h " + (summary.sparkPrimaryRemaining.map { "\($0)%" } ?? "?") + " · " + l.t("weeklyQuota") + " " + (summary.sparkSecondaryRemaining.map { "\($0)%" } ?? "?")
+                    let spark = "F 5h " + (summary.sparkPrimaryRemaining.map { "\($0)%" } ?? "?") + " · 7d " + (summary.sparkSecondaryRemaining.map { "\($0)%" } ?? "?")
                     root.addSubview(label("Spark " + spark, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: .tertiaryLabelColor))
                 }
             }
@@ -1129,9 +1129,8 @@ final class CodexPanelViewController: NSViewController {
     }
 
     private func usageLine(used: Int?, remaining: Int?) -> String {
-        let l = L10n.shared
-        let usedText = used.map { l.t("used") + " \($0)%" } ?? (l.t("used") + " ?")
-        let remainingText = remaining.map { l.t("remaining") + " \($0)%" } ?? (l.t("remaining") + " ?")
+        let usedText = used.map { "U \($0)%" } ?? "U ?"
+        let remainingText = remaining.map { "F \($0)%" } ?? "F ?"
         return "\(remainingText) · \(usedText)"
     }
 
@@ -1139,9 +1138,9 @@ final class CodexPanelViewController: NSViewController {
         let l = L10n.shared
         guard let seconds else { return l.t("reset") + " " + l.t("unknown") }
         if let point = resetPoint(timestamp) {
-            return l.t("reset") + " " + point + " · " + duration(seconds)
+            return point + " · " + duration(seconds)
         }
-        return l.t("reset") + " " + duration(seconds)
+        return duration(seconds)
     }
 
     private func duration(_ seconds: Int) -> String { L10n.shared.duration(seconds) }
