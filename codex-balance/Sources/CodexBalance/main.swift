@@ -142,13 +142,14 @@ enum UsageError: Error, CustomStringConvertible, Sendable {
     case network(String)
 
     var description: String {
+        let l = L10n.shared
         switch self {
-        case .missingRegistry(let p): return "找不到 Codex 账号注册表：\(p)"
-        case .missingActiveAccount: return "Codex 没有当前登录账号"
-        case .missingAuthFile(let p): return "找不到当前账号登录文件：\(p)"
-        case .missingToken: return "当前账号没有可用登录令牌"
-        case .badHTTP(let code, let body): return "接口返回 \(code)：\(body.prefix(180))"
-        case .badJSON: return "接口返回的数据格式不符合预期"
+        case .missingRegistry(let p): return l.template("missingRegistry", ["path": p])
+        case .missingActiveAccount: return l.t("missingActiveAccount")
+        case .missingAuthFile(let p): return l.template("missingAuthFile", ["path": p])
+        case .missingToken: return l.t("missingToken")
+        case .badHTTP(let code, let body): return l.template("badHTTP", ["code": "\(code)", "body": String(body.prefix(180))])
+        case .badJSON: return l.t("badJSON")
         case .network(let msg): return msg
         }
     }
@@ -248,9 +249,9 @@ final class CodexUsageFetcher: @unchecked Sendable {
             semaphore.signal()
         }
         if semaphore.wait(timeout: .now() + timeout) == .timedOut {
-            return .failure(.network("请求超时"))
+            return .failure(.network(L10n.shared.t("requestTimeout")))
         }
-        return box.result ?? .failure(.network("请求失败"))
+        return box.result ?? .failure(.network(L10n.shared.t("requestFailed")))
     }
 
     private func loadAuthContext() throws -> CodexAuthContext {
@@ -472,7 +473,7 @@ final class CodexUsageFetcher: @unchecked Sendable {
     }
 
     private func apiDisplayName(from baseURL: String?) -> String {
-        guard let baseURL, !baseURL.isEmpty else { return "API/中转" }
+        guard let baseURL, !baseURL.isEmpty else { return L10n.shared.t("apiRelay") }
         var display = baseURL
         for prefix in ["https://", "http://"] {
             if display.hasPrefix(prefix) { display.removeFirst(prefix.count) }
@@ -482,7 +483,7 @@ final class CodexUsageFetcher: @unchecked Sendable {
 
     private func fetchAPIUsage(auth: CodexAuthContext, completion: @escaping @Sendable (Result<CodexUsageSummary, UsageError>) -> Void) {
         guard let usageURL = auth.usageURL, let keyHelper = auth.keyHelper, !keyHelper.isEmpty else {
-            let usage = APIUsageSummary(error: "未配置中转用量接口或 key helper")
+            let usage = APIUsageSummary(error: L10n.shared.t("relayMissingConfig"))
             let summary = apiSummary(auth: auth, apiUsage: usage)
             writeState(summary.asDictionary())
             completion(.success(summary))
@@ -493,7 +494,7 @@ final class CodexUsageFetcher: @unchecked Sendable {
         do {
             apiKey = try readAPIKey(command: keyHelper)
         } catch {
-            let usage = APIUsageSummary(error: "API key 不可读取")
+            let usage = APIUsageSummary(error: L10n.shared.t("apiKeyUnreadable"))
             let summary = apiSummary(auth: auth, apiUsage: usage)
             writeState(summary.asDictionary())
             completion(.success(summary))
@@ -516,9 +517,9 @@ final class CodexUsageFetcher: @unchecked Sendable {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
                 if (200..<300).contains(status) {
-                    usage = (try? self.parseAPIUsage(data ?? Data())) ?? APIUsageSummary(error: "中转用量数据格式不符合预期")
+                    usage = (try? self.parseAPIUsage(data ?? Data())) ?? APIUsageSummary(error: L10n.shared.t("relayBadFormat"))
                 } else {
-                    usage = APIUsageSummary(error: "中转用量接口返回 \(status)：\(body.prefix(80))")
+                    usage = APIUsageSummary(error: L10n.shared.template("badHTTP", ["code": "\(status)", "body": String(body.prefix(80))]))
                 }
             }
             let summary = self.apiSummary(auth: auth, apiUsage: usage)
@@ -544,7 +545,7 @@ final class CodexUsageFetcher: @unchecked Sendable {
         }
         if semaphore.wait(timeout: .now() + 5) == .timedOut {
             process.terminate()
-            throw UsageError.network("API key helper 超时")
+            throw UsageError.network(L10n.shared.t("requestTimeout"))
         }
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         guard process.terminationStatus == 0,
@@ -740,7 +741,7 @@ final class CodexUsageFetcher: @unchecked Sendable {
 
     private func formatAPIAmount(_ value: Double?, unit: String?) -> String {
         guard let value else { return "—" }
-        if value < 0 { return "无限" }
+        if value < 0 { return L10n.shared.t("unlimited") }
         let absValue = abs(value)
         let decimals = absValue >= 100 ? 1 : (absValue >= 1 ? 2 : 4)
         let number = String(format: "%.\(decimals)f", value)
@@ -804,7 +805,7 @@ final class UsageCardView: NSView {
         NSColor(calibratedRed: 0.06, green: 0.43, blue: 0.18, alpha: 1.0).setFill()
         path.fill()
 
-        drawText("Codex 额度", x: 24, y: 124, width: 120, height: 18, font: .systemFont(ofSize: 12, weight: .semibold), color: NSColor(white: 1, alpha: 0.72))
+        drawText(L10n.shared.t("title"), x: 24, y: 124, width: 120, height: 18, font: .systemFont(ofSize: 12, weight: .semibold), color: NSColor(white: 1, alpha: 0.72))
         drawText(summary.plan.uppercased(), x: 338, y: 124, width: 52, height: 18, font: .systemFont(ofSize: 11, weight: .medium), color: NSColor(white: 1, alpha: 0.55), alignment: .right)
 
         drawDivider(x: 138)
@@ -812,16 +813,16 @@ final class UsageCardView: NSView {
 
         if summary.isAPIAccount {
             let api = summary.apiUsage
-            drawColumn(icon: .none, label: "余额", value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
-            drawColumn(icon: .none, label: "今日费用", value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
-            drawColumn(icon: .none, label: "今日 Tokens", value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
-            drawText("累计 " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
-            drawText("累计 " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
+            drawColumn(icon: .none, label: L10n.shared.t("balance"), value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
+            drawColumn(icon: .none, label: L10n.shared.t("todayCost"), value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
+            drawColumn(icon: .none, label: L10n.shared.t("todayTokens"), value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
+            drawText(L10n.shared.t("total") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
+            drawText(L10n.shared.t("total") + " " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
         } else {
-            drawColumn(icon: .timer, label: "剩余", value: percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
-            drawColumn(icon: .week, label: "剩余", value: percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
+            drawColumn(icon: .timer, label: L10n.shared.t("remaining"), value: percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
+            drawColumn(icon: .week, label: L10n.shared.t("remaining"), value: percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
             let credits = summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0")
-            drawColumn(icon: .none, label: "Credits", value: credits, x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
+            drawColumn(icon: .none, label: L10n.shared.t("credits"), value: credits, x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
             if let pReset = summary.primaryResetAfterSeconds {
                 drawResetBlock(seconds: pReset, timestamp: summary.primaryResetAt, x: 24)
             }
@@ -829,7 +830,7 @@ final class UsageCardView: NSView {
                 drawResetBlock(seconds: sReset, timestamp: summary.secondaryResetAt, x: 156)
             }
         }
-        let update = "更新 " + timeString(summary.fetchedAt)
+        let update = L10n.shared.t("updated") + " " + timeString(summary.fetchedAt)
         if let errorText {
             drawText(errorText, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10, weight: .regular), color: NSColor(calibratedRed: 1, green: 0.72, blue: 0.52, alpha: 1), alignment: .right)
         } else {
@@ -910,7 +911,7 @@ final class UsageCardView: NSView {
     private func drawResetBlock(seconds: Int, timestamp: TimeInterval?, x: CGFloat) {
         let color = NSColor(white: 1, alpha: 0.56)
         drawText(duration(seconds), x: x, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: color)
-        let point = resetPoint(timestamp) ?? "时间未知"
+        let point = resetPoint(timestamp) ?? L10n.shared.t("unknown")
         drawText(point, x: x, y: 18, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: color)
     }
 
@@ -921,7 +922,7 @@ final class UsageCardView: NSView {
 
     private func apiAmount(_ value: Double?, unit: String?) -> String {
         guard let value else { return "—" }
-        if value < 0 { return "无限" }
+        if value < 0 { return L10n.shared.t("unlimited") }
         let absValue = abs(value)
         let decimals = absValue >= 100 ? 1 : (absValue >= 1 ? 2 : 4)
         let number = String(format: "%.\(decimals)f", value)
@@ -957,19 +958,11 @@ final class UsageCardView: NSView {
     }
 
     private func duration(_ seconds: Int) -> String {
-        if seconds <= 0 { return "现在" }
-        let days = seconds / 86_400
-        let hours = (seconds % 86_400) / 3_600
-        let minutes = (seconds % 3_600) / 60
-        if days > 0 { return "\(days)天\(hours)小时" }
-        if hours > 0 { return "\(hours)小时\(minutes)分" }
-        return "\(max(1, minutes))分"
+        L10n.shared.duration(seconds)
     }
 
     private func timeString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: date)
+        L10n.shared.timeString(date)
     }
 
     private func resetTimeSuffix(_ timestamp: TimeInterval?) -> String {
@@ -977,24 +970,14 @@ final class UsageCardView: NSView {
     }
 
     private func resetPoint(_ timestamp: TimeInterval?) -> String? {
-        guard let timestamp else { return nil }
-        let date = Date(timeIntervalSince1970: timestamp)
-        let formatter = DateFormatter()
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) {
-            formatter.dateFormat = "今天 HH:mm"
-        } else if calendar.isDateInTomorrow(date) {
-            formatter.dateFormat = "明天 HH:mm"
-        } else {
-            formatter.dateFormat = "M/d HH:mm"
-        }
-        return formatter.string(from: date)
+        L10n.shared.resetPoint(timestamp)
     }
 }
 
 final class CodexPanelViewController: NSViewController {
-    init(summary: CodexUsageSummary?, errorText: String?, target: AnyObject, refreshAction: Selector, openAction: Selector, quitAction: Selector) {
+    init(summary: CodexUsageSummary?, errorText: String?, target: AnyObject, refreshAction: Selector, openAction: Selector, quitAction: Selector, languageAction: Selector) {
         super.init(nibName: nil, bundle: nil)
+        let l = L10n.shared
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 410, height: 372))
         root.wantsLayer = true
         root.layer?.backgroundColor = NSColor.clear.cgColor
@@ -1004,32 +987,33 @@ final class CodexPanelViewController: NSViewController {
             card.frame = NSRect(x: 0, y: 200, width: 410, height: 162)
             root.addSubview(card)
 
-            let accountText = "账号 " + [summary.alias, summary.email].compactMap { $0 }.joined(separator: " · ")
+            let accountText = l.t("account") + " " + [summary.alias, summary.email].compactMap { $0 }.joined(separator: " · ")
             root.addSubview(label(accountText, x: 22, y: 176, width: 360, height: 18, size: 12, weight: .semibold, color: .labelColor))
-            root.addSubview(label("状态 \(statusText(summary)) · 套餐 \(summary.plan.uppercased())", x: 22, y: 154, width: 360, height: 16, size: 11, color: .secondaryLabelColor))
+            let statusPlan = l.t("status") + " " + statusText(summary) + " · " + l.t("plan") + " " + summary.plan.uppercased()
+            root.addSubview(label(statusPlan, x: 22, y: 154, width: 360, height: 16, size: 11, color: .secondaryLabelColor))
 
             if summary.isAPIAccount {
                 let api = summary.apiUsage
-                addInfoRow(root, y: 124, title: "余额", value: apiAmount(api?.displayRemaining, unit: api?.unit), detail: quotaDetail(api))
-                addInfoRow(root, y: 94, title: "费用", value: "今日 " + apiAmount(api?.displayTodayCost, unit: api?.unit), detail: "累计 " + apiAmount(api?.displayTotalCost, unit: api?.unit))
-                addInfoRow(root, y: 64, title: "Tokens", value: "今日 " + compactNumber(api?.todayTokens), detail: "累计 " + compactNumber(api?.totalTokens))
+                addInfoRow(root, y: 124, title: l.t("balance"), value: apiAmount(api?.displayRemaining, unit: api?.unit), detail: quotaDetail(api))
+                addInfoRow(root, y: 94, title: l.t("cost"), value: l.t("todayPrefix") + " " + apiAmount(api?.displayTodayCost, unit: api?.unit), detail: l.t("totalPrefix") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit))
+                addInfoRow(root, y: 64, title: l.t("tokens"), value: l.t("todayPrefix") + " " + compactNumber(api?.todayTokens), detail: l.t("totalPrefix") + " " + compactNumber(api?.totalTokens))
                 let detail = apiDetailLine(api)
                 root.addSubview(label(detail, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: api?.error == nil ? .tertiaryLabelColor : .systemOrange))
             } else {
-                addInfoRow(root, y: 124, title: "5 小时", value: usageLine(used: summary.primaryUsed, remaining: summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt))
-                addInfoRow(root, y: 94, title: "周额度", value: usageLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt))
-                let credits = summary.creditsUnlimited ? "无限" : (summary.creditsBalance ?? "未知")
-                let resetCredits = summary.resetCreditsAvailable.map { "重置券 \($0)" } ?? "重置券未知"
-                addInfoRow(root, y: 64, title: "Credits", value: credits, detail: resetCredits)
+                addInfoRow(root, y: 124, title: l.t("fiveHours"), value: usageLine(used: summary.primaryUsed, remaining: summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt))
+                addInfoRow(root, y: 94, title: l.t("weeklyQuota"), value: usageLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt))
+                let credits = summary.creditsUnlimited ? l.t("unlimited") : (summary.creditsBalance ?? l.t("unknown"))
+                let resetCredits = summary.resetCreditsAvailable.map { l.t("resetCredits") + " \($0)" } ?? (l.t("resetCredits") + " " + l.t("unknown"))
+                addInfoRow(root, y: 64, title: l.t("credits"), value: credits, detail: resetCredits)
 
                 if summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
-                    let spark = "剩余 5h \(summary.sparkPrimaryRemaining.map { "\($0)%" } ?? "?") · 周 \(summary.sparkSecondaryRemaining.map { "\($0)%" } ?? "?")"
+                    let spark = l.t("remaining") + " 5h " + (summary.sparkPrimaryRemaining.map { "\($0)%" } ?? "?") + " · " + l.t("weeklyQuota") + " " + (summary.sparkSecondaryRemaining.map { "\($0)%" } ?? "?")
                     root.addSubview(label("Spark " + spark, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: .tertiaryLabelColor))
                 }
             }
         } else {
-            let loading = NSTextField(labelWithString: "正在读取 Codex 额度…")
-            loading.frame = NSRect(x: 22, y: 250, width: 260, height: 22)
+            let loading = NSTextField(labelWithString: l.t("loading"))
+            loading.frame = NSRect(x: 22, y: 250, width: 300, height: 22)
             loading.font = .systemFont(ofSize: 14, weight: .medium)
             root.addSubview(loading)
         }
@@ -1042,17 +1026,31 @@ final class CodexPanelViewController: NSViewController {
             root.addSubview(error)
         }
 
-        let refresh = NSButton(title: "刷新", target: target, action: refreshAction)
-        refresh.frame = NSRect(x: 22, y: 14, width: 82, height: 28)
+        let refresh = NSButton(title: l.t("refresh"), target: target, action: refreshAction)
+        refresh.frame = NSRect(x: 22, y: 14, width: 78, height: 28)
         refresh.bezelStyle = .rounded
         root.addSubview(refresh)
 
-        let open = NSButton(title: "用量页面", target: target, action: openAction)
-        open.frame = NSRect(x: 116, y: 14, width: 96, height: 28)
+        let open = NSButton(title: l.t("usagePage"), target: target, action: openAction)
+        open.frame = NSRect(x: 108, y: 14, width: 90, height: 28)
         open.bezelStyle = .rounded
         root.addSubview(open)
 
-        let quit = NSButton(title: "退出", target: target, action: quitAction)
+        let language = NSPopUpButton(frame: NSRect(x: 208, y: 14, width: 92, height: 28), pullsDown: false)
+        language.bezelStyle = .rounded
+        for option in l.languageMenuOptions() {
+            language.addItem(withTitle: l.displayLanguageTitle(option))
+            language.lastItem?.representedObject = option.code
+        }
+        if let index = language.itemArray.firstIndex(where: { ($0.representedObject as? String) == l.selectedOptionCode }) {
+            language.selectItem(at: index)
+        }
+        language.setTitle(l.languageButtonTitle())
+        language.target = target
+        language.action = languageAction
+        root.addSubview(language)
+
+        let quit = NSButton(title: l.t("quit"), target: target, action: quitAction)
         quit.frame = NSRect(x: 308, y: 14, width: 76, height: 28)
         quit.bezelStyle = .rounded
         root.addSubview(quit)
@@ -1065,9 +1063,9 @@ final class CodexPanelViewController: NSViewController {
     }
 
     private func addInfoRow(_ root: NSView, y: CGFloat, title: String, value: String, detail: String) {
-        root.addSubview(label(title, x: 22, y: y, width: 70, height: 16, size: 11, weight: .semibold, color: .secondaryLabelColor))
-        root.addSubview(label(value, x: 96, y: y, width: 118, height: 16, size: 11, weight: .medium, color: .labelColor))
-        root.addSubview(label(detail, x: 216, y: y, width: 172, height: 16, size: 10.5, color: .secondaryLabelColor, alignment: .right))
+        root.addSubview(label(title, x: 22, y: y, width: 78, height: 16, size: 11, weight: .semibold, color: .secondaryLabelColor))
+        root.addSubview(label(value, x: 104, y: y, width: 128, height: 16, size: 11, weight: .medium, color: .labelColor))
+        root.addSubview(label(detail, x: 232, y: y, width: 156, height: 16, size: 10.5, color: .secondaryLabelColor, alignment: .right))
     }
 
     private func label(_ text: String, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor, alignment: NSTextAlignment = .left) -> NSTextField {
@@ -1081,13 +1079,13 @@ final class CodexPanelViewController: NSViewController {
     }
 
     private func statusText(_ summary: CodexUsageSummary) -> String {
-        if summary.isAPIAccount { return "API/中转" }
-        return summary.allowed && !summary.limitReached ? "可用" : "已到上限"
+        if summary.isAPIAccount { return L10n.shared.t("apiRelay") }
+        return summary.allowed && !summary.limitReached ? L10n.shared.t("available") : L10n.shared.t("limitReached")
     }
 
     private func apiAmount(_ value: Double?, unit: String?) -> String {
         guard let value else { return "—" }
-        if value < 0 { return "无限" }
+        if value < 0 { return L10n.shared.t("unlimited") }
         let absValue = abs(value)
         let decimals = absValue >= 100 ? 1 : (absValue >= 1 ? 2 : 4)
         let number = String(format: "%.\(decimals)f", value)
@@ -1113,59 +1111,41 @@ final class CodexPanelViewController: NSViewController {
     }
 
     private func quotaDetail(_ api: APIUsageSummary?) -> String {
-        guard let api else { return "中转用量未知" }
+        let l = L10n.shared
+        guard let api else { return l.t("relayUsageUnknown") }
         if let limit = api.quotaLimit {
-            return "限额 " + apiAmount(limit, unit: api.unit) + " · 已用 " + apiAmount(api.quotaUsed, unit: api.unit)
+            return l.t("quotaLimit") + " " + apiAmount(limit, unit: api.unit) + " · " + l.t("used") + " " + apiAmount(api.quotaUsed, unit: api.unit)
         }
-        if api.balance != nil { return "钱包余额" }
-        return api.mode ?? "中转用量"
+        if api.balance != nil { return l.t("walletBalance") }
+        return api.mode ?? l.t("relayUsageUnknown")
     }
 
     private func apiDetailLine(_ api: APIUsageSummary?) -> String {
-        if let error = api?.error { return "中转用量读取失败：" + error }
-        let todayIO = "输入 " + compactNumber(api?.todayInputTokens) + " · 输出 " + compactNumber(api?.todayOutputTokens)
-        let requests = api?.todayRequests.map { " · 今日请求 \($0)" } ?? ""
+        let l = L10n.shared
+        if let error = api?.error { return l.t("relayUsageFailed") + ": " + error }
+        let todayIO = l.t("input") + " " + compactNumber(api?.todayInputTokens) + " · " + l.t("output") + " " + compactNumber(api?.todayOutputTokens)
+        let requests = api?.todayRequests.map { " · " + l.t("todayRequests") + " \($0)" } ?? ""
         return todayIO + requests
     }
 
     private func usageLine(used: Int?, remaining: Int?) -> String {
-        let usedText = used.map { "已用 \($0)%" } ?? "已用 ?"
-        let remainingText = remaining.map { "剩余 \($0)%" } ?? "剩余 ?"
+        let l = L10n.shared
+        let usedText = used.map { l.t("used") + " \($0)%" } ?? (l.t("used") + " ?")
+        let remainingText = remaining.map { l.t("remaining") + " \($0)%" } ?? (l.t("remaining") + " ?")
         return "\(remainingText) · \(usedText)"
     }
 
     private func resetLine(after seconds: Int?, at timestamp: TimeInterval?) -> String {
-        guard let seconds else { return "重置未知" }
+        let l = L10n.shared
+        guard let seconds else { return l.t("reset") + " " + l.t("unknown") }
         if let point = resetPoint(timestamp) {
-            return "重置 " + point + " · " + duration(seconds)
+            return l.t("reset") + " " + point + " · " + duration(seconds)
         }
-        return "重置 " + duration(seconds)
+        return l.t("reset") + " " + duration(seconds)
     }
 
-    private func duration(_ seconds: Int) -> String {
-        if seconds <= 0 { return "现在" }
-        let days = seconds / 86_400
-        let hours = (seconds % 86_400) / 3_600
-        let minutes = (seconds % 3_600) / 60
-        if days > 0 { return "\(days)天\(hours)小时" }
-        if hours > 0 { return "\(hours)小时\(minutes)分" }
-        return "\(max(1, minutes))分"
-    }
-
-    private func resetPoint(_ timestamp: TimeInterval?) -> String? {
-        guard let timestamp else { return nil }
-        let date = Date(timeIntervalSince1970: timestamp)
-        let formatter = DateFormatter()
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) {
-            formatter.dateFormat = "今天 HH:mm"
-        } else if calendar.isDateInTomorrow(date) {
-            formatter.dateFormat = "明天 HH:mm"
-        } else {
-            formatter.dateFormat = "M/d HH:mm"
-        }
-        return formatter.string(from: date)
-    }
+    private func duration(_ seconds: Int) -> String { L10n.shared.duration(seconds) }
+    private func resetPoint(_ timestamp: TimeInterval?) -> String? { L10n.shared.resetPoint(timestamp) }
 }
 
 @MainActor
@@ -1182,7 +1162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         updateStatusButton(title: "5h … / 7d …")
-        statusItem.button?.toolTip = "Codex 额度"
+        statusItem.button?.toolTip = L10n.shared.t("title")
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover(_:))
         popover.behavior = .transient
@@ -1217,7 +1197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     } else {
                         self?.updateStatusButton(title: "5h ? / 7d ?")
                     }
-                    self?.statusItem.button?.toolTip = "Codex 额度读取失败：\(error.description)"
+                    self?.statusItem.button?.toolTip = L10n.shared.t("fetchFailed") + ": \(error.description)"
                 }
                 if self?.popover.isShown == true {
                     self?.updatePopoverContent()
@@ -1276,7 +1256,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             target: self,
             refreshAction: #selector(refreshFromPopover(_:)),
             openAction: #selector(openUsagePageFromPopover(_:)),
-            quitAction: #selector(quit)
+            quitAction: #selector(quit),
+            languageAction: #selector(languageChanged(_:))
         )
         popover.contentSize = NSSize(width: 410, height: 372)
     }
@@ -1287,6 +1268,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func openUsagePageFromPopover(_ sender: Any?) {
         openUsagePage()
+    }
+
+    @objc private func languageChanged(_ sender: Any?) {
+        guard let popup = sender as? NSPopUpButton,
+              let code = popup.selectedItem?.representedObject as? String else { return }
+        L10n.shared.setSelectedCode(code)
+        if let summary = lastSummary {
+            updateStatusButton(summary: summary)
+            statusItem.button?.toolTip = tooltip(for: summary)
+        } else {
+            updateStatusButton(title: "5h … / 7d …")
+            statusItem.button?.toolTip = L10n.shared.t("title")
+        }
+        updatePopoverContent()
     }
 
 
@@ -1327,7 +1322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func apiAmount(_ value: Double?, unit: String?) -> String {
         guard let value else { return "—" }
-        if value < 0 { return "无限" }
+        if value < 0 { return L10n.shared.t("unlimited") }
         let absValue = abs(value)
         let decimals = absValue >= 100 ? 1 : (absValue >= 1 ? 2 : 4)
         let number = String(format: "%.\(decimals)f", value)
@@ -1429,42 +1424,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menu.removeAllItems()
         if let summary = lastSummary {
             let card = NSMenuItem()
-            card.view = UsageCardView(summary: summary, errorText: lastError == nil ? nil : "读取失败")
+            let l = L10n.shared
+            card.view = UsageCardView(summary: summary, errorText: lastError == nil ? nil : l.t("readFailed"))
             menu.addItem(card)
             menu.addItem(.separator())
-            menu.addItem(disabled("账号：\(summary.email)"))
-            menu.addItem(disabled("套餐：\(summary.plan)"))
-            menu.addItem(disabled(summary.allowed && !summary.limitReached ? "状态：可用" : "状态：已到上限"))
+            menu.addItem(disabled(l.t("account") + ": \(summary.email)"))
+            menu.addItem(disabled(l.t("plan") + ": \(summary.plan)"))
+            menu.addItem(disabled(l.t("status") + ": " + (summary.allowed && !summary.limitReached ? l.t("available") : l.t("limitReached"))))
             menu.addItem(.separator())
-            menu.addItem(disabled("5 小时：\(windowLine(used: summary.primaryUsed, remaining: summary.primaryRemaining, resetAfter: summary.primaryResetAfterSeconds, resetAt: summary.primaryResetAt))"))
+            menu.addItem(disabled(l.t("fiveHours") + ": \(windowLine(used: summary.primaryUsed, remaining: summary.primaryRemaining, resetAfter: summary.primaryResetAfterSeconds, resetAt: summary.primaryResetAt))"))
             if summary.secondaryUsed != nil {
-                menu.addItem(disabled("7 天：\(windowLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining, resetAfter: summary.secondaryResetAfterSeconds, resetAt: summary.secondaryResetAt))"))
+                menu.addItem(disabled(l.t("weeklyQuota") + ": \(windowLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining, resetAfter: summary.secondaryResetAfterSeconds, resetAt: summary.secondaryResetAt))"))
             }
             if let sp = summary.sparkPrimaryRemaining, let ss = summary.sparkSecondaryRemaining {
-                menu.addItem(disabled("Spark：剩余 5h \(sp)% / 周 \(ss)%"))
+                menu.addItem(disabled("Spark: " + l.t("remaining") + " 5h \(sp)% / " + l.t("weeklyQuota") + " \(ss)%"))
             }
-            let credits = summary.creditsUnlimited ? "无限" : (summary.creditsBalance ?? "未知")
-            menu.addItem(disabled("Credits：\(credits)"))
+            let credits = summary.creditsUnlimited ? l.t("unlimited") : (summary.creditsBalance ?? l.t("unknown"))
+            menu.addItem(disabled(l.t("credits") + ": \(credits)"))
             if let count = summary.resetCreditsAvailable {
-                menu.addItem(disabled("重置券：\(count)"))
+                menu.addItem(disabled(l.t("resetCredits") + ": \(count)"))
             }
-            menu.addItem(disabled("刷新：\(timeString(summary.fetchedAt))"))
+            menu.addItem(disabled(l.t("updated") + ": \(timeString(summary.fetchedAt))"))
         } else {
-            menu.addItem(disabled("正在读取 Codex 额度"))
+            menu.addItem(disabled(L10n.shared.t("loading")))
         }
         if let lastError = lastError {
             menu.addItem(.separator())
-            menu.addItem(disabled("错误：\(lastError)"))
+            menu.addItem(disabled(L10n.shared.t("error") + ": \(lastError)"))
         }
         menu.addItem(.separator())
-        let refreshItem = NSMenuItem(title: "立即刷新", action: #selector(refresh(_:)), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: L10n.shared.t("refreshNow"), action: #selector(refresh(_:)), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
-        let openItem = NSMenuItem(title: "打开 Codex 用量页面", action: #selector(openUsagePage), keyEquivalent: "")
+        let openItem = NSMenuItem(title: L10n.shared.t("openUsagePage"), action: #selector(openUsagePage), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
         menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: L10n.shared.t("quit"), action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
     }
@@ -1476,58 +1472,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func windowLine(used: Int?, remaining: Int?, resetAfter: Int?, resetAt: TimeInterval?) -> String {
-        let usedText = used.map { "已用 \($0)%" } ?? "已用未知"
-        let remainText = remaining.map { "剩余 \($0)%" } ?? "剩余未知"
-        let resetText = resetAfter.map { "，\(duration($0)) 后重置\(resetPoint(resetAt).map { "（\($0)）" } ?? "")" } ?? ""
-        return "\(remainText)（\(usedText)）\(resetText)"
+        let l = L10n.shared
+        let usedText = used.map { l.t("used") + " \($0)%" } ?? (l.t("used") + " " + l.t("unknown"))
+        let remainText = remaining.map { l.t("remaining") + " \($0)%" } ?? (l.t("remaining") + " " + l.t("unknown"))
+        let resetText = resetAfter.map { " · " + l.t("reset") + " \(resetPoint(resetAt).map { "\($0) · " } ?? "")\(duration($0))" } ?? ""
+        return "\(remainText) (\(usedText))\(resetText)"
     }
 
     private func duration(_ seconds: Int) -> String {
-        if seconds <= 0 { return "现在" }
-        let days = seconds / 86_400
-        let hours = (seconds % 86_400) / 3_600
-        let minutes = (seconds % 3_600) / 60
-        if days > 0 { return "\(days)天\(hours)小时" }
-        if hours > 0 { return "\(hours)小时\(minutes)分" }
-        return "\(max(1, minutes))分"
+        L10n.shared.duration(seconds)
     }
 
     private func resetPoint(_ timestamp: TimeInterval?) -> String? {
-        guard let timestamp else { return nil }
-        let date = Date(timeIntervalSince1970: timestamp)
-        let formatter = DateFormatter()
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) {
-            formatter.dateFormat = "今天 HH:mm"
-        } else if calendar.isDateInTomorrow(date) {
-            formatter.dateFormat = "明天 HH:mm"
-        } else {
-            formatter.dateFormat = "M/d HH:mm"
-        }
-        return formatter.string(from: date)
+        L10n.shared.resetPoint(timestamp)
     }
 
     private func timeString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: date)
+        L10n.shared.timeString(date)
     }
 
     private func tooltip(for summary: CodexUsageSummary) -> String {
+        let l = L10n.shared
         if summary.isAPIAccount {
-            var lines = ["Codex 额度", "API/中转账号"]
+            var lines = [l.t("title"), l.t("apiRelayAccount")]
             if let alias = summary.alias { lines.append(alias) }
             if let baseURL = summary.baseURL { lines.append(baseURL) }
             if let usage = summary.apiUsage, usage.error == nil {
-                lines.append("余额：\(apiAmount(usage.displayRemaining, unit: usage.unit))")
-                lines.append("今日费用：\(apiAmount(usage.displayTodayCost, unit: usage.unit))")
-                lines.append("今日 Tokens：\(compactNumber(usage.todayTokens))")
+                lines.append(l.t("balance") + ": \(apiAmount(usage.displayRemaining, unit: usage.unit))")
+                lines.append(l.t("todayCost") + ": \(apiAmount(usage.displayTodayCost, unit: usage.unit))")
+                lines.append(l.t("todayTokens") + ": \(compactNumber(usage.todayTokens))")
             }
             return lines.joined(separator: "\n")
         }
-        var lines = ["Codex 额度", summary.email]
-        if let p = summary.primaryRemaining { lines.append("5 小时剩余：\(p)%") }
-        if let s = summary.secondaryRemaining { lines.append("7 天剩余：\(s)%") }
+        var lines = [l.t("title"), summary.email]
+        if let p = summary.primaryRemaining { lines.append(l.t("primaryRemaining") + ": \(p)%") }
+        if let s = summary.secondaryRemaining { lines.append(l.t("secondaryRemaining") + ": \(s)%") }
         return lines.joined(separator: "\n")
     }
 

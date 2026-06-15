@@ -50,6 +50,8 @@ Codex Balance is a lightweight macOS status bar app. It reads the active Codex O
 
 It refreshes every 30 seconds. Opening the popover or clicking refresh updates immediately. If you switch accounts with `ca s <alias>`, the widget follows the new `~/.codex/auth.json` on the next refresh.
 
+Codex Balance automatically follows the first supported macOS preferred language. The popover also includes a language picker with Automatic/System plus 40 manual language choices. For scripting or debugging, `CODEX_BALANCE_LANG=<code>` can override the UI language for the current process.
+
 When the active account is an API relay profile, Codex Balance reads the relay usage endpoint and displays:
 
 - remaining balance or quota
@@ -216,6 +218,8 @@ Codex Balance 是一个轻量的 macOS 状态栏应用。它读取当前 Codex O
 - 距离重置还剩多久，以及具体重置时间点
 
 它每 30 秒自动刷新一次。打开面板或点击刷新会立即更新。如果使用 `ca s <alias>` 切换账号，控件会在下一次刷新时跟随新的 `~/.codex/auth.json`。
+
+Codex Balance 会自动跟随 macOS 首选语言里的第一个受支持语言。面板里也提供语言选择器，包含“自动/系统”和 40 个手动语言选项。脚本或调试场景可以用 `CODEX_BALANCE_LANG=<code>` 临时指定界面语言。
 
 当前账号是 API 中转配置时，Codex Balance 会读取中转用量接口，并展示：
 

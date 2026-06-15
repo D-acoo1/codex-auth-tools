@@ -36,6 +36,9 @@ GET https://relay.example.com/v1/usage
 - Clicking outside the popover closes it.
 - Token consumption totals are shown only for API relay accounts when the relay usage endpoint provides them.
 - Membership expiration is intentionally not shown because the current usage endpoint does not expose a reliable field for it.
+- The UI follows the first supported macOS preferred language by default.
+- The popover language picker supports Automatic/System plus 40 manual languages.
+- `CODEX_BALANCE_LANG=<code>` can override the language for one process, which is useful for black-box checks.
 
 ## Refresh behavior
 
