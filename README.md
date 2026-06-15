@@ -21,7 +21,7 @@ Status bar / 状态栏：
 
 Popover sample / 面板示例：
 
-![Codex Balance popover sample](assets/popover-sample.png)
+<img src="assets/popover-sample.png" alt="Codex Balance popover sample" width="412">
 
 The popover screenshot is generated with sample data and contains no real account information.
 面板截图使用示例数据重新生成，不包含真实账号信息。
