@@ -1,6 +1,6 @@
-# Codex Local Tools
+# Codex Auth Tools
 
-A small local toolkit for people who use Codex with multiple ChatGPT/Codex accounts.
+A small local toolkit for Codex account switching and quota visibility.
 
 This repository contains two tools:
 
@@ -14,7 +14,7 @@ The tools read local Codex login state from `~/.codex`. They do **not** include 
 ## Repository layout
 
 ```text
-codex-local-tools/
+codex-auth-tools/
   codex-balance/          # Swift/AppKit menu bar widget
   codex-auth/             # ca / codex-ac account manager
   docs/                   # detailed docs
