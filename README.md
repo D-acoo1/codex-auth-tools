@@ -1,5 +1,7 @@
 # Codex Auth Tools
 
+[中文说明](#中文说明)
+
 A small local toolkit for Codex account switching and quota visibility.
 
 This repository contains two tools:
@@ -116,3 +118,124 @@ If no proxy is set, it tries the direct request path.
 ## License
 
 MIT.
+
+---
+
+# 中文说明
+
+一个用于本机 Codex 多账号切换和额度查看的小工具仓库。
+
+本仓库包含两个工具：
+
+| 工具 | 命令 / 程序 | 用途 |
+| --- | --- | --- |
+| Codex Balance | `CodexBalance` | macOS 顶部状态栏额度控件，展示当前 Codex 账号额度。 |
+| Codex Auth | `ca`, `codex-ac` | 本机 Codex 账号管理工具，用于保存、切换和查看本地 Codex 登录快照。 |
+
+这些工具会读取本机 `~/.codex` 下的 Codex 登录状态。仓库本身不包含任何账号、token、cookie 或个人缓存数据。
+
+## 仓库结构
+
+```text
+codex-auth-tools/
+  codex-balance/          # Swift/AppKit 状态栏控件
+  codex-auth/             # ca / codex-ac 账号管理工具
+  docs/                   # 详细文档
+  scripts/                # 安装脚本
+```
+
+## Codex Balance
+
+Codex Balance 是一个轻量的 macOS 状态栏应用。它读取当前 Codex OAuth 登录文件 `~/.codex/auth.json`，调用 Codex 用量接口，并展示：
+
+- 5 小时额度剩余
+- 周额度剩余
+- 账号别名和邮箱
+- 套餐和可用状态
+- Credits
+- Spark 剩余额度
+- 距离重置还剩多久，以及具体重置时间点
+
+它每 30 秒自动刷新一次。打开面板或点击刷新会立即更新。如果使用 `ca s <alias>` 切换账号，控件会在下一次刷新时跟随新的 `~/.codex/auth.json`。
+
+### 构建和安装
+
+```bash
+./scripts/install-codex-balance.sh
+```
+
+默认安装路径：
+
+```text
+~/Library/Application Support/CodexBalance/CodexBalance
+```
+
+默认 LaunchAgent 名称：
+
+```text
+com.codexlocaltools.codex-balance
+```
+
+如需自定义 LaunchAgent 名称：
+
+```bash
+CODEX_BALANCE_LAUNCHD_LABEL=com.example.codex-balance ./scripts/install-codex-balance.sh
+```
+
+## Codex Auth (`ca`)
+
+Codex Auth 是一个本机 Codex 账号管理工具。它可以：
+
+- 导入当前 `~/.codex/auth.json`
+- 通过替换 `~/.codex/auth.json` 切换当前账号
+- 列出已保存账号和缓存额度
+- 添加兼容 OpenAI API 的服务商账号
+- 用隔离账号目录运行 Codex
+
+### 安装
+
+```bash
+./scripts/install-codex-auth.sh
+```
+
+常用命令：
+
+```bash
+ca --help
+ca ll
+ca current
+ca s <alias>
+```
+
+`ca` 默认把账号快照保存在 `~/.codex-ac`。这些登录快照是本机私有文件，绝不能提交到 Git 仓库。
+
+## 用量接口
+
+两个工具都使用当前本机 Codex 登录态读取用量：
+
+```text
+https://chatgpt.com/backend-api/wham/usage
+```
+
+这个接口目前会返回额度百分比、重置时间、套餐类型、Credits，以及 Spark 这类额外限制。它没有可靠的会员过期日字段，所以工具不会展示会员过期日。
+
+## 代理
+
+`codex-auth` 刷新用量时可以选择走代理：
+
+```bash
+CODEX_AC_USAGE_PROXY=http://localhost:8080 ca ll
+```
+
+不设置代理时，会直接请求接口。
+
+## 安全说明
+
+- 不要提交 `~/.codex/auth.json`、`~/.codex/accounts/*.auth.json` 或 `~/.codex-ac`。
+- 如果 `last-status.json` 里包含个人账号标识，不要发布它。
+- 仓库的 `.gitignore` 已屏蔽常见本机登录文件和状态文件。
+- 工具只操作本机文件，并访问当前 Codex 用量接口。
+
+## 许可证
+
+MIT。
