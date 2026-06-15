@@ -1000,14 +1000,14 @@ final class CodexPanelViewController: NSViewController {
                 let detail = apiDetailLine(api)
                 root.addSubview(label(detail, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: api?.error == nil ? .tertiaryLabelColor : .systemOrange))
             } else {
-                addInfoRow(root, y: 124, title: l.t("fiveHours"), value: usageLine(used: summary.primaryUsed, remaining: summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt))
-                addInfoRow(root, y: 94, title: l.t("weeklyQuota"), value: usageLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt))
+                addInfoRow(root, y: 124, title: l.t("fiveHours"), value: remainingLine(summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt))
+                addInfoRow(root, y: 94, title: l.t("weeklyQuota"), value: remainingLine(summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt))
                 let credits = summary.creditsUnlimited ? l.t("unlimited") : (summary.creditsBalance ?? l.t("unknown"))
                 let resetCredits = summary.resetCreditsAvailable.map { l.t("resetCredits") + " \($0)" } ?? (l.t("resetCredits") + " " + l.t("unknown"))
                 addInfoRow(root, y: 64, title: l.t("credits"), value: credits, detail: resetCredits)
 
                 if summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
-                    let spark = "F 5h " + (summary.sparkPrimaryRemaining.map { "\($0)%" } ?? "?") + " · 7d " + (summary.sparkSecondaryRemaining.map { "\($0)%" } ?? "?")
+                    let spark = "5h " + remainingLine(summary.sparkPrimaryRemaining) + " · 7d " + remainingLine(summary.sparkSecondaryRemaining)
                     root.addSubview(label("Spark " + spark, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: .tertiaryLabelColor))
                 }
             }
@@ -1128,10 +1128,8 @@ final class CodexPanelViewController: NSViewController {
         return todayIO + requests
     }
 
-    private func usageLine(used: Int?, remaining: Int?) -> String {
-        let usedText = used.map { "U \($0)%" } ?? "U ?"
-        let remainingText = remaining.map { "F \($0)%" } ?? "F ?"
-        return "\(remainingText) · \(usedText)"
+    private func remainingLine(_ remaining: Int?) -> String {
+        remaining.map { "\($0)%" } ?? "?"
     }
 
     private func resetLine(after seconds: Int?, at timestamp: TimeInterval?) -> String {
@@ -1431,9 +1429,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             menu.addItem(disabled(l.t("plan") + ": \(summary.plan)"))
             menu.addItem(disabled(l.t("status") + ": " + (summary.allowed && !summary.limitReached ? l.t("available") : l.t("limitReached"))))
             menu.addItem(.separator())
-            menu.addItem(disabled(l.t("fiveHours") + ": \(windowLine(used: summary.primaryUsed, remaining: summary.primaryRemaining, resetAfter: summary.primaryResetAfterSeconds, resetAt: summary.primaryResetAt))"))
+            menu.addItem(disabled(l.t("fiveHours") + ": \(windowLine(remaining: summary.primaryRemaining, resetAfter: summary.primaryResetAfterSeconds, resetAt: summary.primaryResetAt))"))
             if summary.secondaryUsed != nil {
-                menu.addItem(disabled(l.t("weeklyQuota") + ": \(windowLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining, resetAfter: summary.secondaryResetAfterSeconds, resetAt: summary.secondaryResetAt))"))
+                menu.addItem(disabled(l.t("weeklyQuota") + ": \(windowLine(remaining: summary.secondaryRemaining, resetAfter: summary.secondaryResetAfterSeconds, resetAt: summary.secondaryResetAt))"))
             }
             if let sp = summary.sparkPrimaryRemaining, let ss = summary.sparkSecondaryRemaining {
                 menu.addItem(disabled("Spark: " + l.t("remaining") + " 5h \(sp)% / " + l.t("weeklyQuota") + " \(ss)%"))
@@ -1470,12 +1468,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return item
     }
 
-    private func windowLine(used: Int?, remaining: Int?, resetAfter: Int?, resetAt: TimeInterval?) -> String {
+    private func windowLine(remaining: Int?, resetAfter: Int?, resetAt: TimeInterval?) -> String {
         let l = L10n.shared
-        let usedText = used.map { l.t("used") + " \($0)%" } ?? (l.t("used") + " " + l.t("unknown"))
-        let remainText = remaining.map { l.t("remaining") + " \($0)%" } ?? (l.t("remaining") + " " + l.t("unknown"))
+        let remainText = remaining.map { "\($0)%" } ?? l.t("unknown")
         let resetText = resetAfter.map { " · " + l.t("reset") + " \(resetPoint(resetAt).map { "\($0) · " } ?? "")\(duration($0))" } ?? ""
-        return "\(remainText) (\(usedText))\(resetText)"
+        return "\(remainText)\(resetText)"
     }
 
     private func duration(_ seconds: Int) -> String {
