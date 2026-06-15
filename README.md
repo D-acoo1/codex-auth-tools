@@ -1,30 +1,29 @@
 # Codex Auth Tools
 
-[中文说明](#中文说明)
+[Chinese version](#中文说明)
 
 A small local toolkit for Codex account switching and quota visibility.
 
 This repository contains two tools:
 
-| Tool | Command / app | Purpose |
+| Tool | Command or app | Purpose |
 | --- | --- | --- |
 | Codex Balance | `CodexBalance` | macOS menu bar widget that shows the current Codex account quota. |
 | Codex Auth | `ca`, `codex-ac` | Local Codex account manager for switching and inspecting saved Codex auth snapshots. |
 
 The tools read local Codex login state from `~/.codex`. They do **not** include any account, token, cookie, or personal cache data.
 
-## Screenshots / 截图
+## Screenshots
 
-Status bar / 状态栏：
+Status bar:
 
 ![Codex Balance status bar](assets/status-bar.png)
 
-Popover sample / 面板示例：
+Popover sample:
 
 <img src="assets/popover-sample.png" alt="Codex Balance popover sample" width="412">
 
 The popover screenshot is generated with sample data and contains no real account information.
-面板截图使用示例数据重新生成，不包含真实账号信息。
 
 ## Repository layout
 
@@ -102,7 +101,7 @@ ca s <alias>
 
 `ca` stores account snapshots under `~/.codex-ac` by default. Auth snapshots are private local files and must never be committed.
 
-API / relay accounts are supported too:
+API and relay accounts are supported too:
 
 ```bash
 printf 'sk-...' | ca add-api relay --base-url https://relay.example.com/v1 --model gpt-5-codex
@@ -110,7 +109,7 @@ ca s relay
 ca s <chatgpt-alias> --skip-expiry-check
 ```
 
-API keys are kept in Keychain or `~/.codex-ac/secrets`, not in `config.toml`. Codex Balance shows API/relay mode as API usage because ChatGPT subscription quota is not available for those accounts.
+API keys are kept in Keychain or `~/.codex-ac/secrets`, not in `config.toml`. Codex Balance shows API or relay mode as API usage because ChatGPT subscription quota is not available for those accounts.
 
 ## Usage endpoint
 
@@ -147,16 +146,30 @@ MIT.
 
 # 中文说明
 
+[英文说明](#codex-auth-tools)
+
 一个用于本机 Codex 多账号切换和额度查看的小工具仓库。
 
 本仓库包含两个工具：
 
-| 工具 | 命令 / 程序 | 用途 |
+| 工具 | 命令或程序 | 用途 |
 | --- | --- | --- |
 | Codex Balance | `CodexBalance` | macOS 顶部状态栏额度控件，展示当前 Codex 账号额度。 |
 | Codex Auth | `ca`, `codex-ac` | 本机 Codex 账号管理工具，用于保存、切换和查看本地 Codex 登录快照。 |
 
 这些工具会读取本机 `~/.codex` 下的 Codex 登录状态。仓库本身不包含任何账号、token、cookie 或个人缓存数据。
+
+## 截图
+
+状态栏：
+
+![Codex Balance 状态栏](assets/status-bar.png)
+
+面板示例：
+
+<img src="assets/popover-sample.png" alt="Codex Balance 面板示例" width="412">
+
+面板截图使用示例数据重新生成，不包含真实账号信息。
 
 ## 仓库结构
 
@@ -234,7 +247,7 @@ ca s <alias>
 
 `ca` 默认把账号快照保存在 `~/.codex-ac`。这些登录快照是本机私有文件，绝不能提交到 Git 仓库。
 
-也支持 API key / 中转域名账号：
+也支持 API key 和中转域名账号：
 
 ```bash
 printf 'sk-...' | ca add-api relay --base-url https://relay.example.com/v1 --model gpt-5-codex
@@ -242,7 +255,7 @@ ca s relay
 ca s <chatgpt-alias> --skip-expiry-check
 ```
 
-API key 会保存在 Keychain 或 `~/.codex-ac/secrets`，不会写进 `config.toml`。Codex Balance 会把 API/中转模式显示为 API 账号，因为这类账号没有 ChatGPT 订阅额度。
+API key 会保存在 Keychain 或 `~/.codex-ac/secrets`，不会写进 `config.toml`。Codex Balance 会把 API 或中转模式显示为 API 账号，因为这类账号没有 ChatGPT 订阅额度。
 
 ## 用量接口
 
