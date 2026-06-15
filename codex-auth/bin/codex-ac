@@ -1,0 +1,20 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+LIB="${CODEX_AC_LIB:-${0:A:h}/../lib}"
+case "${1:-}" in
+  l|ll|ls|la) shift; set -- list "$@" ;;
+  s) shift; set -- switch "$@" ;;
+  r|relogin) shift; set -- relogin "$@" ;;
+  rm) shift; set -- remove "$@" ;;
+  a) shift; set -- add "$@" ;;
+  api) shift; set -- add-api "$@" ;;
+esac
+if [[ "${1:-}" == "list" ]]; then
+  shift
+  exec node "$LIB/list.mjs" "$@"
+fi
+if [[ "${1:-}" == "--version" || "${1:-}" == "-V" ]]; then
+  echo "codex-ac 0.7.0"
+  exit 0
+fi
+exec python3 "$LIB/codex-ac.py" "$@"

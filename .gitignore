@@ -1,0 +1,28 @@
+.DS_Store
+*.swp
+*.bak
+*.tmp
+*.log
+
+# SwiftPM
+.build/
+.swiftpm/
+DerivedData/
+
+# Python / Node caches
+__pycache__/
+*.py[cod]
+node_modules/
+
+# Never commit local auth/state/secrets
+.codex/
+.codex-ac/
+*.auth.json
+auth.json
+registry.json
+last-status.json
+*.sqlite
+*.db
+*.pem
+*.key
+.env
