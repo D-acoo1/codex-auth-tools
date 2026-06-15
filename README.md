@@ -102,6 +102,16 @@ ca s <alias>
 
 `ca` stores account snapshots under `~/.codex-ac` by default. Auth snapshots are private local files and must never be committed.
 
+API / relay accounts are supported too:
+
+```bash
+printf 'sk-...' | ca add-api relay --base-url https://relay.example.com/v1 --model gpt-5-codex
+ca s relay
+ca s <chatgpt-alias> --skip-expiry-check
+```
+
+API keys are kept in Keychain or `~/.codex-ac/secrets`, not in `config.toml`. Codex Balance shows API/relay mode as API usage because ChatGPT subscription quota is not available for those accounts.
+
 ## Usage endpoint
 
 Both tools use the current local Codex login to read usage data from:
@@ -223,6 +233,16 @@ ca s <alias>
 ```
 
 `ca` 默认把账号快照保存在 `~/.codex-ac`。这些登录快照是本机私有文件，绝不能提交到 Git 仓库。
+
+也支持 API key / 中转域名账号：
+
+```bash
+printf 'sk-...' | ca add-api relay --base-url https://relay.example.com/v1 --model gpt-5-codex
+ca s relay
+ca s <chatgpt-alias> --skip-expiry-check
+```
+
+API key 会保存在 Keychain 或 `~/.codex-ac/secrets`，不会写进 `config.toml`。Codex Balance 会把 API/中转模式显示为 API 账号，因为这类账号没有 ChatGPT 订阅额度。
 
 ## 用量接口
 

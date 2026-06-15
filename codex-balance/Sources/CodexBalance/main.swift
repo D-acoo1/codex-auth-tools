@@ -23,6 +23,10 @@ struct CodexUsageSummary: Sendable {
     var sparkPrimaryUsed: Int?
     var sparkSecondaryUsed: Int?
     var fetchedAt: Date
+    var kind: String = "chatgpt"
+    var baseURL: String? = nil
+
+    var isAPIAccount: Bool { kind == "api" }
 
     var primaryRemaining: Int? { primaryUsed.map { max(0, 100 - $0) } }
     var secondaryRemaining: Int? { secondaryUsed.map { max(0, 100 - $0) } }
@@ -37,8 +41,10 @@ struct CodexUsageSummary: Sendable {
             "plan": plan,
             "allowed": allowed,
             "limit_reached": limitReached,
-            "fetched_at": ISO8601DateFormatter().string(from: fetchedAt)
+            "fetched_at": ISO8601DateFormatter().string(from: fetchedAt),
+            "kind": kind
         ]
+        if let v = baseURL { d["base_url"] = v }
         if let v = alias { d["alias"] = v }
         if let v = accountID { d["account_id"] = v }
         if let v = primaryUsed { d["primary_used_percent"] = v }
@@ -83,27 +89,59 @@ enum UsageError: Error, CustomStringConvertible, Sendable {
 }
 
 private struct CodexAuthContext: Sendable {
-    let accessToken: String
+    let kind: String
+    let accessToken: String?
     let alias: String?
     let accountID: String?
+    let baseURL: String?
+
+    var isAPIAccount: Bool { kind == "api" }
 }
 
 
 final class CodexUsageFetcher: @unchecked Sendable {
     private let home = FileManager.default.homeDirectoryForCurrentUser
     private let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    private let environment = ProcessInfo.processInfo.environment
 
-    private var codexHome: URL { home.appendingPathComponent(".codex", isDirectory: true) }
-    private var stateDir: URL { home.appendingPathComponent("Library/Application Support/CodexBalance", isDirectory: true) }
+    private var codexHome: URL {
+        if let value = environment["CODEX_HOME"], !value.isEmpty {
+            return URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return home.appendingPathComponent(".codex", isDirectory: true)
+    }
+
+    private var acHome: URL {
+        if let value = environment["CODEX_AC_HOME"], !value.isEmpty {
+            return URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return home.appendingPathComponent(".codex-ac", isDirectory: true)
+    }
+
+    private var stateDir: URL {
+        if let value = environment["CODEX_BALANCE_STATE_DIR"], !value.isEmpty {
+            return URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return home.appendingPathComponent("Library/Application Support/CodexBalance", isDirectory: true)
+    }
     var stateFile: URL { stateDir.appendingPathComponent("last-status.json") }
 
     func fetch(completion: @escaping @Sendable (Result<CodexUsageSummary, UsageError>) -> Void) {
         do {
             let auth = try loadAuthContext()
+            if auth.isAPIAccount {
+                let summary = apiSummary(auth: auth)
+                writeState(summary.asDictionary())
+                completion(.success(summary))
+                return
+            }
+            guard let accessToken = auth.accessToken, !accessToken.isEmpty else {
+                throw UsageError.missingToken
+            }
             var request = URLRequest(url: usageURL)
             request.httpMethod = "GET"
             request.timeoutInterval = 25
-            request.setValue("Bearer \(auth.accessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue("codex-balance-menubar/1.0", forHTTPHeaderField: "User-Agent")
 
@@ -150,7 +188,13 @@ final class CodexUsageFetcher: @unchecked Sendable {
     }
 
     private func loadAuthContext() throws -> CodexAuthContext {
-        // `ca current` switches the real Codex login by replacing ~/.codex/auth.json.
+        // API/relay profiles selected by `ca s <alias>` are represented in config.toml.
+        // Detect them before reading ChatGPT OAuth tokens so Codex Balance follows ca.
+        if let api = readAPIContextFromConfig() {
+            return api
+        }
+
+        // `ca current` switches ChatGPT accounts by replacing ~/.codex/auth.json.
         // Read that file first so the menu bar always follows the account selected by ca.
         let currentAuthURL = codexHome.appendingPathComponent("auth.json")
         if let context = try? readAuthContext(from: currentAuthURL) {
@@ -185,9 +229,173 @@ final class CodexUsageFetcher: @unchecked Sendable {
         }
         let accountID = tokens["account_id"] as? String
         return CodexAuthContext(
+            kind: "chatgpt",
             accessToken: accessToken,
             alias: accountAlias(for: accountID),
-            accountID: accountID
+            accountID: accountID,
+            baseURL: nil
+        )
+    }
+
+    private func readAPIContextFromConfig() -> CodexAuthContext? {
+        let provider = currentModelProvider()
+        let providerBaseURL = provider.flatMap { baseURLForProvider($0) }
+        let topLevelBaseURL = currentOpenAIBaseURL()
+        let authMode = currentAuthMode()
+        let baseURL = providerBaseURL ?? topLevelBaseURL
+        let match = apiAccountFromRegistry(provider: provider, baseURL: baseURL)
+
+        if match != nil || authMode == "apikey" || providerBaseURL != nil || topLevelBaseURL != nil {
+            return CodexAuthContext(
+                kind: "api",
+                accessToken: nil,
+                alias: match?.alias,
+                accountID: nil,
+                baseURL: match?.baseURL ?? baseURL
+            )
+        }
+        return nil
+    }
+
+    private func currentModelProvider() -> String? {
+        let config = codexHome.appendingPathComponent("config.toml")
+        guard let lines = try? String(contentsOf: config, encoding: .utf8).components(separatedBy: .newlines) else { return nil }
+        var inTable = false
+        for line in lines {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("[") { inTable = true }
+            if inTable { continue }
+            if let value = tomlStringValue(line, key: "model_provider") { return value }
+        }
+        return nil
+    }
+
+    private func currentOpenAIBaseURL() -> String? {
+        let config = codexHome.appendingPathComponent("config.toml")
+        guard let lines = try? String(contentsOf: config, encoding: .utf8).components(separatedBy: .newlines) else { return nil }
+        var inTable = false
+        for line in lines {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("[") { inTable = true }
+            if inTable { continue }
+            if let value = tomlStringValue(line, key: "openai_base_url") { return normalizeBaseURL(value) }
+        }
+        return nil
+    }
+
+    private func baseURLForProvider(_ provider: String) -> String? {
+        let config = codexHome.appendingPathComponent("config.toml")
+        guard let lines = try? String(contentsOf: config, encoding: .utf8).components(separatedBy: .newlines) else { return nil }
+        var inTarget = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                let table = String(trimmed.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+                inTarget = table == "model_providers.\(provider)"
+                continue
+            }
+            if inTarget, let value = tomlStringValue(line, key: "base_url") {
+                return normalizeBaseURL(value)
+            }
+        }
+        return nil
+    }
+
+    private func currentAuthMode() -> String? {
+        let authURL = codexHome.appendingPathComponent("auth.json")
+        guard let data = try? Data(contentsOf: authURL),
+              let auth = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return auth["auth_mode"] as? String
+    }
+
+    private struct APIAccountMatch {
+        let alias: String?
+        let baseURL: String?
+    }
+
+    private func apiAccountFromRegistry(provider: String?, baseURL: String?) -> APIAccountMatch? {
+        let registryURL = acHome.appendingPathComponent("registry.json")
+        guard let data = try? Data(contentsOf: registryURL),
+              let registry = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accounts = registry["accounts"] as? [String: Any] else { return nil }
+        let activeAlias = registry["active_alias"] as? String
+        if let activeAlias,
+           let rec = accounts[activeAlias] as? [String: Any],
+           isAPIRecord(rec),
+           apiRecord(rec, matchesProvider: provider, baseURL: baseURL) {
+            return APIAccountMatch(alias: activeAlias, baseURL: normalizeBaseURL(rec["base_url"] as? String) ?? baseURL)
+        }
+        for (alias, raw) in accounts {
+            guard let rec = raw as? [String: Any], isAPIRecord(rec) else { continue }
+            if apiRecord(rec, matchesProvider: provider, baseURL: baseURL) {
+                return APIAccountMatch(alias: alias, baseURL: normalizeBaseURL(rec["base_url"] as? String) ?? baseURL)
+            }
+        }
+        return nil
+    }
+
+    private func isAPIRecord(_ rec: [String: Any]) -> Bool {
+        return rec["kind"] as? String == "api"
+    }
+
+    private func apiRecord(_ rec: [String: Any], matchesProvider provider: String?, baseURL: String?) -> Bool {
+        if let provider {
+            var ids: [String] = []
+            if let id = rec["provider_id"] as? String { ids.append(id) }
+            if let legacy = rec["legacy_provider_ids"] as? [String] { ids.append(contentsOf: legacy) }
+            if ids.contains(provider) { return true }
+        }
+        if let baseURL, let recBase = normalizeBaseURL(rec["base_url"] as? String), recBase == normalizeBaseURL(baseURL) {
+            return true
+        }
+        return false
+    }
+
+    private func tomlStringValue(_ line: String, key: String) -> String? {
+        let pattern = #"^\s*"# + NSRegularExpression.escapedPattern(for: key) + #"\s*=\s*[\"']([^\"']+)[\"']"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              let range = Range(match.range(at: 1), in: line) else { return nil }
+        return String(line[range])
+    }
+
+    private func normalizeBaseURL(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return String(value.drop { $0 == " " || $0 == "\t" }).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private func apiDisplayName(from baseURL: String?) -> String {
+        guard let baseURL, !baseURL.isEmpty else { return "API/中转" }
+        var display = baseURL
+        for prefix in ["https://", "http://"] {
+            if display.hasPrefix(prefix) { display.removeFirst(prefix.count) }
+        }
+        return "api:" + display
+    }
+
+    private func apiSummary(auth: CodexAuthContext) -> CodexUsageSummary {
+        return CodexUsageSummary(
+            title: "API / -",
+            email: apiDisplayName(from: auth.baseURL),
+            alias: auth.alias,
+            accountID: nil,
+            plan: "API",
+            allowed: true,
+            limitReached: false,
+            primaryUsed: nil,
+            primaryWindowSeconds: nil,
+            primaryResetAfterSeconds: nil,
+            primaryResetAt: nil,
+            secondaryUsed: nil,
+            secondaryWindowSeconds: nil,
+            secondaryResetAfterSeconds: nil,
+            secondaryResetAt: nil,
+            creditsBalance: nil,
+            creditsUnlimited: false,
+            resetCreditsAvailable: nil,
+            sparkPrimaryUsed: nil,
+            sparkSecondaryUsed: nil,
+            fetchedAt: Date(),
+            kind: "api",
+            baseURL: auth.baseURL
         )
     }
 
@@ -264,7 +472,9 @@ final class CodexUsageFetcher: @unchecked Sendable {
             resetCreditsAvailable: int(resetCredits["available_count"]),
             sparkPrimaryUsed: int(sparkPrimary?["used_percent"]),
             sparkSecondaryUsed: int(sparkSecondary?["used_percent"]),
-            fetchedAt: Date()
+            fetchedAt: Date(),
+            kind: "chatgpt",
+            baseURL: nil
         )
     }
 
@@ -328,16 +538,21 @@ final class UsageCardView: NSView {
         drawDivider(x: 138)
         drawDivider(x: 270)
 
-        drawColumn(icon: .timer, label: "剩余", value: percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
-        drawColumn(icon: .week, label: "剩余", value: percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
-        let credits = summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0")
+        drawColumn(icon: .timer, label: summary.isAPIAccount ? "API" : "剩余", value: summary.isAPIAccount ? "API" : percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
+        drawColumn(icon: .week, label: summary.isAPIAccount ? "中转" : "剩余", value: summary.isAPIAccount ? "—" : percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
+        let credits = summary.isAPIAccount ? "—" : (summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0"))
         drawColumn(icon: .none, label: "Credits", value: credits, x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
 
-        if let pReset = summary.primaryResetAfterSeconds {
-            drawResetBlock(seconds: pReset, timestamp: summary.primaryResetAt, x: 24)
-        }
-        if let sReset = summary.secondaryResetAfterSeconds {
-            drawResetBlock(seconds: sReset, timestamp: summary.secondaryResetAt, x: 156)
+        if summary.isAPIAccount {
+            drawText("无订阅额度", x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
+            drawText("由 API 计费", x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
+        } else {
+            if let pReset = summary.primaryResetAfterSeconds {
+                drawResetBlock(seconds: pReset, timestamp: summary.primaryResetAt, x: 24)
+            }
+            if let sReset = summary.secondaryResetAfterSeconds {
+                drawResetBlock(seconds: sReset, timestamp: summary.secondaryResetAt, x: 156)
+            }
         }
         let update = "更新 " + timeString(summary.fetchedAt)
         if let errorText {
@@ -489,17 +704,23 @@ final class CodexPanelViewController: NSViewController {
 
             let accountText = "账号 " + [summary.alias, summary.email].compactMap { $0 }.joined(separator: " · ")
             root.addSubview(label(accountText, x: 22, y: 176, width: 360, height: 18, size: 12, weight: .semibold, color: .labelColor))
-            root.addSubview(label("状态 \(summary.allowed && !summary.limitReached ? "可用" : "已到上限") · 套餐 \(summary.plan.uppercased())", x: 22, y: 154, width: 360, height: 16, size: 11, color: .secondaryLabelColor))
+            root.addSubview(label("状态 \(statusText(summary)) · 套餐 \(summary.plan.uppercased())", x: 22, y: 154, width: 360, height: 16, size: 11, color: .secondaryLabelColor))
 
-            addInfoRow(root, y: 124, title: "5 小时", value: usageLine(used: summary.primaryUsed, remaining: summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt))
-            addInfoRow(root, y: 94, title: "周额度", value: usageLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt))
-            let credits = summary.creditsUnlimited ? "无限" : (summary.creditsBalance ?? "未知")
-            let resetCredits = summary.resetCreditsAvailable.map { "重置券 \($0)" } ?? "重置券未知"
-            addInfoRow(root, y: 64, title: "Credits", value: credits, detail: resetCredits)
+            if summary.isAPIAccount {
+                addInfoRow(root, y: 124, title: "5 小时", value: "不适用", detail: "API/中转不提供 Codex 额度")
+                addInfoRow(root, y: 94, title: "周额度", value: "不适用", detail: "按 API 服务商计费")
+                addInfoRow(root, y: 64, title: "Credits", value: "不适用", detail: "无订阅重置券")
+            } else {
+                addInfoRow(root, y: 124, title: "5 小时", value: usageLine(used: summary.primaryUsed, remaining: summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt))
+                addInfoRow(root, y: 94, title: "周额度", value: usageLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt))
+                let credits = summary.creditsUnlimited ? "无限" : (summary.creditsBalance ?? "未知")
+                let resetCredits = summary.resetCreditsAvailable.map { "重置券 \($0)" } ?? "重置券未知"
+                addInfoRow(root, y: 64, title: "Credits", value: credits, detail: resetCredits)
 
-            if summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
-                let spark = "剩余 5h \(summary.sparkPrimaryRemaining.map { "\($0)%" } ?? "?") · 周 \(summary.sparkSecondaryRemaining.map { "\($0)%" } ?? "?")"
-                root.addSubview(label("Spark " + spark, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: .tertiaryLabelColor))
+                if summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
+                    let spark = "剩余 5h \(summary.sparkPrimaryRemaining.map { "\($0)%" } ?? "?") · 周 \(summary.sparkSecondaryRemaining.map { "\($0)%" } ?? "?")"
+                    root.addSubview(label("Spark " + spark, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: .tertiaryLabelColor))
+                }
             }
         } else {
             let loading = NSTextField(labelWithString: "正在读取 Codex 额度…")
@@ -552,6 +773,11 @@ final class CodexPanelViewController: NSViewController {
         field.alignment = alignment
         field.lineBreakMode = .byTruncatingMiddle
         return field
+    }
+
+    private func statusText(_ summary: CodexUsageSummary) -> String {
+        if summary.isAPIAccount { return "API/中转" }
+        return summary.allowed && !summary.limitReached ? "可用" : "已到上限"
     }
 
     private func usageLine(used: Int?, remaining: Int?) -> String {
@@ -885,6 +1111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func tooltip(for summary: CodexUsageSummary) -> String {
+        if summary.isAPIAccount {
+            return ["Codex 额度", "API/中转账号", summary.alias, summary.baseURL].compactMap { $0 }.joined(separator: "\n")
+        }
         var lines = ["Codex 额度", summary.email]
         if let p = summary.primaryRemaining { lines.append("5 小时剩余：\(p)%") }
         if let s = summary.secondaryRemaining { lines.append("7 天剩余：\(s)%") }

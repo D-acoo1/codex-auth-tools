@@ -985,39 +985,53 @@ def read_api_key_for_account(alias: str, rec: Dict[str, Any]) -> str:
     raise SystemExit(f"API 账号 {alias} 的 key 不可读取，请重新执行 add-api 或检查 helper。")
 
 
-def write_api_auth_json(key: str) -> None:
-    dest = DEFAULT_CODEX_HOME / "auth.json"
-    DEFAULT_CODEX_HOME.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": key}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except OSError:
-        pass
-    os.replace(tmp, dest)
-    try:
-        dest.chmod(0o600)
-    except OSError:
-        pass
+
+def api_provider_block(provider: str, rec: Dict[str, Any]) -> list[str]:
+    base_url = rec.get("base_url")
+    if not isinstance(base_url, str) or not base_url:
+        raise SystemExit(f"API 账号 {rec.get('alias') or provider} 缺少 base_url")
+    helper = rec.get("key_helper")
+    if not isinstance(helper, str) or not helper:
+        raise SystemExit(f"API 账号 {rec.get('alias') or provider} 缺少 key helper，请重新执行 add-api。")
+    name = rec.get("name") if isinstance(rec.get("name"), str) and rec.get("name") else provider
+    wire_api = rec.get("wire_api") if rec.get("wire_api") in {"responses", "chat"} else "responses"
+    return [
+        "",
+        f"[model_providers.{provider}]",
+        f"name = {json.dumps(name, ensure_ascii=False)}",
+        f"base_url = {json.dumps(base_url, ensure_ascii=False)}",
+        f"wire_api = {json.dumps(wire_api, ensure_ascii=False)}",
+        "",
+        f"[model_providers.{provider}.auth]",
+        f"command = {json.dumps(helper, ensure_ascii=False)}",
+        "timeout_ms = 5000",
+        "refresh_interval_ms = 300000",
+    ]
 
 
 def apply_api_profile(alias: str, rec: Dict[str, Any], reg: Dict[str, Any], no_backup: bool = False) -> Optional[Path]:
     base_url = rec.get("base_url")
     if not base_url:
         raise SystemExit(f"API 账号 {alias} 缺少 base_url")
+    provider = rec.get("provider_id") if isinstance(rec.get("provider_id"), str) and rec.get("provider_id") else sanitize_provider_id(alias)
     cfg = DEFAULT_CODEX_HOME / "config.toml"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     lines = cfg.read_text(encoding="utf-8").splitlines() if cfg.exists() else []
     bak = None if no_backup else backup_config("switch-api")
     if not no_backup:
         backup_current_auth("switch-api")
+    # Remove only provider blocks and top-level keys managed by codex-ac, then
+    # activate this API profile through Codex's model_provider mechanism. The
+    # API key stays in Keychain/private fallback and is read by the auth helper;
+    # it is never written to config.toml.
     lines = clear_managed_api_config(lines, reg)
     lines = remove_top_key(lines, "model_provider")
-    lines = set_top_key(lines, "openai_base_url", base_url)
+    lines = set_top_key(lines, "model_provider", provider)
     if rec.get("model"):
         lines = set_top_key(lines, "model", rec["model"])
     while lines and lines[-1] == "":
         lines.pop()
+    lines.extend(api_provider_block(provider, rec))
     tmp = cfg.with_suffix(".toml.tmp")
     tmp.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     os.replace(tmp, cfg)
@@ -1025,7 +1039,6 @@ def apply_api_profile(alias: str, rec: Dict[str, Any], reg: Dict[str, Any], no_b
         cfg.chmod(0o600)
     except OSError:
         pass
-    write_api_auth_json(read_api_key_for_account(alias, rec))
     return bak
 
 
