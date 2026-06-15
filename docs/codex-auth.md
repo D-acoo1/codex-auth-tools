@@ -55,7 +55,7 @@ Switching back to a ChatGPT login removes the managed API provider block and res
 ca s fox --skip-expiry-check
 ```
 
-Codex Balance detects this API/relay mode and shows it as an API account instead of trying to read ChatGPT subscription quota.
+Codex Balance detects this API or relay mode and shows it as an API account instead of trying to read ChatGPT subscription quota.
 
 ## Privacy model
 

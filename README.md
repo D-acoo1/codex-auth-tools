@@ -113,13 +113,15 @@ API keys are kept in Keychain or `~/.codex-ac/secrets`, not in `config.toml`. Co
 
 ## Usage endpoint
 
-Both tools use the current local Codex login to read usage data from:
+For ChatGPT subscription accounts, the tools use the current local Codex login to read usage data from:
 
 ```text
 https://chatgpt.com/backend-api/wham/usage
 ```
 
 The endpoint currently returns quota percentages, reset times, plan type, Credits, and additional rate limits such as Spark. It does not provide a reliable membership expiration date, so the tools do not display one.
+
+For API or relay accounts, Codex Balance shows API mode instead of calling the ChatGPT quota endpoint because subscription quota is not available for those accounts.
 
 ## Proxy
 
@@ -259,13 +261,15 @@ API key 会保存在 Keychain 或 `~/.codex-ac/secrets`，不会写进 `config.t
 
 ## 用量接口
 
-两个工具都使用当前本机 Codex 登录态读取用量：
+对于 ChatGPT 订阅账号，工具会使用当前本机 Codex 登录态读取用量：
 
 ```text
 https://chatgpt.com/backend-api/wham/usage
 ```
 
 这个接口目前会返回额度百分比、重置时间、套餐类型、Credits，以及 Spark 这类额外限制。它没有可靠的会员过期日字段，所以工具不会展示会员过期日。
+
+对于 API 或中转账号，Codex Balance 会显示 API 模式，不会调用 ChatGPT 订阅额度接口，因为这类账号没有订阅额度。
 
 ## 代理
 
