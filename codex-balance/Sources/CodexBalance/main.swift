@@ -1,6 +1,45 @@
 import AppKit
 import Foundation
 
+struct APIUsageSummary: Sendable {
+    var mode: String? = nil
+    var status: String? = nil
+    var valid: Bool? = nil
+    var unit: String? = nil
+    var remaining: Double? = nil
+    var balance: Double? = nil
+    var quotaLimit: Double? = nil
+    var quotaUsed: Double? = nil
+    var quotaRemaining: Double? = nil
+    var todayCost: Double? = nil
+    var todayActualCost: Double? = nil
+    var totalCost: Double? = nil
+    var totalActualCost: Double? = nil
+    var todayTokens: Int64? = nil
+    var totalTokens: Int64? = nil
+    var todayInputTokens: Int64? = nil
+    var todayOutputTokens: Int64? = nil
+    var totalInputTokens: Int64? = nil
+    var totalOutputTokens: Int64? = nil
+    var todayRequests: Int64? = nil
+    var totalRequests: Int64? = nil
+    var rpm: Int64? = nil
+    var tpm: Int64? = nil
+    var error: String? = nil
+
+    var displayRemaining: Double? {
+        quotaRemaining ?? remaining ?? balance
+    }
+
+    var displayTodayCost: Double? {
+        todayActualCost ?? todayCost
+    }
+
+    var displayTotalCost: Double? {
+        totalActualCost ?? totalCost
+    }
+}
+
 struct CodexUsageSummary: Sendable {
     var title: String
     var email: String
@@ -25,6 +64,7 @@ struct CodexUsageSummary: Sendable {
     var fetchedAt: Date
     var kind: String = "chatgpt"
     var baseURL: String? = nil
+    var apiUsage: APIUsageSummary? = nil
 
     var isAPIAccount: Bool { kind == "api" }
 
@@ -47,6 +87,32 @@ struct CodexUsageSummary: Sendable {
         if let v = baseURL { d["base_url"] = v }
         if let v = alias { d["alias"] = v }
         if let v = accountID { d["account_id"] = v }
+        if let usage = apiUsage {
+            if let v = usage.mode { d["api_mode"] = v }
+            if let v = usage.status { d["api_status"] = v }
+            if let v = usage.valid { d["api_valid"] = v }
+            if let v = usage.unit { d["api_unit"] = v }
+            if let v = usage.displayRemaining { d["api_remaining"] = v }
+            if let v = usage.balance { d["api_balance"] = v }
+            if let v = usage.quotaLimit { d["api_quota_limit"] = v }
+            if let v = usage.quotaUsed { d["api_quota_used"] = v }
+            if let v = usage.quotaRemaining { d["api_quota_remaining"] = v }
+            if let v = usage.todayActualCost { d["api_today_actual_cost"] = v }
+            if let v = usage.totalActualCost { d["api_total_actual_cost"] = v }
+            if let v = usage.todayCost { d["api_today_cost"] = v }
+            if let v = usage.totalCost { d["api_total_cost"] = v }
+            if let v = usage.todayTokens { d["api_today_tokens"] = v }
+            if let v = usage.totalTokens { d["api_total_tokens"] = v }
+            if let v = usage.todayInputTokens { d["api_today_input_tokens"] = v }
+            if let v = usage.todayOutputTokens { d["api_today_output_tokens"] = v }
+            if let v = usage.totalInputTokens { d["api_total_input_tokens"] = v }
+            if let v = usage.totalOutputTokens { d["api_total_output_tokens"] = v }
+            if let v = usage.todayRequests { d["api_today_requests"] = v }
+            if let v = usage.totalRequests { d["api_total_requests"] = v }
+            if let v = usage.rpm { d["api_rpm"] = v }
+            if let v = usage.tpm { d["api_tpm"] = v }
+            if let v = usage.error { d["api_usage_error"] = v }
+        }
         if let v = primaryUsed { d["primary_used_percent"] = v }
         if let v = primaryRemaining { d["primary_remaining_percent"] = v }
         if let v = primaryResetAfterSeconds { d["primary_reset_after_seconds"] = v }
@@ -94,6 +160,8 @@ private struct CodexAuthContext: Sendable {
     let alias: String?
     let accountID: String?
     let baseURL: String?
+    let keyHelper: String?
+    let usageURL: URL?
 
     var isAPIAccount: Bool { kind == "api" }
 }
@@ -130,9 +198,7 @@ final class CodexUsageFetcher: @unchecked Sendable {
         do {
             let auth = try loadAuthContext()
             if auth.isAPIAccount {
-                let summary = apiSummary(auth: auth)
-                writeState(summary.asDictionary())
-                completion(.success(summary))
+                fetchAPIUsage(auth: auth, completion: completion)
                 return
             }
             guard let accessToken = auth.accessToken, !accessToken.isEmpty else {
@@ -233,17 +299,21 @@ final class CodexUsageFetcher: @unchecked Sendable {
             accessToken: accessToken,
             alias: accountAlias(for: accountID),
             accountID: accountID,
-            baseURL: nil
+            baseURL: nil,
+            keyHelper: nil,
+            usageURL: nil
         )
     }
 
     private func readAPIContextFromConfig() -> CodexAuthContext? {
         let provider = currentModelProvider()
         let providerBaseURL = provider.flatMap { baseURLForProvider($0) }
+        let providerKeyHelper = provider.flatMap { authCommandForProvider($0) }
         let topLevelBaseURL = currentOpenAIBaseURL()
         let authMode = currentAuthMode()
         let baseURL = providerBaseURL ?? topLevelBaseURL
         let match = apiAccountFromRegistry(provider: provider, baseURL: baseURL)
+        let usageURL = match?.usageURL ?? defaultAPIUsageURL(from: match?.baseURL ?? baseURL)
 
         if match != nil || authMode == "apikey" || providerBaseURL != nil || topLevelBaseURL != nil {
             return CodexAuthContext(
@@ -251,7 +321,9 @@ final class CodexUsageFetcher: @unchecked Sendable {
                 accessToken: nil,
                 alias: match?.alias,
                 accountID: nil,
-                baseURL: match?.baseURL ?? baseURL
+                baseURL: match?.baseURL ?? baseURL,
+                keyHelper: match?.keyHelper ?? providerKeyHelper,
+                usageURL: usageURL
             )
         }
         return nil
@@ -299,6 +371,24 @@ final class CodexUsageFetcher: @unchecked Sendable {
         return nil
     }
 
+    private func authCommandForProvider(_ provider: String) -> String? {
+        let config = codexHome.appendingPathComponent("config.toml")
+        guard let lines = try? String(contentsOf: config, encoding: .utf8).components(separatedBy: .newlines) else { return nil }
+        var inTarget = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                let table = String(trimmed.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+                inTarget = table == "model_providers.\(provider).auth"
+                continue
+            }
+            if inTarget, let value = tomlStringValue(line, key: "command") {
+                return value
+            }
+        }
+        return nil
+    }
+
     private func currentAuthMode() -> String? {
         let authURL = codexHome.appendingPathComponent("auth.json")
         guard let data = try? Data(contentsOf: authURL),
@@ -309,6 +399,8 @@ final class CodexUsageFetcher: @unchecked Sendable {
     private struct APIAccountMatch {
         let alias: String?
         let baseURL: String?
+        let keyHelper: String?
+        let usageURL: URL?
     }
 
     private func apiAccountFromRegistry(provider: String?, baseURL: String?) -> APIAccountMatch? {
@@ -321,12 +413,14 @@ final class CodexUsageFetcher: @unchecked Sendable {
            let rec = accounts[activeAlias] as? [String: Any],
            isAPIRecord(rec),
            apiRecord(rec, matchesProvider: provider, baseURL: baseURL) {
-            return APIAccountMatch(alias: activeAlias, baseURL: normalizeBaseURL(rec["base_url"] as? String) ?? baseURL)
+            let recBaseURL = normalizeBaseURL(rec["base_url"] as? String) ?? baseURL
+            return APIAccountMatch(alias: activeAlias, baseURL: recBaseURL, keyHelper: rec["key_helper"] as? String, usageURL: usageURL(from: rec, baseURL: recBaseURL))
         }
         for (alias, raw) in accounts {
             guard let rec = raw as? [String: Any], isAPIRecord(rec) else { continue }
             if apiRecord(rec, matchesProvider: provider, baseURL: baseURL) {
-                return APIAccountMatch(alias: alias, baseURL: normalizeBaseURL(rec["base_url"] as? String) ?? baseURL)
+                let recBaseURL = normalizeBaseURL(rec["base_url"] as? String) ?? baseURL
+                return APIAccountMatch(alias: alias, baseURL: recBaseURL, keyHelper: rec["key_helper"] as? String, usageURL: usageURL(from: rec, baseURL: recBaseURL))
             }
         }
         return nil
@@ -347,6 +441,21 @@ final class CodexUsageFetcher: @unchecked Sendable {
             return true
         }
         return false
+    }
+
+    private func usageURL(from rec: [String: Any], baseURL: String?) -> URL? {
+        if let raw = rec["usage_url"] as? String,
+           let url = URL(string: raw),
+           let scheme = url.scheme?.lowercased(),
+           ["http", "https"].contains(scheme) {
+            return url
+        }
+        return defaultAPIUsageURL(from: baseURL)
+    }
+
+    private func defaultAPIUsageURL(from baseURL: String?) -> URL? {
+        guard let baseURL = normalizeBaseURL(baseURL) else { return nil }
+        return URL(string: baseURL + "/usage")
     }
 
     private func tomlStringValue(_ line: String, key: String) -> String? {
@@ -371,9 +480,92 @@ final class CodexUsageFetcher: @unchecked Sendable {
         return "api:" + display
     }
 
-    private func apiSummary(auth: CodexAuthContext) -> CodexUsageSummary {
+    private func fetchAPIUsage(auth: CodexAuthContext, completion: @escaping @Sendable (Result<CodexUsageSummary, UsageError>) -> Void) {
+        guard let usageURL = auth.usageURL, let keyHelper = auth.keyHelper, !keyHelper.isEmpty else {
+            let usage = APIUsageSummary(error: "未配置中转用量接口或 key helper")
+            let summary = apiSummary(auth: auth, apiUsage: usage)
+            writeState(summary.asDictionary())
+            completion(.success(summary))
+            return
+        }
+
+        let apiKey: String
+        do {
+            apiKey = try readAPIKey(command: keyHelper)
+        } catch {
+            let usage = APIUsageSummary(error: "API key 不可读取")
+            let summary = apiSummary(auth: auth, apiUsage: usage)
+            writeState(summary.asDictionary())
+            completion(.success(summary))
+            return
+        }
+
+        var request = URLRequest(url: usageURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 12
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("codex-balance-menubar/1.0", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let usage: APIUsageSummary
+            if let error = error {
+                usage = APIUsageSummary(error: error.localizedDescription)
+            } else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                if (200..<300).contains(status) {
+                    usage = (try? self.parseAPIUsage(data ?? Data())) ?? APIUsageSummary(error: "中转用量数据格式不符合预期")
+                } else {
+                    usage = APIUsageSummary(error: "中转用量接口返回 \(status)：\(body.prefix(80))")
+                }
+            }
+            let summary = self.apiSummary(auth: auth, apiUsage: usage)
+            self.writeState(summary.asDictionary())
+            completion(.success(summary))
+        }.resume()
+    }
+
+    private func readAPIKey(command: String) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            process.waitUntilExit()
+            semaphore.signal()
+        }
+        if semaphore.wait(timeout: .now() + 5) == .timedOut {
+            process.terminate()
+            throw UsageError.network("API key helper 超时")
+        }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0,
+              let key = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty else {
+            throw UsageError.missingToken
+        }
+        return key
+    }
+
+    private func apiSummary(auth: CodexAuthContext, apiUsage: APIUsageSummary?) -> CodexUsageSummary {
+        let title: String
+        if let apiUsage, apiUsage.error == nil {
+            let balance = formatAPIAmount(apiUsage.displayRemaining, unit: apiUsage.unit)
+            let tokens = compactNumber(apiUsage.todayTokens ?? apiUsage.totalTokens)
+            title = "API \(balance) / \(tokens)"
+        } else {
+            title = "API / -"
+        }
         return CodexUsageSummary(
-            title: "API / -",
+            title: title,
             email: apiDisplayName(from: auth.baseURL),
             alias: auth.alias,
             accountID: nil,
@@ -395,7 +587,8 @@ final class CodexUsageFetcher: @unchecked Sendable {
             sparkSecondaryUsed: nil,
             fetchedAt: Date(),
             kind: "api",
-            baseURL: auth.baseURL
+            baseURL: auth.baseURL,
+            apiUsage: apiUsage
         )
     }
 
@@ -415,6 +608,44 @@ final class CodexUsageFetcher: @unchecked Sendable {
         return b64.replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+
+    private func parseAPIUsage(_ data: Data) throws -> APIUsageSummary {
+        guard let rawRoot = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw UsageError.badJSON
+        }
+        let root = (rawRoot["data"] as? [String: Any]) ?? rawRoot
+        let quota = root["quota"] as? [String: Any]
+        let usage = root["usage"] as? [String: Any]
+        let today = usage?["today"] as? [String: Any]
+        let total = usage?["total"] as? [String: Any]
+
+        return APIUsageSummary(
+            mode: root["mode"] as? String,
+            status: root["status"] as? String,
+            valid: bool(root["isValid"]) ?? bool(root["is_valid"]),
+            unit: (quota?["unit"] as? String) ?? (root["unit"] as? String),
+            remaining: double(root["remaining"]),
+            balance: double(root["balance"]),
+            quotaLimit: double(quota?["limit"]),
+            quotaUsed: double(quota?["used"]),
+            quotaRemaining: double(quota?["remaining"]),
+            todayCost: double(today?["cost"]),
+            todayActualCost: double(today?["actual_cost"]) ?? double(root["today_actual_cost"]),
+            totalCost: double(total?["cost"]),
+            totalActualCost: double(total?["actual_cost"]) ?? double(root["total_actual_cost"]),
+            todayTokens: int64(today?["total_tokens"]) ?? int64(root["today_tokens"]),
+            totalTokens: int64(total?["total_tokens"]) ?? int64(root["total_tokens"]),
+            todayInputTokens: int64(today?["input_tokens"]),
+            todayOutputTokens: int64(today?["output_tokens"]),
+            totalInputTokens: int64(total?["input_tokens"]),
+            totalOutputTokens: int64(total?["output_tokens"]),
+            todayRequests: int64(today?["requests"]) ?? int64(root["today_requests"]),
+            totalRequests: int64(total?["requests"]) ?? int64(root["total_requests"]),
+            rpm: int64(usage?["rpm"]) ?? int64(root["rpm"]),
+            tpm: int64(usage?["tpm"]) ?? int64(root["tpm"]),
+            error: nil
+        )
     }
 
     private func parseUsage(_ data: Data, auth: CodexAuthContext) throws -> CodexUsageSummary {
@@ -485,6 +716,14 @@ final class CodexUsageFetcher: @unchecked Sendable {
         return nil
     }
 
+    private func int64(_ value: Any?) -> Int64? {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) }
+        return nil
+    }
+
     private func double(_ value: Any?) -> Double? {
         if let value = value as? Double { return value }
         if let value = value as? NSNumber { return value.doubleValue }
@@ -497,6 +736,39 @@ final class CodexUsageFetcher: @unchecked Sendable {
         if let value = value as? NSNumber { return value.boolValue }
         if let value = value as? String { return ["true", "1", "yes"].contains(value.lowercased()) }
         return nil
+    }
+
+    private func formatAPIAmount(_ value: Double?, unit: String?) -> String {
+        guard let value else { return "—" }
+        if value < 0 { return "无限" }
+        let absValue = abs(value)
+        let decimals = absValue >= 100 ? 1 : (absValue >= 1 ? 2 : 4)
+        let number = String(format: "%.\(decimals)f", value)
+        switch (unit ?? "").uppercased() {
+        case "USD", "$":
+            return "$" + number
+        case "CNY", "RMB", "¥":
+            return "¥" + number
+        case "":
+            return number
+        default:
+            return number + " " + (unit ?? "")
+        }
+    }
+
+    private func compactNumber(_ value: Int64?) -> String {
+        guard let value else { return "—" }
+        let number = Double(value)
+        if value >= 1_000_000_000 {
+            return String(format: "%.1fB", number / 1_000_000_000)
+        }
+        if value >= 1_000_000 {
+            return String(format: "%.1fM", number / 1_000_000)
+        }
+        if value >= 1_000 {
+            return String(format: "%.1fK", number / 1_000)
+        }
+        return "\(value)"
     }
 
     private func writeState(_ dictionary: [String: Any]) {
@@ -538,15 +810,18 @@ final class UsageCardView: NSView {
         drawDivider(x: 138)
         drawDivider(x: 270)
 
-        drawColumn(icon: .timer, label: summary.isAPIAccount ? "API" : "剩余", value: summary.isAPIAccount ? "API" : percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
-        drawColumn(icon: .week, label: summary.isAPIAccount ? "中转" : "剩余", value: summary.isAPIAccount ? "—" : percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
-        let credits = summary.isAPIAccount ? "—" : (summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0"))
-        drawColumn(icon: .none, label: "Credits", value: credits, x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
-
         if summary.isAPIAccount {
-            drawText("无订阅额度", x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
-            drawText("由 API 计费", x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
+            let api = summary.apiUsage
+            drawColumn(icon: .none, label: "余额", value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
+            drawColumn(icon: .none, label: "今日费用", value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
+            drawColumn(icon: .none, label: "今日 Tokens", value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
+            drawText("累计 " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
+            drawText("累计 " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
         } else {
+            drawColumn(icon: .timer, label: "剩余", value: percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
+            drawColumn(icon: .week, label: "剩余", value: percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
+            let credits = summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0")
+            drawColumn(icon: .none, label: "Credits", value: credits, x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
             if let pReset = summary.primaryResetAfterSeconds {
                 drawResetBlock(seconds: pReset, timestamp: summary.primaryResetAt, x: 24)
             }
@@ -644,6 +919,33 @@ final class UsageCardView: NSView {
         value.map { "\($0)%" } ?? "?"
     }
 
+    private func apiAmount(_ value: Double?, unit: String?) -> String {
+        guard let value else { return "—" }
+        if value < 0 { return "无限" }
+        let absValue = abs(value)
+        let decimals = absValue >= 100 ? 1 : (absValue >= 1 ? 2 : 4)
+        let number = String(format: "%.\(decimals)f", value)
+        switch (unit ?? "").uppercased() {
+        case "USD", "$":
+            return "$" + number
+        case "CNY", "RMB", "¥":
+            return "¥" + number
+        case "":
+            return number
+        default:
+            return number + " " + (unit ?? "")
+        }
+    }
+
+    private func compactNumber(_ value: Int64?) -> String {
+        guard let value else { return "—" }
+        let number = Double(value)
+        if value >= 1_000_000_000 { return String(format: "%.1fB", number / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.1fM", number / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.1fK", number / 1_000) }
+        return "\(value)"
+    }
+
     private func drawText(_ text: String, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, font: NSFont, color: NSColor, alignment: NSTextAlignment = .left) {
         let style = NSMutableParagraphStyle()
         style.alignment = alignment
@@ -707,9 +1009,12 @@ final class CodexPanelViewController: NSViewController {
             root.addSubview(label("状态 \(statusText(summary)) · 套餐 \(summary.plan.uppercased())", x: 22, y: 154, width: 360, height: 16, size: 11, color: .secondaryLabelColor))
 
             if summary.isAPIAccount {
-                addInfoRow(root, y: 124, title: "5 小时", value: "不适用", detail: "API/中转不提供 Codex 额度")
-                addInfoRow(root, y: 94, title: "周额度", value: "不适用", detail: "按 API 服务商计费")
-                addInfoRow(root, y: 64, title: "Credits", value: "不适用", detail: "无订阅重置券")
+                let api = summary.apiUsage
+                addInfoRow(root, y: 124, title: "余额", value: apiAmount(api?.displayRemaining, unit: api?.unit), detail: quotaDetail(api))
+                addInfoRow(root, y: 94, title: "费用", value: "今日 " + apiAmount(api?.displayTodayCost, unit: api?.unit), detail: "累计 " + apiAmount(api?.displayTotalCost, unit: api?.unit))
+                addInfoRow(root, y: 64, title: "Tokens", value: "今日 " + compactNumber(api?.todayTokens), detail: "累计 " + compactNumber(api?.totalTokens))
+                let detail = apiDetailLine(api)
+                root.addSubview(label(detail, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: api?.error == nil ? .tertiaryLabelColor : .systemOrange))
             } else {
                 addInfoRow(root, y: 124, title: "5 小时", value: usageLine(used: summary.primaryUsed, remaining: summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt))
                 addInfoRow(root, y: 94, title: "周额度", value: usageLine(used: summary.secondaryUsed, remaining: summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt))
@@ -778,6 +1083,49 @@ final class CodexPanelViewController: NSViewController {
     private func statusText(_ summary: CodexUsageSummary) -> String {
         if summary.isAPIAccount { return "API/中转" }
         return summary.allowed && !summary.limitReached ? "可用" : "已到上限"
+    }
+
+    private func apiAmount(_ value: Double?, unit: String?) -> String {
+        guard let value else { return "—" }
+        if value < 0 { return "无限" }
+        let absValue = abs(value)
+        let decimals = absValue >= 100 ? 1 : (absValue >= 1 ? 2 : 4)
+        let number = String(format: "%.\(decimals)f", value)
+        switch (unit ?? "").uppercased() {
+        case "USD", "$":
+            return "$" + number
+        case "CNY", "RMB", "¥":
+            return "¥" + number
+        case "":
+            return number
+        default:
+            return number + " " + (unit ?? "")
+        }
+    }
+
+    private func compactNumber(_ value: Int64?) -> String {
+        guard let value else { return "—" }
+        let number = Double(value)
+        if value >= 1_000_000_000 { return String(format: "%.1fB", number / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.1fM", number / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.1fK", number / 1_000) }
+        return "\(value)"
+    }
+
+    private func quotaDetail(_ api: APIUsageSummary?) -> String {
+        guard let api else { return "中转用量未知" }
+        if let limit = api.quotaLimit {
+            return "限额 " + apiAmount(limit, unit: api.unit) + " · 已用 " + apiAmount(api.quotaUsed, unit: api.unit)
+        }
+        if api.balance != nil { return "钱包余额" }
+        return api.mode ?? "中转用量"
+    }
+
+    private func apiDetailLine(_ api: APIUsageSummary?) -> String {
+        if let error = api?.error { return "中转用量读取失败：" + error }
+        let todayIO = "输入 " + compactNumber(api?.todayInputTokens) + " · 输出 " + compactNumber(api?.todayOutputTokens)
+        let requests = api?.todayRequests.map { " · 今日请求 \($0)" } ?? ""
+        return todayIO + requests
     }
 
     private func usageLine(used: Int?, remaining: Int?) -> String {
@@ -849,18 +1197,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc private func refresh(_ sender: Any?) {
-        updateStatusButton(title: lastSummary?.title ?? "5h … / 7d …")
+        if let lastSummary {
+            updateStatusButton(summary: lastSummary)
+        } else {
+            updateStatusButton(title: "5h … / 7d …")
+        }
         fetcher.fetch { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let summary):
                     self?.lastSummary = summary
                     self?.lastError = nil
-                    self?.updateStatusButton(title: summary.title)
+                    self?.updateStatusButton(summary: summary)
                     self?.statusItem.button?.toolTip = self?.tooltip(for: summary)
                 case .failure(let error):
                     self?.lastError = error.description
-                    self?.updateStatusButton(title: self?.lastSummary?.title ?? "5h ? / 7d ?")
+                    if let summary = self?.lastSummary {
+                        self?.updateStatusButton(summary: summary)
+                    } else {
+                        self?.updateStatusButton(title: "5h ? / 7d ?")
+                    }
                     self?.statusItem.button?.toolTip = "Codex 额度读取失败：\(error.description)"
                 }
                 if self?.popover.isShown == true {
@@ -940,6 +1296,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         button.attributedTitle = statusAttributedTitle(from: title)
     }
 
+    private func updateStatusButton(summary: CodexUsageSummary) {
+        guard let button = statusItem.button else { return }
+        button.image = nil
+        button.attributedTitle = summary.isAPIAccount ? apiStatusAttributedTitle(summary) : statusAttributedTitle(from: summary.title)
+    }
+
     private func statusAttributedTitle(from title: String) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let bodyFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
@@ -951,6 +1313,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         appendSymbol("week", to: result)
         result.append(NSAttributedString(string: " \(parsed.secondary)", attributes: attrs))
         return result
+    }
+
+    private func apiStatusAttributedTitle(_ summary: CodexUsageSummary) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let bodyFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        let attrs: [NSAttributedString.Key: Any] = [.font: bodyFont, .foregroundColor: NSColor.labelColor]
+        let api = summary.apiUsage
+        appendSymbol("money", to: result)
+        result.append(NSAttributedString(string: " \(apiAmount(api?.displayRemaining, unit: api?.unit)) / T \(compactNumber(api?.todayTokens ?? api?.totalTokens))", attributes: attrs))
+        return result
+    }
+
+    private func apiAmount(_ value: Double?, unit: String?) -> String {
+        guard let value else { return "—" }
+        if value < 0 { return "无限" }
+        let absValue = abs(value)
+        let decimals = absValue >= 100 ? 1 : (absValue >= 1 ? 2 : 4)
+        let number = String(format: "%.\(decimals)f", value)
+        switch (unit ?? "").uppercased() {
+        case "USD", "$":
+            return "$" + number
+        case "CNY", "RMB", "¥":
+            return "¥" + number
+        case "":
+            return number
+        default:
+            return number + " " + (unit ?? "")
+        }
+    }
+
+    private func compactNumber(_ value: Int64?) -> String {
+        guard let value else { return "—" }
+        let number = Double(value)
+        if value >= 1_000_000_000 { return String(format: "%.1fB", number / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.1fM", number / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.1fK", number / 1_000) }
+        return "\(value)"
     }
 
     private func parseStatusTitle(_ title: String) -> (primary: String, secondary: String) {
@@ -967,6 +1366,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let image: NSImage?
         if name == "week" {
             image = statusWeekIcon()
+        } else if name == "money", let symbol = NSImage(systemSymbolName: "dollarsign.circle", accessibilityDescription: nil) {
+            symbol.isTemplate = true
+            symbol.size = NSSize(width: 13, height: 13)
+            image = symbol
         } else if let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil) {
             symbol.isTemplate = true
             symbol.size = NSSize(width: 13, height: 13)
@@ -981,7 +1384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             attachment.bounds = NSRect(x: 0, y: -2, width: 13, height: 13)
             result.append(NSAttributedString(attachment: attachment))
         } else {
-            result.append(NSAttributedString(string: name == "timer" ? "⏱" : "7"))
+            result.append(NSAttributedString(string: name == "timer" ? "⏱" : (name == "money" ? "$" : "7")))
         }
     }
 
@@ -1112,7 +1515,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func tooltip(for summary: CodexUsageSummary) -> String {
         if summary.isAPIAccount {
-            return ["Codex 额度", "API/中转账号", summary.alias, summary.baseURL].compactMap { $0 }.joined(separator: "\n")
+            var lines = ["Codex 额度", "API/中转账号"]
+            if let alias = summary.alias { lines.append(alias) }
+            if let baseURL = summary.baseURL { lines.append(baseURL) }
+            if let usage = summary.apiUsage, usage.error == nil {
+                lines.append("余额：\(apiAmount(usage.displayRemaining, unit: usage.unit))")
+                lines.append("今日费用：\(apiAmount(usage.displayTodayCost, unit: usage.unit))")
+                lines.append("今日 Tokens：\(compactNumber(usage.todayTokens))")
+            }
+            return lines.joined(separator: "\n")
         }
         var lines = ["Codex 额度", summary.email]
         if let p = summary.primaryRemaining { lines.append("5 小时剩余：\(p)%") }

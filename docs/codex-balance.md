@@ -16,17 +16,25 @@ For API or relay accounts selected by `ca s <alias>`:
 
 1. Read the active provider from `~/.codex/config.toml`.
 2. Match it to the API account in `~/.codex-ac/registry.json`.
-3. Show API mode in the status bar and popover instead of calling the ChatGPT quota endpoint.
-4. Never read or display the API key.
+3. Read the API key through the private helper command.
+4. Fetch the relay usage endpoint, defaulting to `<base-url>/usage`.
+5. Render relay balance, cost, token usage, and request count when the endpoint supports them.
+6. Never display the API key.
+
+For sub2api-compatible relays, `https://relay.example.com/v1` maps to:
+
+```text
+GET https://relay.example.com/v1/usage
+```
 
 ## UI rules
 
 - The menu bar title shows only the 5-hour quota icon and weekly quota icon with remaining percentages.
 - For ChatGPT accounts, the popover shows account alias/email, plan, status, 5-hour quota, weekly quota, Credits, Spark remaining quota, reset countdown, and reset time.
-- For API or relay accounts, the popover shows API mode and the configured provider/base URL instead of subscription quota.
+- For API or relay accounts, the popover shows remaining balance or quota, today's cost, total cost, today's tokens, total tokens, and provider/base URL.
 - Refresh and usage-page buttons do not close the popover.
 - Clicking outside the popover closes it.
-- Token consumption totals are intentionally not shown because they come from local thread history rather than the server quota API.
+- Token consumption totals are shown only for API relay accounts when the relay usage endpoint provides them.
 - Membership expiration is intentionally not shown because the current usage endpoint does not expose a reliable field for it.
 
 ## Refresh behavior

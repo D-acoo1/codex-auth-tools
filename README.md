@@ -50,6 +50,13 @@ Codex Balance is a lightweight macOS status bar app. It reads the active Codex O
 
 It refreshes every 30 seconds. Opening the popover or clicking refresh updates immediately. If you switch accounts with `ca s <alias>`, the widget follows the new `~/.codex/auth.json` on the next refresh.
 
+When the active account is an API relay profile, Codex Balance reads the relay usage endpoint and displays:
+
+- remaining balance or quota
+- today's cost and total cost
+- today's token usage and total token usage
+- request count and input/output token split when available
+
 ### Build and install
 
 ```bash
@@ -109,7 +116,13 @@ ca s relay
 ca s <chatgpt-alias> --skip-expiry-check
 ```
 
-API keys are kept in Keychain or `~/.codex-ac/secrets`, not in `config.toml`. Codex Balance shows API or relay mode as API usage because ChatGPT subscription quota is not available for those accounts.
+API keys are kept in Keychain or `~/.codex-ac/secrets`, not in `config.toml`. For sub2api-compatible relays, Codex Balance reads `GET <base-url>/usage`; for example, `https://relay.example.com/v1` maps to `https://relay.example.com/v1/usage`.
+
+If a relay uses a different usage endpoint:
+
+```bash
+printf 'sk-...' | ca add-api relay --base-url https://relay.example.com/v1 --usage-url https://relay.example.com/v1/usage --model gpt-5-codex
+```
 
 ## Usage endpoint
 
@@ -121,7 +134,13 @@ https://chatgpt.com/backend-api/wham/usage
 
 The endpoint currently returns quota percentages, reset times, plan type, Credits, and additional rate limits such as Spark. It does not provide a reliable membership expiration date, so the tools do not display one.
 
-For API or relay accounts, Codex Balance shows API mode instead of calling the ChatGPT quota endpoint because subscription quota is not available for those accounts.
+For API or relay accounts, Codex Balance does not call the ChatGPT quota endpoint. It calls the relay usage endpoint with the saved API key when available. sub2api-compatible relays expose this as:
+
+```text
+GET /v1/usage
+```
+
+The response can include balance, quota, today's cost, total cost, today's tokens, total tokens, request count, and input/output token split.
 
 ## Proxy
 
@@ -198,6 +217,13 @@ Codex Balance 是一个轻量的 macOS 状态栏应用。它读取当前 Codex O
 
 它每 30 秒自动刷新一次。打开面板或点击刷新会立即更新。如果使用 `ca s <alias>` 切换账号，控件会在下一次刷新时跟随新的 `~/.codex/auth.json`。
 
+当前账号是 API 中转配置时，Codex Balance 会读取中转用量接口，并展示：
+
+- 余额或剩余额度
+- 今日费用和累计费用
+- 今日 token 用量和累计 token 用量
+- 可用时展示请求数、输入 token 和输出 token
+
 ### 构建和安装
 
 ```bash
@@ -257,7 +283,13 @@ ca s relay
 ca s <chatgpt-alias> --skip-expiry-check
 ```
 
-API key 会保存在 Keychain 或 `~/.codex-ac/secrets`，不会写进 `config.toml`。Codex Balance 会把 API 或中转模式显示为 API 账号，因为这类账号没有 ChatGPT 订阅额度。
+API key 会保存在 Keychain 或 `~/.codex-ac/secrets`，不会写进 `config.toml`。对于兼容 sub2api 的中转，Codex Balance 会读取 `GET <base-url>/usage`；例如 `https://relay.example.com/v1` 会对应 `https://relay.example.com/v1/usage`。
+
+如果中转使用不同的用量接口：
+
+```bash
+printf 'sk-...' | ca add-api relay --base-url https://relay.example.com/v1 --usage-url https://relay.example.com/v1/usage --model gpt-5-codex
+```
 
 ## 用量接口
 
@@ -269,7 +301,13 @@ https://chatgpt.com/backend-api/wham/usage
 
 这个接口目前会返回额度百分比、重置时间、套餐类型、Credits，以及 Spark 这类额外限制。它没有可靠的会员过期日字段，所以工具不会展示会员过期日。
 
-对于 API 或中转账号，Codex Balance 会显示 API 模式，不会调用 ChatGPT 订阅额度接口，因为这类账号没有订阅额度。
+对于 API 或中转账号，Codex Balance 不会调用 ChatGPT 订阅额度接口。它会在可用时使用保存的 API key 调用中转用量接口。兼容 sub2api 的中转接口是：
+
+```text
+GET /v1/usage
+```
+
+返回内容可包含余额、额度、今日费用、累计费用、今日 token、累计 token、请求数，以及输入和输出 token 拆分。
 
 ## 代理
 

@@ -970,6 +970,17 @@ def read_key_from_user() -> str:
     return key
 
 
+def normalize_usage_url(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if not re.match(r"^https?://", value, re.I):
+        raise SystemExit("--usage-url 必须是 http(s) 完整地址")
+    return value.rstrip("/")
+
+
 def read_api_key_for_account(alias: str, rec: Dict[str, Any]) -> str:
     helper = rec.get("key_helper")
     if helper and Path(helper).exists():
@@ -1064,6 +1075,7 @@ def clear_api_config_for_chatgpt(reg: Dict[str, Any], no_backup: bool = False) -
 def cmd_add_api(args: argparse.Namespace) -> int:
     alias = validate_alias(args.alias)
     provider = sanitize_provider_id(args.provider or alias)
+    usage_url = normalize_usage_url(args.usage_url)
     reg = load_registry()
     if alias in reg.get("accounts", {}) and not args.force:
         raise SystemExit(f"别名已存在：{alias}。如需覆盖，加 --force。")
@@ -1084,6 +1096,7 @@ def cmd_add_api(args: argparse.Namespace) -> int:
         "wire_api": args.wire_api,
         "model": args.model,
         "name": args.name or alias,
+        "usage_url": usage_url,
         "plan": "API",
         "source": "api-relay",
         "key_service": service,
@@ -1099,6 +1112,8 @@ def cmd_add_api(args: argparse.Namespace) -> int:
     print(f"已添加 API/中转账号：{alias}")
     print(f"provider={provider}")
     print(f"base_url={args.base_url}")
+    if usage_url:
+        print(f"usage_url={usage_url}")
     if args.reuse_key:
         print("API key 将复用已存在的 Keychain/fallback helper，未写入 config.toml。")
     else:
@@ -1621,6 +1636,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("add-api", help="添加 API key / 中转域名账号，不写 key 到 config.toml")
     sp.add_argument("alias")
     sp.add_argument("--base-url", required=True, help="OpenAI-compatible base URL，例如 https://codeapi.example.com/v1")
+    sp.add_argument("--usage-url", help="可选：中转用量接口完整地址；默认由 base-url 拼出 /usage，例如 https://relay.example.com/v1/usage")
     sp.add_argument("--provider", help="Codex model_provider id；默认用 alias")
     sp.add_argument("--model", help="切换时同时设置 model；不传则保留当前 model")
     sp.add_argument("--wire-api", default="responses", choices=["responses", "chat"], help="Codex provider wire_api，默认 responses")

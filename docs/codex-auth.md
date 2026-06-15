@@ -33,6 +33,12 @@ ca current
 ca ll --cached --alias
 ```
 
+For sub2api-compatible relays, Codex Balance automatically reads `GET <base-url>/usage`. If the relay uses a different endpoint, store it with the profile:
+
+```bash
+printf 'sk-...' | ca add-api relay --base-url https://relay.example.com/v1 --usage-url https://relay.example.com/v1/usage --model gpt-5-codex
+```
+
 When an API profile is active, `ca` writes a managed `model_provider` block to `~/.codex/config.toml`:
 
 ```toml
