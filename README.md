@@ -13,10 +13,24 @@ This repository contains two tools:
 
 The tools read local Codex login state from `~/.codex`. They do **not** include any account, token, cookie, or personal cache data.
 
+## Screenshots / 截图
+
+Status bar / 状态栏：
+
+![Codex Balance status bar](assets/status-bar.png)
+
+Popover sample / 面板示例：
+
+![Codex Balance popover sample](assets/popover-sample.png)
+
+The popover screenshot is generated with sample data and contains no real account information.
+面板截图使用示例数据重新生成，不包含真实账号信息。
+
 ## Repository layout
 
 ```text
 codex-auth-tools/
+  assets/                 # README images with sample data only
   codex-balance/          # Swift/AppKit menu bar widget
   codex-auth/             # ca / codex-ac account manager
   docs/                   # detailed docs
@@ -138,6 +152,7 @@ MIT.
 
 ```text
 codex-auth-tools/
+  assets/                 # README 示例图，不包含真实账号信息
   codex-balance/          # Swift/AppKit 状态栏控件
   codex-auth/             # ca / codex-ac 账号管理工具
   docs/                   # 详细文档
