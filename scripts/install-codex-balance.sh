@@ -44,6 +44,24 @@ cat > "$PLIST" <<PLIST
 </plist>
 PLIST
 
+while IFS= read -r candidate_plist; do
+  if [[ "$candidate_plist" == "$PLIST" ]]; then
+    continue
+  fi
+
+  candidate_bin="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$candidate_plist" 2>/dev/null || true)"
+  if [[ "$candidate_bin" != "$BIN" ]]; then
+    continue
+  fi
+
+  candidate_label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$candidate_plist" 2>/dev/null || true)"
+  if [[ -n "$candidate_label" ]]; then
+    launchctl bootout "gui/$(id -u)/$candidate_label" 2>/dev/null || true
+  fi
+  launchctl bootout "gui/$(id -u)" "$candidate_plist" 2>/dev/null || true
+  rm -f "$candidate_plist"
+done < <(find "$HOME/Library/LaunchAgents" -maxdepth 1 -type f \( -iname '*codex*balance*.plist' -o -iname '*CodexBalance*.plist' \) -print 2>/dev/null)
+
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl kickstart -k "gui/$(id -u)/$LABEL" || true
