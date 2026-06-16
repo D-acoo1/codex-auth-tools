@@ -784,12 +784,104 @@ final class CodexUsageFetcher: @unchecked Sendable {
 }
 
 final class UsageCardView: NSView {
+    enum TrainKind {
+        case steam
+        case bullet
+        case metro
+        case freight
+    }
+
+    struct TrainStyle {
+        let kind: TrainKind
+        let locomotiveBody: NSColor
+        let locomotiveCab: NSColor
+        let carA: NSColor
+        let carB: NSColor
+        let window: NSColor
+        let headlight: NSColor
+        let outline: NSColor
+        let groove: NSColor
+        let coupler: NSColor
+        let accent: NSColor
+    }
+
+    static let trainStyles: [TrainStyle] = [
+        TrainStyle(
+            kind: .steam,
+            locomotiveBody: NSColor(calibratedRed: 0.07, green: 0.10, blue: 0.09, alpha: 0.98),
+            locomotiveCab: NSColor(calibratedRed: 0.17, green: 0.23, blue: 0.19, alpha: 0.98),
+            carA: NSColor(calibratedRed: 0.76, green: 0.66, blue: 0.43, alpha: 0.96),
+            carB: NSColor(calibratedRed: 0.45, green: 0.34, blue: 0.22, alpha: 0.96),
+            window: NSColor(calibratedRed: 0.96, green: 0.90, blue: 0.72, alpha: 0.82),
+            headlight: NSColor(calibratedRed: 0.93, green: 0.72, blue: 0.34, alpha: 0.95),
+            outline: NSColor(white: 0, alpha: 0.30),
+            groove: NSColor(white: 0, alpha: 0.18),
+            coupler: NSColor(calibratedRed: 0.86, green: 0.77, blue: 0.58, alpha: 0.55),
+            accent: NSColor(calibratedRed: 0.73, green: 0.55, blue: 0.25, alpha: 0.92)
+        ),
+        TrainStyle(
+            kind: .bullet,
+            locomotiveBody: NSColor(calibratedRed: 0.91, green: 0.95, blue: 0.90, alpha: 0.98),
+            locomotiveCab: NSColor(calibratedRed: 0.80, green: 0.87, blue: 0.82, alpha: 0.98),
+            carA: NSColor(calibratedRed: 0.88, green: 0.93, blue: 0.89, alpha: 0.96),
+            carB: NSColor(calibratedRed: 0.77, green: 0.84, blue: 0.79, alpha: 0.96),
+            window: NSColor(calibratedRed: 0.06, green: 0.19, blue: 0.17, alpha: 0.82),
+            headlight: NSColor(calibratedRed: 0.96, green: 0.84, blue: 0.48, alpha: 0.88),
+            outline: NSColor(white: 1, alpha: 0.28),
+            groove: NSColor(calibratedRed: 0.25, green: 0.52, blue: 0.40, alpha: 0.26),
+            coupler: NSColor(white: 1, alpha: 0.40),
+            accent: NSColor(calibratedRed: 0.46, green: 0.73, blue: 0.56, alpha: 0.96)
+        ),
+        TrainStyle(
+            kind: .metro,
+            locomotiveBody: NSColor(calibratedRed: 0.72, green: 0.78, blue: 0.75, alpha: 0.97),
+            locomotiveCab: NSColor(calibratedRed: 0.18, green: 0.34, blue: 0.33, alpha: 0.96),
+            carA: NSColor(calibratedRed: 0.70, green: 0.77, blue: 0.74, alpha: 0.96),
+            carB: NSColor(calibratedRed: 0.50, green: 0.60, blue: 0.56, alpha: 0.96),
+            window: NSColor(calibratedRed: 0.04, green: 0.19, blue: 0.19, alpha: 0.78),
+            headlight: NSColor(calibratedRed: 0.78, green: 0.95, blue: 0.84, alpha: 0.82),
+            outline: NSColor(white: 0, alpha: 0.18),
+            groove: NSColor(white: 0, alpha: 0.13),
+            coupler: NSColor(white: 1, alpha: 0.42),
+            accent: NSColor(calibratedRed: 0.35, green: 0.71, blue: 0.62, alpha: 0.92)
+        ),
+        TrainStyle(
+            kind: .freight,
+            locomotiveBody: NSColor(calibratedRed: 0.36, green: 0.29, blue: 0.22, alpha: 0.98),
+            locomotiveCab: NSColor(calibratedRed: 0.63, green: 0.37, blue: 0.23, alpha: 0.96),
+            carA: NSColor(calibratedRed: 0.60, green: 0.36, blue: 0.24, alpha: 0.96),
+            carB: NSColor(calibratedRed: 0.39, green: 0.46, blue: 0.32, alpha: 0.96),
+            window: NSColor(calibratedRed: 0.95, green: 0.83, blue: 0.60, alpha: 0.72),
+            headlight: NSColor(calibratedRed: 0.95, green: 0.74, blue: 0.39, alpha: 0.88),
+            outline: NSColor(white: 0, alpha: 0.22),
+            groove: NSColor(white: 0, alpha: 0.17),
+            coupler: NSColor(calibratedRed: 0.88, green: 0.72, blue: 0.52, alpha: 0.48),
+            accent: NSColor(calibratedRed: 0.84, green: 0.64, blue: 0.36, alpha: 0.88)
+        )
+    ]
+
+    static var styleCount: Int { trainStyles.count }
+
     private let summary: CodexUsageSummary
     private let errorText: String?
+    private let trainStyleIndex: Int
+    private let trainStartTime: TimeInterval
+    private let onTrainClick: () -> Void
+    private let fastestTrainPeriod: TimeInterval = 4.5
+    private let slowestTrainPeriod: TimeInterval = 24.0
+    private var animationTimer: Timer?
+    private var staticCardImage: NSImage?
 
-    init(summary: CodexUsageSummary, errorText: String?) {
+    private var trainStyle: TrainStyle {
+        Self.trainStyles[trainStyleIndex % Self.trainStyles.count]
+    }
+
+    init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, onTrainClick: @escaping () -> Void) {
         self.summary = summary
         self.errorText = errorText
+        self.trainStyleIndex = trainStyleIndex
+        self.trainStartTime = trainStartTime
+        self.onTrainClick = onTrainClick
         super.init(frame: NSRect(x: 0, y: 0, width: 410, height: 162))
         wantsLayer = true
     }
@@ -798,8 +890,34 @@ final class UsageCardView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopTrainAnimation()
+        } else {
+            startTrainAnimation()
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        staticCardSnapshot().draw(in: bounds)
+        drawMovingTrain(in: bounds.insetBy(dx: 10, dy: 10))
+    }
+
+    private func staticCardSnapshot() -> NSImage {
+        if let staticCardImage {
+            return staticCardImage
+        }
+        let image = NSImage(size: bounds.size)
+        image.lockFocus()
+        drawStaticCard()
+        image.unlockFocus()
+        staticCardImage = image
+        return image
+    }
+
+    private func drawStaticCard() {
         let card = bounds.insetBy(dx: 10, dy: 10)
         let path = NSBezierPath(roundedRect: card, xRadius: 18, yRadius: 18)
         NSColor(calibratedRed: 0.06, green: 0.43, blue: 0.18, alpha: 1.0).setFill()
@@ -836,6 +954,342 @@ final class UsageCardView: NSView {
         } else {
             drawText(update, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56), alignment: .right)
         }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let card = bounds.insetBy(dx: 10, dy: 10)
+        if isPointOnTrain(point, in: card) {
+            onTrainClick()
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    private func startTrainAnimation() {
+        guard animationTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                self?.needsDisplay = true
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
+    }
+
+    private func stopTrainAnimation() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+    }
+
+    private func drawMovingTrain(in card: NSRect) {
+        let poses = currentTrainPoses(in: card)
+        drawCoupler(from: poses[0].point, to: poses[1].point)
+        drawCoupler(from: poses[1].point, to: poses[2].point)
+        drawTrainCar(at: poses[2].point, angle: poses[2].angle, color: trainStyle.carA)
+        drawTrainCar(at: poses[1].point, angle: poses[1].angle, color: trainStyle.carB)
+        drawLocomotive(at: poses[0].point, angle: poses[0].angle)
+        if isTrainBrokenDown {
+            drawBreakdownSmoke(near: poses[0].point)
+        }
+    }
+
+    private func currentTrainPoses(in card: NSRect) -> [(point: NSPoint, angle: CGFloat)] {
+        let track = trainTrackRect(in: card)
+        let elapsed = Date.timeIntervalSinceReferenceDate - trainStartTime
+        let period = currentTrainPeriod
+        let progress: CGFloat
+        if isTrainBrokenDown {
+            progress = 0
+        } else {
+            progress = CGFloat((elapsed.truncatingRemainder(dividingBy: period)) / period)
+        }
+        let radius: CGFloat = 18
+        let perimeter = roundedRectPerimeter(track, radius: radius)
+        let headDistance = progress * perimeter
+        let offsets: [CGFloat] = [0, 17, 32]
+        return offsets.map { trainPose(on: track, radius: radius, distance: headDistance - $0) }
+    }
+
+    private var weeklyRemainingForSpeed: CGFloat {
+        CGFloat(max(0, min(100, summary.secondaryRemaining ?? 100)))
+    }
+
+    private var isTrainBrokenDown: Bool {
+        weeklyRemainingForSpeed <= 0
+    }
+
+    private var currentTrainPeriod: TimeInterval {
+        let ratio = TimeInterval(weeklyRemainingForSpeed / 100)
+        return slowestTrainPeriod - (slowestTrainPeriod - fastestTrainPeriod) * ratio
+    }
+
+    private func isPointOnTrain(_ point: NSPoint, in card: NSRect) -> Bool {
+        currentTrainPoses(in: card).contains { pose in
+            let dx = point.x - pose.point.x
+            let dy = point.y - pose.point.y
+            return sqrt(dx * dx + dy * dy) <= 14
+        }
+    }
+
+    private func trainTrackRect(in card: NSRect) -> NSRect {
+        card
+    }
+
+    private func roundedRectPerimeter(_ rect: NSRect, radius: CGFloat) -> CGFloat {
+        let r = min(radius, rect.width / 2, rect.height / 2)
+        return max(0, 2 * (rect.width + rect.height - 4 * r) + 2 * CGFloat.pi * r)
+    }
+
+    private func trainPose(on rect: NSRect, radius: CGFloat, distance: CGFloat) -> (point: NSPoint, angle: CGFloat) {
+        let r = min(radius, rect.width / 2, rect.height / 2)
+        let top = rect.width - 2 * r
+        let side = rect.height - 2 * r
+        let arc = CGFloat.pi * r / 2
+        let perimeter = roundedRectPerimeter(rect, radius: r)
+        var d = distance.truncatingRemainder(dividingBy: perimeter)
+        if d < 0 { d += perimeter }
+
+        if d <= top {
+            return (NSPoint(x: rect.minX + r + d, y: rect.maxY), 0)
+        }
+        d -= top
+        if d <= arc {
+            return cornerPose(center: NSPoint(x: rect.maxX - r, y: rect.maxY - r), radius: r, startAngle: CGFloat.pi / 2, clockwiseDistance: d)
+        }
+        d -= arc
+        if d <= side {
+            return (NSPoint(x: rect.maxX, y: rect.maxY - r - d), -CGFloat.pi / 2)
+        }
+        d -= side
+        if d <= arc {
+            return cornerPose(center: NSPoint(x: rect.maxX - r, y: rect.minY + r), radius: r, startAngle: 0, clockwiseDistance: d)
+        }
+        d -= arc
+        if d <= top {
+            return (NSPoint(x: rect.maxX - r - d, y: rect.minY), CGFloat.pi)
+        }
+        d -= top
+        if d <= arc {
+            return cornerPose(center: NSPoint(x: rect.minX + r, y: rect.minY + r), radius: r, startAngle: -CGFloat.pi / 2, clockwiseDistance: d)
+        }
+        d -= arc
+        if d <= side {
+            return (NSPoint(x: rect.minX, y: rect.minY + r + d), CGFloat.pi / 2)
+        }
+        d -= side
+        return cornerPose(center: NSPoint(x: rect.minX + r, y: rect.maxY - r), radius: r, startAngle: CGFloat.pi, clockwiseDistance: d)
+    }
+
+    private func cornerPose(center: NSPoint, radius: CGFloat, startAngle: CGFloat, clockwiseDistance: CGFloat) -> (point: NSPoint, angle: CGFloat) {
+        let theta = startAngle - clockwiseDistance / radius
+        let point = NSPoint(x: center.x + radius * cos(theta), y: center.y + radius * sin(theta))
+        return (point, theta - CGFloat.pi / 2)
+    }
+
+    private func drawTrainCar(at point: NSPoint, angle: CGFloat, color: NSColor) {
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: point.x, yBy: point.y)
+        transform.rotate(byRadians: angle)
+        transform.concat()
+
+        switch trainStyle.kind {
+        case .steam:
+            drawSteamCar(color: color)
+        case .bullet:
+            drawBulletCar(color: color)
+        case .metro:
+            drawMetroCar(color: color)
+        case .freight:
+            drawFreightCar(color: color)
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawLocomotive(at point: NSPoint, angle: CGFloat) {
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: point.x, yBy: point.y)
+        transform.rotate(byRadians: angle)
+        transform.concat()
+
+        switch trainStyle.kind {
+        case .steam:
+            drawSteamLocomotive()
+        case .bullet:
+            drawBulletLocomotive()
+        case .metro:
+            drawMetroLocomotive()
+        case .freight:
+            drawFreightLocomotive()
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawSteamCar(color: NSColor) {
+        color.setFill()
+        let body = NSBezierPath(roundedRect: NSRect(x: -6.1, y: -4.0, width: 12.2, height: 8.0), xRadius: 1.7, yRadius: 1.7)
+        body.fill()
+        trainStyle.accent.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -5.0, y: -2.6, width: 10.0, height: 1.4), xRadius: 0.7, yRadius: 0.7).fill()
+        trainStyle.window.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -3.9, y: 0.2, width: 2.4, height: 1.9), xRadius: 0.6, yRadius: 0.6).fill()
+        NSBezierPath(roundedRect: NSRect(x: 1.4, y: 0.2, width: 2.4, height: 1.9), xRadius: 0.6, yRadius: 0.6).fill()
+        strokeRounded(NSRect(x: -6.1, y: -4.0, width: 12.2, height: 8.0), radius: 1.7, width: 0.75)
+    }
+
+    private func drawBulletCar(color: NSColor) {
+        color.setFill()
+        let body = NSBezierPath(roundedRect: NSRect(x: -6.3, y: -3.7, width: 12.6, height: 7.4), xRadius: 3.3, yRadius: 3.3)
+        body.fill()
+        trainStyle.window.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -4.5, y: 0.2, width: 9.0, height: 1.8), xRadius: 0.9, yRadius: 0.9).fill()
+        trainStyle.accent.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -4.8, y: -2.3, width: 9.6, height: 1.0), xRadius: 0.5, yRadius: 0.5).fill()
+        strokeRounded(NSRect(x: -6.3, y: -3.7, width: 12.6, height: 7.4), radius: 3.3, width: 0.65)
+    }
+
+    private func drawMetroCar(color: NSColor) {
+        color.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -6.0, y: -4.0, width: 12.0, height: 8.0), xRadius: 2.2, yRadius: 2.2).fill()
+        trainStyle.accent.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -5.0, y: -3.0, width: 10.0, height: 1.1), xRadius: 0.5, yRadius: 0.5).fill()
+        trainStyle.window.setFill()
+        for x in stride(from: -4.2, through: 2.2, by: 3.2) {
+            NSBezierPath(roundedRect: NSRect(x: x, y: 0.1, width: 2.0, height: 2.0), xRadius: 0.5, yRadius: 0.5).fill()
+        }
+        strokeRounded(NSRect(x: -6.0, y: -4.0, width: 12.0, height: 8.0), radius: 2.2, width: 0.7)
+    }
+
+    private func drawFreightCar(color: NSColor) {
+        color.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -6.0, y: -4.0, width: 12.0, height: 8.0), xRadius: 1.2, yRadius: 1.2).fill()
+        drawRoofGrooves(in: NSRect(x: -5.2, y: -3.0, width: 10.4, height: 6.0), spacing: 3.0)
+        trainStyle.accent.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -3.0, y: -1.1, width: 6.0, height: 2.2), xRadius: 0.8, yRadius: 0.8).fill()
+        strokeRounded(NSRect(x: -6.0, y: -4.0, width: 12.0, height: 8.0), radius: 1.2, width: 0.75)
+    }
+
+    private func drawSteamLocomotive() {
+        trainStyle.locomotiveBody.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -7.0, y: -4.2, width: 13.4, height: 8.4), xRadius: 2.6, yRadius: 2.6).fill()
+        trainStyle.locomotiveCab.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -5.1, y: -3.0, width: 5.6, height: 6.0), xRadius: 1.5, yRadius: 1.5).fill()
+        trainStyle.accent.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 1.0, y: -2.0, width: 3.0, height: 4.0), xRadius: 1.3, yRadius: 1.3).fill()
+        trainStyle.window.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -3.9, y: -1.4, width: 2.6, height: 2.8), xRadius: 0.7, yRadius: 0.7).fill()
+        trainStyle.headlight.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 5.5, y: -1.7, width: 3.4, height: 3.4)).fill()
+        trainStyle.outline.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 3.7, y: -3.2, width: 2.0, height: 6.4), xRadius: 0.8, yRadius: 0.8).fill()
+        strokeRounded(NSRect(x: -7.0, y: -4.2, width: 13.4, height: 8.4), radius: 2.6, width: 0.8)
+    }
+
+    private func drawBulletLocomotive() {
+        let body = NSBezierPath()
+        body.move(to: NSPoint(x: -7.1, y: -3.9))
+        body.line(to: NSPoint(x: 2.5, y: -3.9))
+        body.curve(to: NSPoint(x: 8.1, y: 0), controlPoint1: NSPoint(x: 5.2, y: -3.7), controlPoint2: NSPoint(x: 7.2, y: -1.6))
+        body.curve(to: NSPoint(x: 2.5, y: 3.9), controlPoint1: NSPoint(x: 7.2, y: 1.6), controlPoint2: NSPoint(x: 5.2, y: 3.7))
+        body.line(to: NSPoint(x: -7.1, y: 3.9))
+        body.curve(to: NSPoint(x: -7.1, y: -3.9), controlPoint1: NSPoint(x: -8.0, y: 2.5), controlPoint2: NSPoint(x: -8.0, y: -2.5))
+        body.close()
+        trainStyle.locomotiveBody.setFill()
+        body.fill()
+        trainStyle.outline.setStroke()
+        body.lineWidth = 0.7
+        body.stroke()
+        trainStyle.window.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -4.4, y: 0.3, width: 7.2, height: 1.8), xRadius: 0.9, yRadius: 0.9).fill()
+        trainStyle.accent.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -5.4, y: -2.4, width: 8.6, height: 1.0), xRadius: 0.5, yRadius: 0.5).fill()
+        trainStyle.headlight.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 5.5, y: -0.9, width: 1.8, height: 1.8)).fill()
+    }
+
+    private func drawMetroLocomotive() {
+        trainStyle.locomotiveBody.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -6.8, y: -4.2, width: 13.2, height: 8.4), xRadius: 2.0, yRadius: 2.0).fill()
+        trainStyle.locomotiveCab.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 1.5, y: -3.0, width: 4.6, height: 6.0), xRadius: 1.4, yRadius: 1.4).fill()
+        trainStyle.window.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 2.4, y: -1.7, width: 2.7, height: 3.4), xRadius: 0.8, yRadius: 0.8).fill()
+        trainStyle.accent.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -5.5, y: -3.0, width: 7.0, height: 1.1), xRadius: 0.5, yRadius: 0.5).fill()
+        trainStyle.headlight.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 5.3, y: -2.6, width: 1.4, height: 1.4)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 5.3, y: 1.2, width: 1.4, height: 1.4)).fill()
+        strokeRounded(NSRect(x: -6.8, y: -4.2, width: 13.2, height: 8.4), radius: 2.0, width: 0.75)
+    }
+
+    private func drawFreightLocomotive() {
+        trainStyle.locomotiveBody.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -7.0, y: -4.1, width: 13.6, height: 8.2), xRadius: 1.4, yRadius: 1.4).fill()
+        trainStyle.locomotiveCab.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -4.8, y: -3.0, width: 4.9, height: 6.0), xRadius: 1.1, yRadius: 1.1).fill()
+        trainStyle.window.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -3.8, y: -1.5, width: 2.4, height: 3.0), xRadius: 0.6, yRadius: 0.6).fill()
+        trainStyle.accent.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 1.0, y: -1.3, width: 4.2, height: 2.6), xRadius: 0.9, yRadius: 0.9).fill()
+        trainStyle.headlight.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 5.5, y: -1.4, width: 2.8, height: 2.8)).fill()
+        drawRoofGrooves(in: NSRect(x: -6.0, y: -3.2, width: 11.0, height: 6.4), spacing: 3.0)
+        strokeRounded(NSRect(x: -7.0, y: -4.1, width: 13.6, height: 8.2), radius: 1.4, width: 0.8)
+    }
+
+    private func drawBreakdownSmoke(near point: NSPoint) {
+        NSGraphicsContext.saveGraphicsState()
+        NSColor(white: 1, alpha: 0.78).setFill()
+        NSBezierPath(ovalIn: NSRect(x: point.x + 10, y: point.y + 2, width: 4.8, height: 4.8)).fill()
+        NSColor(white: 1, alpha: 0.52).setFill()
+        NSBezierPath(ovalIn: NSRect(x: point.x + 15, y: point.y + 8, width: 3.8, height: 3.8)).fill()
+        NSColor(calibratedRed: 1.0, green: 0.72, blue: 0.28, alpha: 0.88).setFill()
+        let spark = NSBezierPath()
+        spark.move(to: NSPoint(x: point.x + 10, y: point.y - 9))
+        spark.line(to: NSPoint(x: point.x + 14, y: point.y - 4))
+        spark.line(to: NSPoint(x: point.x + 11.5, y: point.y - 4.2))
+        spark.line(to: NSPoint(x: point.x + 15, y: point.y + 1))
+        spark.line(to: NSPoint(x: point.x + 9.5, y: point.y - 5.2))
+        spark.line(to: NSPoint(x: point.x + 12, y: point.y - 5.0))
+        spark.close()
+        spark.fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawCoupler(from start: NSPoint, to end: NSPoint) {
+        trainStyle.coupler.setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = 1
+        path.move(to: start)
+        path.line(to: end)
+        path.stroke()
+    }
+
+    private func drawRoofGrooves(in rect: NSRect, spacing: CGFloat = 2.4) {
+        trainStyle.groove.setStroke()
+        for offset in stride(from: rect.minX + spacing, through: rect.maxX - spacing, by: spacing) {
+            let path = NSBezierPath()
+            path.lineWidth = 0.45
+            path.move(to: NSPoint(x: offset, y: rect.minY + 1.5))
+            path.line(to: NSPoint(x: offset, y: rect.maxY - 1.5))
+            path.stroke()
+        }
+    }
+
+    private func drawCornerLight(x: CGFloat, y: CGFloat) {
+        trainStyle.headlight.setFill()
+        NSBezierPath(ovalIn: NSRect(x: x - 0.75, y: y - 0.75, width: 1.5, height: 1.5)).fill()
+    }
+
+    private func strokeRounded(_ rect: NSRect, radius: CGFloat, width: CGFloat) {
+        trainStyle.outline.setStroke()
+        let outline = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+        outline.lineWidth = width
+        outline.stroke()
     }
 
     private enum ColumnIcon {
@@ -975,7 +1429,18 @@ final class UsageCardView: NSView {
 }
 
 final class CodexPanelViewController: NSViewController {
-    init(summary: CodexUsageSummary?, errorText: String?, target: AnyObject, refreshAction: Selector, openAction: Selector, quitAction: Selector, languageAction: Selector) {
+    init(
+        summary: CodexUsageSummary?,
+        errorText: String?,
+        target: AnyObject,
+        refreshAction: Selector,
+        openAction: Selector,
+        quitAction: Selector,
+        languageAction: Selector,
+        trainStyleIndex: Int,
+        trainStartTime: TimeInterval,
+        trainClickAction: @escaping () -> Void
+    ) {
         super.init(nibName: nil, bundle: nil)
         let l = L10n.shared
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 410, height: 372))
@@ -983,7 +1448,7 @@ final class CodexPanelViewController: NSViewController {
         root.layer?.backgroundColor = NSColor.clear.cgColor
 
         if let summary {
-            let card = UsageCardView(summary: summary, errorText: errorText)
+            let card = UsageCardView(summary: summary, errorText: errorText, trainStyleIndex: trainStyleIndex, trainStartTime: trainStartTime, onTrainClick: trainClickAction)
             card.frame = NSRect(x: 0, y: 200, width: 410, height: 162)
             root.addSubview(card)
 
@@ -1145,8 +1610,8 @@ final class CodexPanelViewController: NSViewController {
     private func resetPoint(_ timestamp: TimeInterval?) -> String? { L10n.shared.resetPoint(timestamp) }
 }
 
-@MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+@preconcurrency @MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @unchecked Sendable {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private let menu = NSMenu()
@@ -1155,6 +1620,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var outsideClickMonitor: Any?
     private var lastSummary: CodexUsageSummary?
     private var lastError: String?
+    private var trainStyleIndex = 0
+    private let trainStartTime = Date.timeIntervalSinceReferenceDate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1167,8 +1634,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         updatePopoverContent()
         refresh(nil)
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            guard let delegate = self else { return }
             Task { @MainActor in
-                self?.refresh(nil)
+                delegate.refresh(nil)
             }
         }
     }
@@ -1180,24 +1648,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             updateStatusButton(title: "5h … / 7d …")
         }
         fetcher.fetch { [weak self] result in
-            DispatchQueue.main.async {
+            guard let delegate = self else { return }
+            DispatchQueue.main.async { [delegate] in
                 switch result {
                 case .success(let summary):
-                    self?.lastSummary = summary
-                    self?.lastError = nil
-                    self?.updateStatusButton(summary: summary)
-                    self?.statusItem.button?.toolTip = self?.tooltip(for: summary)
+                    delegate.lastSummary = summary
+                    delegate.lastError = nil
+                    delegate.updateStatusButton(summary: summary)
+                    delegate.statusItem.button?.toolTip = delegate.tooltip(for: summary)
                 case .failure(let error):
-                    self?.lastError = error.description
-                    if let summary = self?.lastSummary {
-                        self?.updateStatusButton(summary: summary)
+                    delegate.lastError = error.description
+                    if let summary = delegate.lastSummary {
+                        delegate.updateStatusButton(summary: summary)
                     } else {
-                        self?.updateStatusButton(title: "5h ? / 7d ?")
+                        delegate.updateStatusButton(title: "5h ? / 7d ?")
                     }
-                    self?.statusItem.button?.toolTip = L10n.shared.t("fetchFailed") + ": \(error.description)"
+                    delegate.statusItem.button?.toolTip = L10n.shared.t("fetchFailed") + ": \(error.description)"
                 }
-                if self?.popover.isShown == true {
-                    self?.updatePopoverContent()
+                if delegate.popover.isShown == true {
+                    delegate.updatePopoverContent()
                 }
             }
         }
@@ -1254,9 +1723,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             refreshAction: #selector(refreshFromPopover(_:)),
             openAction: #selector(openUsagePageFromPopover(_:)),
             quitAction: #selector(quit),
-            languageAction: #selector(languageChanged(_:))
+            languageAction: #selector(languageChanged(_:)),
+            trainStyleIndex: trainStyleIndex,
+            trainStartTime: trainStartTime,
+            trainClickAction: { [weak self] in
+                self?.cycleTrainStyle()
+            }
         )
         popover.contentSize = NSSize(width: 410, height: 372)
+    }
+
+    private func cycleTrainStyle() {
+        trainStyleIndex = (trainStyleIndex + 1) % UsageCardView.styleCount
+        updatePopoverContent()
     }
 
     @objc private func refreshFromPopover(_ sender: Any?) {
@@ -1422,7 +1901,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let summary = lastSummary {
             let card = NSMenuItem()
             let l = L10n.shared
-            card.view = UsageCardView(summary: summary, errorText: lastError == nil ? nil : l.t("readFailed"))
+            card.view = UsageCardView(
+                summary: summary,
+                errorText: lastError == nil ? nil : l.t("readFailed"),
+                trainStyleIndex: trainStyleIndex,
+                trainStartTime: trainStartTime,
+                onTrainClick: { [weak self] in
+                    self?.cycleTrainStyle()
+                }
+            )
             menu.addItem(card)
             menu.addItem(.separator())
             menu.addItem(disabled(l.t("account") + ": \(summary.email)"))

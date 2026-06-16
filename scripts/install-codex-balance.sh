@@ -9,8 +9,31 @@ LABEL="${CODEX_BALANCE_LAUNCHD_LABEL:-com.codexlocaltools.codex-balance}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 cd "$ROOT/codex-balance"
-swift build -c release
-BUILT_BIN="$(swift build -c release --show-bin-path)/CodexBalance"
+if swift build -c release; then
+  BUILT_BIN="$(swift build -c release --show-bin-path)/CodexBalance"
+else
+  printf 'swift build failed; falling back to direct swiftc build.\n' >&2
+  MANUAL_BUILD_DIR="$ROOT/codex-balance/.build/manual"
+  mkdir -p "$MANUAL_BUILD_DIR"
+  SWIFTC="${CODEX_BALANCE_SWIFTC:-}"
+  if [[ -z "$SWIFTC" ]]; then
+    if [[ -x /Library/Developer/CommandLineTools/usr/bin/swiftc ]]; then
+      SWIFTC=/Library/Developer/CommandLineTools/usr/bin/swiftc
+    else
+      SWIFTC="$(command -v swiftc)"
+    fi
+  fi
+  SDKROOT="${CODEX_BALANCE_SDKROOT:-/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk}"
+  TARGET_ARCH="$(uname -m)"
+  "$SWIFTC" \
+    -sdk "$SDKROOT" \
+    -target "$TARGET_ARCH-apple-macosx13.0" \
+    -O \
+    Sources/CodexBalance/main.swift \
+    -o "$MANUAL_BUILD_DIR/CodexBalance" \
+    -framework AppKit
+  BUILT_BIN="$MANUAL_BUILD_DIR/CodexBalance"
+fi
 
 mkdir -p "$APP_SUPPORT" "$LOG_DIR" "$HOME/Library/LaunchAgents"
 if [[ -x "$BIN" ]]; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 set -euo pipefail
-LIB="${CODEX_AC_LIB:-${0:A:h}/../lib}"
+LIB="${CODEX_AC_LIB:-${0:A:h}/../lib/codex-ac}"
 case "${1:-}" in
   l|ll|ls|la) shift; set -- list "$@" ;;
   s) shift; set -- switch "$@" ;;
