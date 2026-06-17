@@ -218,6 +218,7 @@ write_task_db() {
 CREATE TABLE threads (
   id TEXT PRIMARY KEY,
   updated_at INTEGER,
+  cwd TEXT DEFAULT '',
   archived INTEGER DEFAULT 0,
   thread_source TEXT,
   agent_nickname TEXT,
@@ -237,6 +238,14 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump({"electron-persisted-atom-state": {"unread-thread-ids-by-host-v1": {"local": thread_ids}}}, f)
 PY
 }
+write_unread_state_with_active_root() {
+  "$PYTHON_BIN" - "$TASK_GLOBAL" "$1" "$2" <<'PY'
+import json, sys
+path, root, thread_id = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump({"active-workspace-roots": [root], "electron-persisted-atom-state": {"unread-thread-ids-by-host-v1": {"local": [thread_id]}}}, f)
+PY
+}
 assert_task_light() {
   local expected="$1"
   local actual
@@ -246,6 +255,15 @@ assert_task_light() {
     exit 1
   fi
 }
+
+write_task_db
+write_unread_state missing-unread
+assert_task_light idle
+
+write_task_db
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('archived-unread', $TASK_NOW, 1, 'subagent', 'worker1', 'worker', '', 'archived unread', '');"
+write_unread_state archived-unread
+assert_task_light idle
 
 write_task_db
 /usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('sub-unread', $TASK_NOW, 0, 'subagent', 'worker1', 'worker', '', 'worker unread', '');"
@@ -258,11 +276,29 @@ write_unread_state user-unread
 assert_task_light unread
 
 write_task_db
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, cwd, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('other-workspace-unread', $TASK_NOW, '/tmp/other-project', 0, 'user', '', '', '', 'other workspace unread', '');"
+write_unread_state_with_active_root /tmp/current-project other-workspace-unread
+assert_task_light idle
+
+write_task_db
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, cwd, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('current-workspace-unread', $TASK_NOW, '/tmp/current-project/app', 0, 'user', '', '', '', 'current workspace unread', '');"
+write_unread_state_with_active_root /tmp/current-project current-workspace-unread
+assert_task_light unread
+
+write_task_db
 TASK_ROLLOUT="$TMP/open-turn.jsonl"
 printf '%s\n' '{"type":"turn_context"}' > "$TASK_ROLLOUT"
 /usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('worker-running', $TASK_NOW, 0, 'subagent', 'worker1', 'worker', '', 'worker running', '$TASK_ROLLOUT');"
 write_unread_state
 assert_task_light running
+
+write_task_db
+TASK_ROLLOUT="$TMP/open-turn-plus-unread.jsonl"
+printf '%s\n' '{"type":"turn_context"}' > "$TASK_ROLLOUT"
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('worker-running', $TASK_NOW, 0, 'subagent', 'worker1', 'worker', '', 'worker running', '$TASK_ROLLOUT');"
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('user-unread', $TASK_NOW, 0, 'user', '', '', '', 'user unread', '');"
+write_unread_state user-unread
+assert_task_light unread+running
 
 run_ca s fox --skip-expiry-check --no-backup >/dev/null
 [[ "$(run_ca current)" == "fox" ]]

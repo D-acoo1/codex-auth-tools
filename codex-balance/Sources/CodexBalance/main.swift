@@ -878,6 +878,7 @@ final class UsageCardView: NSView {
     private let slowestTrainPeriod: TimeInterval = 24.0
     private var trainLayer: CALayer?
     private var staticCardImage: NSImage?
+    private var staticCardAppearanceKey: NSAppearance.Name?
     private var trainSegmentImageCache: [TrainSegment: NSImage] = [:]
     private let trainSegmentSize = NSSize(width: 38, height: 34)
     private let trainSegmentSpacing: CGFloat = 30
@@ -916,13 +917,21 @@ final class UsageCardView: NSView {
         }
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        staticCardImage = nil
+        staticCardAppearanceKey = nil
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         staticCardSnapshot().draw(in: bounds)
     }
 
     private func staticCardSnapshot() -> NSImage {
-        if let staticCardImage {
+        let appearanceKey = cardAppearanceKey()
+        if let staticCardImage, staticCardAppearanceKey == appearanceKey {
             return staticCardImage
         }
         let image = NSImage(size: bounds.size)
@@ -930,60 +939,105 @@ final class UsageCardView: NSView {
         drawStaticCard()
         image.unlockFocus()
         staticCardImage = image
+        staticCardAppearanceKey = appearanceKey
         return image
+    }
+
+    private func cardAppearanceKey() -> NSAppearance.Name {
+        effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) ?? effectiveAppearance.name
+    }
+
+    private var usesLightCardTheme: Bool {
+        cardAppearanceKey() != .darkAqua
     }
 
     private func drawStaticCard() {
         let card = bounds.insetBy(dx: 10, dy: 10)
         let path = NSBezierPath(roundedRect: card, xRadius: 18, yRadius: 18)
-        let ceramicTop = NSColor(calibratedRed: 0.965, green: 0.943, blue: 0.900, alpha: 1.0)
-        let ceramicBottom = NSColor(calibratedRed: 0.900, green: 0.862, blue: 0.805, alpha: 1.0)
-        NSGradient(colors: [ceramicTop, ceramicBottom])?.draw(in: path, angle: -92)
-        NSColor(calibratedWhite: 1.0, alpha: 0.42).setStroke()
-        let highlight = NSBezierPath(roundedRect: card.insetBy(dx: 1.0, dy: 1.0), xRadius: 17, yRadius: 17)
-        highlight.lineWidth = 1
-        highlight.stroke()
-        NSColor(calibratedRed: 0.36, green: 0.32, blue: 0.27, alpha: 0.16).setStroke()
-        path.lineWidth = 1
-        path.stroke()
+        let palette = cardPalette()
+        if usesLightCardTheme {
+            let ceramicTop = NSColor(calibratedRed: 0.965, green: 0.943, blue: 0.900, alpha: 1.0)
+            let ceramicBottom = NSColor(calibratedRed: 0.900, green: 0.862, blue: 0.805, alpha: 1.0)
+            NSGradient(colors: [ceramicTop, ceramicBottom])?.draw(in: path, angle: -92)
+            NSColor(calibratedWhite: 1.0, alpha: 0.42).setStroke()
+            let highlight = NSBezierPath(roundedRect: card.insetBy(dx: 1.0, dy: 1.0), xRadius: 17, yRadius: 17)
+            highlight.lineWidth = 1
+            highlight.stroke()
+            NSColor(calibratedRed: 0.36, green: 0.32, blue: 0.27, alpha: 0.16).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+        } else {
+            NSColor(calibratedRed: 0.06, green: 0.43, blue: 0.18, alpha: 1.0).setFill()
+            path.fill()
+        }
 
-        let titleColor = NSColor(calibratedRed: 0.17, green: 0.16, blue: 0.14, alpha: 0.82)
-        let mutedTextColor = NSColor(calibratedRed: 0.20, green: 0.18, blue: 0.16, alpha: 0.56)
-        let primaryValueColor = NSColor(calibratedRed: 0.18, green: 0.43, blue: 0.32, alpha: 1.0)
-        let secondaryValueColor = NSColor(calibratedRed: 0.46, green: 0.32, blue: 0.52, alpha: 1.0)
-        let tertiaryValueColor = NSColor(calibratedRed: 0.25, green: 0.47, blue: 0.43, alpha: 1.0)
+        drawText(L10n.shared.t("title"), x: 24, y: 124, width: 120, height: 18, font: .systemFont(ofSize: 12, weight: .semibold), color: palette.title)
+        drawText(summary.plan.uppercased(), x: 338, y: 124, width: 52, height: 18, font: .systemFont(ofSize: 11, weight: .medium), color: palette.muted, alignment: .right)
 
-        drawText(L10n.shared.t("title"), x: 24, y: 124, width: 120, height: 18, font: .systemFont(ofSize: 12, weight: .semibold), color: titleColor)
-        drawText(summary.plan.uppercased(), x: 338, y: 124, width: 52, height: 18, font: .systemFont(ofSize: 11, weight: .medium), color: mutedTextColor, alignment: .right)
-
-        drawDivider(x: 138)
-        drawDivider(x: 270)
+        drawDivider(x: 138, color: palette.divider)
+        drawDivider(x: 270, color: palette.divider)
 
         if summary.isAPIAccount {
             let api = summary.apiUsage
-            drawColumn(icon: .none, label: "Bal", value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, valueColor: primaryValueColor)
-            drawColumn(icon: .none, label: "Cost", value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, valueColor: secondaryValueColor)
-            drawColumn(icon: .none, label: "Tok", value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, valueColor: tertiaryValueColor)
-            drawText(L10n.shared.t("total") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: mutedTextColor)
-            drawText(L10n.shared.t("total") + " " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: mutedTextColor)
+            drawColumn(icon: .none, label: "Bal", value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, labelColor: palette.label, valueColor: palette.primaryValue)
+            drawColumn(icon: .none, label: "Cost", value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, labelColor: palette.label, valueColor: palette.secondaryValue)
+            drawColumn(icon: .none, label: "Tok", value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, labelColor: palette.label, valueColor: palette.tertiaryValue)
+            drawText(L10n.shared.t("total") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: palette.muted)
+            drawText(L10n.shared.t("total") + " " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: palette.muted)
         } else {
-            drawColumn(icon: .timer, label: "5h", value: percent(summary.primaryRemaining), x: 24, valueColor: primaryValueColor)
-            drawColumn(icon: .week, label: "7d", value: percent(summary.secondaryRemaining), x: 156, valueColor: secondaryValueColor)
+            drawColumn(icon: .timer, label: "5h", value: percent(summary.primaryRemaining), x: 24, labelColor: palette.label, valueColor: palette.primaryValue)
+            drawColumn(icon: .week, label: "7d", value: percent(summary.secondaryRemaining), x: 156, labelColor: palette.label, valueColor: palette.secondaryValue)
             let credits = summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0")
-            drawColumn(icon: .none, label: L10n.shared.t("credits"), value: credits, x: 288, valueColor: tertiaryValueColor)
+            drawColumn(icon: .none, label: L10n.shared.t("credits"), value: credits, x: 288, labelColor: palette.label, valueColor: palette.tertiaryValue)
             if let pReset = summary.primaryResetAfterSeconds {
-                drawResetBlock(seconds: pReset, timestamp: summary.primaryResetAt, x: 24)
+                drawResetBlock(seconds: pReset, timestamp: summary.primaryResetAt, x: 24, color: palette.muted)
             }
             if let sReset = summary.secondaryResetAfterSeconds {
-                drawResetBlock(seconds: sReset, timestamp: summary.secondaryResetAt, x: 156)
+                drawResetBlock(seconds: sReset, timestamp: summary.secondaryResetAt, x: 156, color: palette.muted)
             }
         }
         let update = timeString(summary.fetchedAt)
         if let errorText {
-            drawText(errorText, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10, weight: .regular), color: NSColor(calibratedRed: 0.62, green: 0.30, blue: 0.22, alpha: 1.0), alignment: .right)
+            drawText(errorText, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10, weight: .regular), color: palette.error, alignment: .right)
         } else {
-            drawText(update, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10.5, weight: .regular), color: mutedTextColor, alignment: .right)
+            drawText(update, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10.5, weight: .regular), color: palette.muted, alignment: .right)
         }
+    }
+
+    private struct CardPalette {
+        let title: NSColor
+        let muted: NSColor
+        let label: NSColor
+        let primaryValue: NSColor
+        let secondaryValue: NSColor
+        let tertiaryValue: NSColor
+        let divider: NSColor
+        let error: NSColor
+    }
+
+    private func cardPalette() -> CardPalette {
+        if usesLightCardTheme {
+            return CardPalette(
+                title: NSColor(calibratedRed: 0.17, green: 0.16, blue: 0.14, alpha: 0.82),
+                muted: NSColor(calibratedRed: 0.20, green: 0.18, blue: 0.16, alpha: 0.56),
+                label: NSColor(calibratedRed: 0.20, green: 0.18, blue: 0.16, alpha: 0.58),
+                primaryValue: NSColor(calibratedRed: 0.18, green: 0.43, blue: 0.32, alpha: 1.0),
+                secondaryValue: NSColor(calibratedRed: 0.46, green: 0.32, blue: 0.52, alpha: 1.0),
+                tertiaryValue: NSColor(calibratedRed: 0.25, green: 0.47, blue: 0.43, alpha: 1.0),
+                divider: NSColor(calibratedRed: 0.30, green: 0.26, blue: 0.22, alpha: 0.14),
+                error: NSColor(calibratedRed: 0.62, green: 0.30, blue: 0.22, alpha: 1.0)
+            )
+        }
+        return CardPalette(
+            title: NSColor(white: 1, alpha: 0.72),
+            muted: NSColor(white: 1, alpha: 0.56),
+            label: NSColor(white: 1, alpha: 0.62),
+            primaryValue: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1),
+            secondaryValue: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1),
+            tertiaryValue: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1),
+            divider: NSColor(white: 1, alpha: 0.18),
+            error: NSColor(calibratedRed: 1, green: 0.72, blue: 0.52, alpha: 1)
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1495,8 +1549,7 @@ final class UsageCardView: NSView {
         case none
     }
 
-    private func drawColumn(icon: ColumnIcon, label: String, value: String, x: CGFloat, valueColor: NSColor) {
-        let labelColor = NSColor(calibratedRed: 0.20, green: 0.18, blue: 0.16, alpha: 0.58)
+    private func drawColumn(icon: ColumnIcon, label: String, value: String, x: CGFloat, labelColor: NSColor, valueColor: NSColor) {
         if icon != .none {
             drawIcon(icon, in: NSRect(x: x, y: 92, width: 14, height: 14), color: labelColor)
             drawText(label, x: x + 18, y: 90, width: 87, height: 16, font: .systemFont(ofSize: 11, weight: .medium), color: labelColor)
@@ -1550,8 +1603,8 @@ final class UsageCardView: NSView {
         ])
     }
 
-    private func drawDivider(x: CGFloat) {
-        NSColor(calibratedRed: 0.30, green: 0.26, blue: 0.22, alpha: 0.14).setStroke()
+    private func drawDivider(x: CGFloat, color: NSColor) {
+        color.setStroke()
         let path = NSBezierPath()
         path.move(to: NSPoint(x: x, y: 54))
         path.line(to: NSPoint(x: x, y: 106))
@@ -1559,8 +1612,7 @@ final class UsageCardView: NSView {
         path.stroke()
     }
 
-    private func drawResetBlock(seconds: Int, timestamp: TimeInterval?, x: CGFloat) {
-        let color = NSColor(calibratedRed: 0.20, green: 0.18, blue: 0.16, alpha: 0.52)
+    private func drawResetBlock(seconds: Int, timestamp: TimeInterval?, x: CGFloat, color: NSColor) {
         drawText(duration(seconds), x: x, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: color)
         let point = resetPoint(timestamp) ?? L10n.shared.t("unknown")
         drawText(point, x: x, y: 18, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: color)
@@ -1809,45 +1861,38 @@ final class CodexPanelViewController: NSViewController {
 
 @preconcurrency @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @unchecked Sendable {
-    fileprivate enum TaskLightState: Equatable {
-        case idle
-        case running
-        case unread
+    fileprivate struct TaskLightState: Equatable {
+        let hasUnread: Bool
+        let hasRunning: Bool
+
+        static let idle = TaskLightState(hasUnread: false, hasRunning: false)
 
         static func from(_ raw: String?) -> TaskLightState {
-            switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-            case "running", "busy", "in_progress", "in-progress", "yellow":
-                return .running
-            case "unread", "done", "completed", "complete", "finished", "red":
-                return .unread
-            case "idle", "none", "empty", "green":
-                return .idle
-            default:
+            let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            if ["idle", "none", "empty", "green"].contains(value) {
                 return .idle
             }
+            let hasUnread = ["unread", "done", "completed", "complete", "finished", "red"].contains { value.contains($0) }
+            let hasRunning = ["running", "busy", "in_progress", "in-progress", "yellow"].contains { value.contains($0) }
+            if hasUnread || hasRunning {
+                return TaskLightState(hasUnread: hasUnread, hasRunning: hasRunning)
+            }
+            return .idle
         }
 
         var rawValue: String {
-            switch self {
-            case .idle: return "idle"
-            case .running: return "running"
-            case .unread: return "unread"
-            }
-        }
-
-        var activeLightIndex: Int {
-            switch self {
-            case .unread: return 0
-            case .running: return 1
-            case .idle: return 2
-            }
+            var parts: [String] = []
+            if hasUnread { parts.append("unread") }
+            if hasRunning { parts.append("running") }
+            return parts.isEmpty ? "idle" : parts.joined(separator: "+")
         }
 
         var tooltipText: String {
-            switch self {
-            case .idle: return "任务：当前无任务"
-            case .running: return "任务：正在执行中"
-            case .unread: return "任务：已完成，未读"
+            switch (hasUnread, hasRunning) {
+            case (true, true): return "任务：有未读 · 正在执行"
+            case (true, false): return "任务：有未读"
+            case (false, true): return "任务：正在执行"
+            case (false, false): return "任务：当前无任务"
             }
         }
     }
@@ -1856,6 +1901,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         let id: String
         let updatedAt: TimeInterval
         let rolloutPath: String?
+        let cwd: String
         let threadSource: String
         let agentNickname: String
         let agentRole: String
@@ -2133,21 +2179,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     private func readAutomaticTaskLightState() -> TaskLightState? {
+        let unreadThreadIDs = readUnreadCodexThreadIDs()
         guard let threads = readCodexThreadSnapshots() else {
-            return nil
+            return unreadThreadIDs.isEmpty ? nil : TaskLightState(hasUnread: true, hasRunning: false)
         }
         let now = Date().timeIntervalSince1970
-        if threads.contains(where: { isRecentlyActive($0, now: now) }) {
-            return .running
+        let activeWorkspaceRoots = readActiveWorkspaceRoots()
+        let hasRunning = threads.contains(where: { isRecentlyActive($0, now: now) })
+        let hasUnread = threads.contains { thread in
+            thread.isUserVisible
+                && isInActiveWorkspace(thread, activeWorkspaceRoots: activeWorkspaceRoots)
+                && unreadThreadIDs.contains(thread.id)
+                && isRecent(thread.updatedAt, now: now, window: codexUnreadWindowSeconds)
         }
-        let unreadThreadIDs = readUnreadCodexThreadIDs()
-        if !unreadThreadIDs.isEmpty {
-            let hasRecentUnread = threads.contains { thread in
-                thread.isUserVisible && unreadThreadIDs.contains(thread.id) && isRecent(thread.updatedAt, now: now, window: codexUnreadWindowSeconds)
-            }
-            if hasRecentUnread {
-                return .unread
-            }
+        if hasUnread || hasRunning {
+            return TaskLightState(hasUnread: hasUnread, hasRunning: hasRunning)
         }
         return .idle
     }
@@ -2157,7 +2203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             return nil
         }
         let sql = """
-        SELECT id, updated_at, IFNULL(rollout_path, ''), IFNULL(thread_source, ''), IFNULL(agent_nickname, ''), IFNULL(agent_role, ''), IFNULL(agent_path, '')
+        SELECT id, updated_at, IFNULL(rollout_path, ''), IFNULL(cwd, ''), IFNULL(thread_source, ''), IFNULL(agent_nickname, ''), IFNULL(agent_role, ''), IFNULL(agent_path, '')
         FROM threads
         WHERE archived = 0
         ORDER BY updated_at DESC
@@ -2176,10 +2222,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                 id: columns[0],
                 updatedAt: updatedAt,
                 rolloutPath: rolloutPath,
-                threadSource: columns.count >= 4 ? columns[3] : "",
-                agentNickname: columns.count >= 5 ? columns[4] : "",
-                agentRole: columns.count >= 6 ? columns[5] : "",
-                agentPath: columns.count >= 7 ? columns[6] : ""
+                cwd: columns.count >= 4 ? columns[3] : "",
+                threadSource: columns.count >= 5 ? columns[4] : "",
+                agentNickname: columns.count >= 6 ? columns[5] : "",
+                agentRole: columns.count >= 7 ? columns[6] : "",
+                agentPath: columns.count >= 8 ? columns[7] : ""
             )
         }
     }
@@ -2291,6 +2338,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         }
         return result
     }
+    private func readActiveWorkspaceRoots() -> [String] {
+        guard let data = try? Data(contentsOf: codexGlobalStateFile),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let roots = root["active-workspace-roots"] as? [String] else {
+            return []
+        }
+        return roots
+    }
+
+    private func isInActiveWorkspace(_ thread: CodexThreadSnapshot, activeWorkspaceRoots: [String]) -> Bool {
+        guard !activeWorkspaceRoots.isEmpty else { return true }
+        guard !thread.cwd.isEmpty else { return false }
+        let cwd = standardizedPath(thread.cwd)
+        return activeWorkspaceRoots.contains { root in
+            let activeRoot = standardizedPath(root)
+            return cwd == activeRoot || cwd.hasPrefix(activeRoot + "/")
+        }
+    }
+
+    private func standardizedPath(_ path: String) -> String {
+        let expanded = (path as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
 
     private func refreshTaskLight() {
         let nextState = readTaskLightState()
@@ -2329,8 +2400,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         shell.stroke()
         for (color, index) in lights {
             let x = CGFloat(5 + index * 12)
-            let isActive = index == taskLightState.activeLightIndex
-            color.withAlphaComponent(isActive ? 1.0 : 0.23).setFill()
+            let isActive: Bool
+            switch index {
+            case 0: isActive = taskLightState.hasUnread
+            case 1: isActive = taskLightState.hasRunning
+            default: isActive = !taskLightState.hasUnread && !taskLightState.hasRunning
+            }
+            if isActive {
+                color.withAlphaComponent(1.0).setFill()
+            } else {
+                NSColor.labelColor.withAlphaComponent(0.22).setFill()
+            }
             NSBezierPath(ovalIn: NSRect(x: x, y: 2.75, width: 8.5, height: 8.5)).fill()
             if isActive {
                 color.withAlphaComponent(0.30).setStroke()
@@ -2575,7 +2655,7 @@ if CommandLine.arguments.contains("--once") {
 if CommandLine.arguments.contains("--task-light-once") {
     let delegate = AppDelegate()
     let state = delegate.readTaskLightState()
-    printJSON(["ok": true, "state": state.rawValue])
+    printJSON(["ok": true, "state": state.rawValue, "unread": state.hasUnread, "running": state.hasRunning])
     exit(0)
 }
 
