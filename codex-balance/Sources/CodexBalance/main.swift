@@ -863,6 +863,12 @@ final class UsageCardView: NSView {
 
     static var styleCount: Int { trainStyles.count }
 
+    private enum TrainSegment: Hashable {
+        case locomotive
+        case carA
+        case carB
+    }
+
     private let summary: CodexUsageSummary
     private let errorText: String?
     private let trainStyleIndex: Int
@@ -872,9 +878,10 @@ final class UsageCardView: NSView {
     private let slowestTrainPeriod: TimeInterval = 24.0
     private var trainLayer: CALayer?
     private var staticCardImage: NSImage?
-    private var trainSpriteImageCache: NSImage?
-    private let trainSpriteSize = NSSize(width: 60, height: 24)
-    private let trainSpriteHeadX: CGFloat = 42
+    private var trainSegmentImageCache: [TrainSegment: NSImage] = [:]
+    private let trainSegmentSize = NSSize(width: 38, height: 34)
+    private let trainTrackInset: CGFloat = 7
+    private let trainTrackRadius: CGFloat = 11
 
     private var trainStyle: TrainStyle {
         Self.trainStyles[trainStyleIndex % Self.trainStyles.count]
@@ -973,29 +980,32 @@ final class UsageCardView: NSView {
         guard trainLayer == nil, let hostLayer = layer else { return }
         let card = bounds.insetBy(dx: 10, dy: 10)
         let track = trainTrackRect(in: card)
-        let sprite = trainSpriteImage()
 
-        let spriteLayer = CALayer()
-        spriteLayer.name = "train"
-        spriteLayer.bounds = NSRect(origin: .zero, size: sprite.size)
-        spriteLayer.anchorPoint = CGPoint(x: trainSpriteHeadX / sprite.size.width, y: 0.5)
-        spriteLayer.contentsGravity = .resizeAspect
-        spriteLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        spriteLayer.shouldRasterize = true
-        spriteLayer.rasterizationScale = spriteLayer.contentsScale
-        spriteLayer.contents = sprite.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        let containerLayer = CALayer()
+        containerLayer.name = "train"
+        containerLayer.frame = bounds
+        hostLayer.addSublayer(containerLayer)
+        trainLayer = containerLayer
 
-        let headPose = currentTrainPoses(in: card)[0]
+        let segments: [(segment: TrainSegment, offset: CGFloat)] = [
+            (.carA, 32),
+            (.carB, 17),
+            (.locomotive, 0)
+        ]
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        spriteLayer.position = headPose.point
-        spriteLayer.transform = CATransform3DMakeRotation(headPose.angle, 0, 0, 1)
+        for item in segments {
+            let segmentLayer = makeTrainSegmentLayer(item.segment)
+            let pose = currentTrainPose(in: card, distanceOffset: item.offset)
+            segmentLayer.position = pose.point
+            segmentLayer.transform = CATransform3DMakeRotation(pose.angle, 0, 0, 1)
+            containerLayer.addSublayer(segmentLayer)
+            if !isTrainBrokenDown {
+                addTrainLoopAnimation(to: segmentLayer, on: track, distanceOffset: item.offset)
+            }
+        }
         CATransaction.commit()
-        hostLayer.addSublayer(spriteLayer)
-        trainLayer = spriteLayer
-
-        guard !isTrainBrokenDown else { return }
-        addTrainLoopAnimation(to: spriteLayer, on: track)
     }
 
     private func stopTrainAnimation() {
@@ -1004,9 +1014,23 @@ final class UsageCardView: NSView {
         trainLayer = nil
     }
 
-    private func addTrainLoopAnimation(to layer: CALayer, on track: NSRect) {
+    private func makeTrainSegmentLayer(_ segment: TrainSegment) -> CALayer {
+        let image = trainSegmentImage(segment)
+        let segmentLayer = CALayer()
+        segmentLayer.name = "trainSegment"
+        segmentLayer.bounds = NSRect(origin: .zero, size: image.size)
+        segmentLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        segmentLayer.contentsGravity = .resizeAspect
+        segmentLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        segmentLayer.shouldRasterize = true
+        segmentLayer.rasterizationScale = segmentLayer.contentsScale
+        segmentLayer.contents = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        return segmentLayer
+    }
+
+    private func addTrainLoopAnimation(to layer: CALayer, on track: NSRect, distanceOffset: CGFloat) {
         let period = currentTrainPeriod
-        let keyframes = trainLoopKeyframes(on: track)
+        let keyframes = trainLoopKeyframes(on: track, distanceOffset: distanceOffset)
         let linearTiming = CAMediaTimingFunction(name: .linear)
 
         let position = CAKeyframeAnimation(keyPath: "position")
@@ -1037,8 +1061,8 @@ final class UsageCardView: NSView {
         layer.add(group, forKey: "trainLoop")
     }
 
-    private func trainLoopKeyframes(on track: NSRect) -> (points: [NSValue], angles: [NSNumber], times: [NSNumber]) {
-        let radius: CGFloat = 18
+    private func trainLoopKeyframes(on track: NSRect, distanceOffset: CGFloat) -> (points: [NSValue], angles: [NSNumber], times: [NSNumber]) {
+        let radius = trainTrackRadius
         let perimeter = roundedRectPerimeter(track, radius: radius)
         let sampleCount = 240
         var points: [NSValue] = []
@@ -1048,43 +1072,62 @@ final class UsageCardView: NSView {
         angles.reserveCapacity(sampleCount + 1)
         times.reserveCapacity(sampleCount + 1)
 
+        var previousAngle: CGFloat?
         for index in 0...sampleCount {
             let progress = CGFloat(index) / CGFloat(sampleCount)
-            let pose = trainPose(on: track, radius: radius, distance: progress * perimeter)
+            let pose = trainPose(on: track, radius: radius, distance: progress * perimeter - distanceOffset)
+            var angle = pose.angle
+            if let previousAngle {
+                while angle - previousAngle > CGFloat.pi {
+                    angle -= 2 * CGFloat.pi
+                }
+                while angle - previousAngle < -CGFloat.pi {
+                    angle += 2 * CGFloat.pi
+                }
+            }
             points.append(NSValue(point: pose.point))
-            angles.append(NSNumber(value: Double(pose.angle)))
+            angles.append(NSNumber(value: Double(angle)))
             times.append(NSNumber(value: Double(progress)))
+            previousAngle = angle
         }
 
         return (points, angles, times)
     }
 
-    private func trainSpriteImage() -> NSImage {
-        if let trainSpriteImageCache {
-            return trainSpriteImageCache
+    private func trainSegmentImage(_ segment: TrainSegment) -> NSImage {
+        if let cached = trainSegmentImageCache[segment] {
+            return cached
         }
 
-        let image = NSImage(size: trainSpriteSize)
+        let image = NSImage(size: trainSegmentSize)
         image.lockFocus()
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
-        transform.translateX(by: trainSpriteHeadX, yBy: trainSpriteSize.height / 2)
+        transform.translateX(by: trainSegmentSize.width / 2, yBy: trainSegmentSize.height / 2)
         transform.concat()
-        drawCoupler(from: NSPoint(x: -32, y: 0), to: NSPoint(x: -17, y: 0))
-        drawCoupler(from: NSPoint(x: -17, y: 0), to: NSPoint(x: 0, y: 0))
-        drawTrainCar(at: NSPoint(x: -32, y: 0), angle: 0, color: trainStyle.carA)
-        drawTrainCar(at: NSPoint(x: -17, y: 0), angle: 0, color: trainStyle.carB)
-        drawLocomotive(at: NSPoint(x: 0, y: 0), angle: 0)
-        if isTrainBrokenDown {
-            drawBreakdownSmoke(near: NSPoint(x: 0, y: 0))
+        switch segment {
+        case .locomotive:
+            drawLocomotive(at: NSPoint(x: 0, y: 0), angle: 0)
+            if isTrainBrokenDown {
+                drawBreakdownSmoke(near: NSPoint(x: 0, y: 0))
+            }
+        case .carA:
+            drawTrainCar(at: NSPoint(x: 0, y: 0), angle: 0, color: trainStyle.carA)
+        case .carB:
+            drawTrainCar(at: NSPoint(x: 0, y: 0), angle: 0, color: trainStyle.carB)
         }
         NSGraphicsContext.restoreGraphicsState()
         image.unlockFocus()
-        trainSpriteImageCache = image
+        trainSegmentImageCache[segment] = image
         return image
     }
 
     private func currentTrainPoses(in card: NSRect) -> [(point: NSPoint, angle: CGFloat)] {
+        let offsets: [CGFloat] = [0, 17, 32]
+        return offsets.map { currentTrainPose(in: card, distanceOffset: $0) }
+    }
+
+    private func currentTrainPose(in card: NSRect, distanceOffset: CGFloat) -> (point: NSPoint, angle: CGFloat) {
         let track = trainTrackRect(in: card)
         let elapsed = Date.timeIntervalSinceReferenceDate - trainStartTime
         let period = currentTrainPeriod
@@ -1094,11 +1137,10 @@ final class UsageCardView: NSView {
         } else {
             progress = CGFloat((elapsed.truncatingRemainder(dividingBy: period)) / period)
         }
-        let radius: CGFloat = 18
+        let radius = trainTrackRadius
         let perimeter = roundedRectPerimeter(track, radius: radius)
         let headDistance = progress * perimeter
-        let offsets: [CGFloat] = [0, 17, 32]
-        return offsets.map { trainPose(on: track, radius: radius, distance: headDistance - $0) }
+        return trainPose(on: track, radius: radius, distance: headDistance - distanceOffset)
     }
 
     private var weeklyRemainingForSpeed: CGFloat {
@@ -1123,7 +1165,7 @@ final class UsageCardView: NSView {
     }
 
     private func trainTrackRect(in card: NSRect) -> NSRect {
-        card
+        card.insetBy(dx: trainTrackInset, dy: trainTrackInset)
     }
 
     private func roundedRectPerimeter(_ rect: NSRect, radius: CGFloat) -> CGFloat {
