@@ -880,8 +880,8 @@ final class UsageCardView: NSView {
     private var staticCardImage: NSImage?
     private var trainSegmentImageCache: [TrainSegment: NSImage] = [:]
     private let trainSegmentSize = NSSize(width: 38, height: 34)
-    private let trainTrackInset: CGFloat = 7
-    private let trainTrackRadius: CGFloat = 11
+    private let trainTrackInset: CGFloat = 0
+    private let trainTrackRadius: CGFloat = 18
 
     private var trainStyle: TrainStyle {
         Self.trainStyles[trainStyleIndex % Self.trainStyles.count]
@@ -895,6 +895,7 @@ final class UsageCardView: NSView {
         self.onTrainClick = onTrainClick
         super.init(frame: NSRect(x: 0, y: 0, width: 410, height: 162))
         wantsLayer = true
+        layer?.masksToBounds = false
     }
 
     required init?(coder: NSCoder) {
@@ -984,6 +985,7 @@ final class UsageCardView: NSView {
         let containerLayer = CALayer()
         containerLayer.name = "train"
         containerLayer.frame = bounds
+        containerLayer.masksToBounds = false
         hostLayer.addSublayer(containerLayer)
         trainLayer = containerLayer
 
