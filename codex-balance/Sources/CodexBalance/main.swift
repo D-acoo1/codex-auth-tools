@@ -1109,19 +1109,156 @@ final class UsageCardView: NSView {
         transform.concat()
         switch segment {
         case .locomotive:
-            drawLocomotive(at: NSPoint(x: 0, y: 0), angle: 0)
+            drawElectricMouseEngine()
             if isTrainBrokenDown {
                 drawBreakdownSmoke(near: NSPoint(x: 0, y: 0))
             }
         case .carA:
-            drawTrainCar(at: NSPoint(x: 0, y: 0), angle: 0, color: trainStyle.carA)
+            drawSeedCreatureCar()
         case .carB:
-            drawTrainCar(at: NSPoint(x: 0, y: 0), angle: 0, color: trainStyle.carB)
+            drawWaterTurtleCar()
         }
         NSGraphicsContext.restoreGraphicsState()
         image.unlockFocus()
         trainSegmentImageCache[segment] = image
         return image
+    }
+
+    private func drawElectricMouseEngine() {
+        let outline = NSColor(white: 0.06, alpha: 0.36)
+        let yellow = NSColor(calibratedRed: 0.98, green: 0.78, blue: 0.24, alpha: 0.98)
+        let warmYellow = NSColor(calibratedRed: 1.0, green: 0.88, blue: 0.42, alpha: 0.95)
+        let cheek = NSColor(calibratedRed: 0.92, green: 0.24, blue: 0.20, alpha: 0.92)
+        let dark = NSColor(calibratedRed: 0.13, green: 0.12, blue: 0.10, alpha: 0.92)
+        let spark = NSColor(calibratedRed: 1.0, green: 0.91, blue: 0.36, alpha: 0.94)
+
+        yellow.setFill()
+        let body = NSBezierPath(roundedRect: NSRect(x: -8.2, y: -5.4, width: 16.4, height: 10.8), xRadius: 5.0, yRadius: 5.0)
+        body.fill()
+        outline.setStroke()
+        body.lineWidth = 0.7
+        body.stroke()
+
+        drawTriangle(points: [NSPoint(x: -6.0, y: 4.5), NSPoint(x: -3.2, y: 12.4), NSPoint(x: -1.2, y: 4.0)], fill: yellow, stroke: outline, lineWidth: 0.65)
+        drawTriangle(points: [NSPoint(x: 0.6, y: 4.2), NSPoint(x: 3.8, y: 12.0), NSPoint(x: 5.4, y: 3.8)], fill: yellow, stroke: outline, lineWidth: 0.65)
+        drawTriangle(points: [NSPoint(x: -3.9, y: 9.0), NSPoint(x: -3.2, y: 12.4), NSPoint(x: -2.2, y: 8.7)], fill: dark)
+        drawTriangle(points: [NSPoint(x: 2.6, y: 8.5), NSPoint(x: 3.8, y: 12.0), NSPoint(x: 4.4, y: 8.3)], fill: dark)
+
+        warmYellow.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -5.8, y: -2.7, width: 9.0, height: 5.4), xRadius: 2.6, yRadius: 2.6).fill()
+        dark.setFill()
+        NSBezierPath(ovalIn: NSRect(x: -3.8, y: 0.3, width: 1.7, height: 1.9)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 2.4, y: 0.3, width: 1.7, height: 1.9)).fill()
+        cheek.setFill()
+        NSBezierPath(ovalIn: NSRect(x: -6.8, y: -2.2, width: 2.7, height: 2.7)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 5.0, y: -2.2, width: 2.7, height: 2.7)).fill()
+
+        spark.setFill()
+        let bolt = NSBezierPath()
+        bolt.move(to: NSPoint(x: -10.4, y: 0.8))
+        bolt.line(to: NSPoint(x: -14.0, y: 3.2))
+        bolt.line(to: NSPoint(x: -12.2, y: 0.2))
+        bolt.line(to: NSPoint(x: -15.4, y: -2.7))
+        bolt.line(to: NSPoint(x: -10.6, y: -1.0))
+        bolt.close()
+        bolt.fill()
+        outline.setStroke()
+        bolt.lineWidth = 0.55
+        bolt.stroke()
+
+        drawCornerLight(x: 8.2, y: -3.8)
+    }
+
+    private func drawWaterTurtleCar() {
+        let outline = NSColor(white: 0.05, alpha: 0.28)
+        let shell = NSColor(calibratedRed: 0.22, green: 0.52, blue: 0.82, alpha: 0.96)
+        let shellDark = NSColor(calibratedRed: 0.10, green: 0.32, blue: 0.58, alpha: 0.88)
+        let skin = NSColor(calibratedRed: 0.46, green: 0.79, blue: 0.95, alpha: 0.96)
+        let belly = NSColor(calibratedRed: 0.98, green: 0.84, blue: 0.52, alpha: 0.92)
+        let dark = NSColor(calibratedRed: 0.07, green: 0.12, blue: 0.18, alpha: 0.90)
+        let water = NSColor(calibratedRed: 0.56, green: 0.92, blue: 1.0, alpha: 0.82)
+
+        shell.setFill()
+        let body = NSBezierPath(roundedRect: NSRect(x: -8.4, y: -5.4, width: 16.2, height: 10.8), xRadius: 5.2, yRadius: 5.2)
+        body.fill()
+        outline.setStroke()
+        body.lineWidth = 0.7
+        body.stroke()
+
+        shellDark.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -6.5, y: 1.0, width: 8.8, height: 2.2), xRadius: 1.0, yRadius: 1.0).fill()
+        belly.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -5.5, y: -4.2, width: 8.0, height: 4.2), xRadius: 2.0, yRadius: 2.0).fill()
+
+        skin.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 4.6, y: -3.7, width: 7.2, height: 7.4)).fill()
+        NSBezierPath(ovalIn: NSRect(x: -10.5, y: -4.2, width: 4.0, height: 4.0)).fill()
+        NSBezierPath(ovalIn: NSRect(x: -10.3, y: 0.4, width: 4.0, height: 4.0)).fill()
+        outline.setStroke()
+        NSBezierPath(ovalIn: NSRect(x: 4.6, y: -3.7, width: 7.2, height: 7.4)).stroke()
+
+        dark.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 8.0, y: 0.7, width: 1.5, height: 1.8)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 8.0, y: -2.4, width: 1.5, height: 1.8)).fill()
+
+        water.setStroke()
+        let wave = NSBezierPath()
+        wave.lineWidth = 0.9
+        wave.move(to: NSPoint(x: -4.8, y: -7.0))
+        wave.curve(to: NSPoint(x: 0.0, y: -7.0), controlPoint1: NSPoint(x: -3.2, y: -5.7), controlPoint2: NSPoint(x: -1.6, y: -8.3))
+        wave.curve(to: NSPoint(x: 4.8, y: -7.0), controlPoint1: NSPoint(x: 1.6, y: -5.7), controlPoint2: NSPoint(x: 3.2, y: -8.3))
+        wave.stroke()
+    }
+
+    private func drawSeedCreatureCar() {
+        let outline = NSColor(white: 0.05, alpha: 0.28)
+        let bodyGreen = NSColor(calibratedRed: 0.42, green: 0.74, blue: 0.48, alpha: 0.96)
+        let belly = NSColor(calibratedRed: 0.62, green: 0.88, blue: 0.58, alpha: 0.92)
+        let spot = NSColor(calibratedRed: 0.18, green: 0.48, blue: 0.32, alpha: 0.52)
+        let bulb = NSColor(calibratedRed: 0.32, green: 0.64, blue: 0.42, alpha: 0.96)
+        let bulbDark = NSColor(calibratedRed: 0.16, green: 0.42, blue: 0.30, alpha: 0.78)
+        let dark = NSColor(calibratedRed: 0.06, green: 0.13, blue: 0.09, alpha: 0.88)
+
+        bodyGreen.setFill()
+        let body = NSBezierPath(roundedRect: NSRect(x: -8.6, y: -5.0, width: 16.4, height: 10.0), xRadius: 4.8, yRadius: 4.8)
+        body.fill()
+        outline.setStroke()
+        body.lineWidth = 0.7
+        body.stroke()
+
+        belly.setFill()
+        NSBezierPath(roundedRect: NSRect(x: -5.2, y: -3.6, width: 8.2, height: 4.6), xRadius: 2.1, yRadius: 2.1).fill()
+        spot.setFill()
+        NSBezierPath(ovalIn: NSRect(x: -6.5, y: 1.4, width: 2.4, height: 1.7)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 0.4, y: 2.0, width: 2.8, height: 1.8)).fill()
+
+        bulb.setFill()
+        let seed = NSBezierPath()
+        seed.move(to: NSPoint(x: -3.8, y: 5.2))
+        seed.curve(to: NSPoint(x: 0.4, y: 11.5), controlPoint1: NSPoint(x: -3.2, y: 8.4), controlPoint2: NSPoint(x: -1.2, y: 10.8))
+        seed.curve(to: NSPoint(x: 5.1, y: 5.0), controlPoint1: NSPoint(x: 2.4, y: 10.2), controlPoint2: NSPoint(x: 4.6, y: 8.2))
+        seed.curve(to: NSPoint(x: -3.8, y: 5.2), controlPoint1: NSPoint(x: 2.4, y: 6.2), controlPoint2: NSPoint(x: -0.5, y: 6.1))
+        seed.close()
+        seed.fill()
+        outline.setStroke()
+        seed.lineWidth = 0.65
+        seed.stroke()
+
+        bulbDark.setStroke()
+        let vein = NSBezierPath()
+        vein.lineWidth = 0.6
+        vein.move(to: NSPoint(x: 0.3, y: 5.6))
+        vein.line(to: NSPoint(x: 0.5, y: 10.5))
+        vein.move(to: NSPoint(x: -0.2, y: 7.4))
+        vein.line(to: NSPoint(x: -2.2, y: 8.9))
+        vein.move(to: NSPoint(x: 1.0, y: 7.3))
+        vein.line(to: NSPoint(x: 3.1, y: 8.8))
+        vein.stroke()
+
+        dark.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 4.6, y: 0.9, width: 1.5, height: 1.8)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 4.6, y: -2.2, width: 1.5, height: 1.8)).fill()
+        drawCornerLight(x: -8.4, y: -5.0)
     }
 
     private func currentTrainPoses(in card: NSRect) -> [(point: NSPoint, angle: CGFloat)] {
@@ -1373,6 +1510,23 @@ final class UsageCardView: NSView {
         NSBezierPath(ovalIn: NSRect(x: 5.5, y: -1.4, width: 2.8, height: 2.8)).fill()
         drawRoofGrooves(in: NSRect(x: -6.0, y: -3.2, width: 11.0, height: 6.4), spacing: 3.0)
         strokeRounded(NSRect(x: -7.0, y: -4.1, width: 13.6, height: 8.2), radius: 1.4, width: 0.8)
+    }
+
+    private func drawTriangle(points: [NSPoint], fill: NSColor, stroke: NSColor? = nil, lineWidth: CGFloat = 0.6) {
+        guard points.count >= 3 else { return }
+        let path = NSBezierPath()
+        path.move(to: points[0])
+        for point in points.dropFirst() {
+            path.line(to: point)
+        }
+        path.close()
+        fill.setFill()
+        path.fill()
+        if let stroke {
+            stroke.setStroke()
+            path.lineWidth = lineWidth
+            path.stroke()
+        }
     }
 
     private func drawBreakdownSmoke(near point: NSPoint) {
