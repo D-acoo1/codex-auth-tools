@@ -931,27 +931,41 @@ final class UsageCardView: NSView {
     private func drawStaticCard() {
         let card = bounds.insetBy(dx: 10, dy: 10)
         let path = NSBezierPath(roundedRect: card, xRadius: 18, yRadius: 18)
-        NSColor(calibratedRed: 0.06, green: 0.43, blue: 0.18, alpha: 1.0).setFill()
-        path.fill()
+        let ceramicTop = NSColor(calibratedRed: 0.965, green: 0.943, blue: 0.900, alpha: 1.0)
+        let ceramicBottom = NSColor(calibratedRed: 0.900, green: 0.862, blue: 0.805, alpha: 1.0)
+        NSGradient(colors: [ceramicTop, ceramicBottom])?.draw(in: path, angle: -92)
+        NSColor(calibratedWhite: 1.0, alpha: 0.42).setStroke()
+        let highlight = NSBezierPath(roundedRect: card.insetBy(dx: 1.0, dy: 1.0), xRadius: 17, yRadius: 17)
+        highlight.lineWidth = 1
+        highlight.stroke()
+        NSColor(calibratedRed: 0.36, green: 0.32, blue: 0.27, alpha: 0.16).setStroke()
+        path.lineWidth = 1
+        path.stroke()
 
-        drawText(L10n.shared.t("title"), x: 24, y: 124, width: 120, height: 18, font: .systemFont(ofSize: 12, weight: .semibold), color: NSColor(white: 1, alpha: 0.72))
-        drawText(summary.plan.uppercased(), x: 338, y: 124, width: 52, height: 18, font: .systemFont(ofSize: 11, weight: .medium), color: NSColor(white: 1, alpha: 0.55), alignment: .right)
+        let titleColor = NSColor(calibratedRed: 0.17, green: 0.16, blue: 0.14, alpha: 0.82)
+        let mutedTextColor = NSColor(calibratedRed: 0.20, green: 0.18, blue: 0.16, alpha: 0.56)
+        let primaryValueColor = NSColor(calibratedRed: 0.18, green: 0.43, blue: 0.32, alpha: 1.0)
+        let secondaryValueColor = NSColor(calibratedRed: 0.46, green: 0.32, blue: 0.52, alpha: 1.0)
+        let tertiaryValueColor = NSColor(calibratedRed: 0.25, green: 0.47, blue: 0.43, alpha: 1.0)
+
+        drawText(L10n.shared.t("title"), x: 24, y: 124, width: 120, height: 18, font: .systemFont(ofSize: 12, weight: .semibold), color: titleColor)
+        drawText(summary.plan.uppercased(), x: 338, y: 124, width: 52, height: 18, font: .systemFont(ofSize: 11, weight: .medium), color: mutedTextColor, alignment: .right)
 
         drawDivider(x: 138)
         drawDivider(x: 270)
 
         if summary.isAPIAccount {
             let api = summary.apiUsage
-            drawColumn(icon: .none, label: "Bal", value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
-            drawColumn(icon: .none, label: "Cost", value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
-            drawColumn(icon: .none, label: "Tok", value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
-            drawText(L10n.shared.t("total") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
-            drawText(L10n.shared.t("total") + " " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56))
+            drawColumn(icon: .none, label: "Bal", value: apiAmount(api?.displayRemaining, unit: api?.unit), x: 24, valueColor: primaryValueColor)
+            drawColumn(icon: .none, label: "Cost", value: apiAmount(api?.displayTodayCost, unit: api?.unit), x: 156, valueColor: secondaryValueColor)
+            drawColumn(icon: .none, label: "Tok", value: compactNumber(api?.todayTokens ?? api?.totalTokens), x: 288, valueColor: tertiaryValueColor)
+            drawText(L10n.shared.t("total") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: mutedTextColor)
+            drawText(L10n.shared.t("total") + " " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: mutedTextColor)
         } else {
-            drawColumn(icon: .timer, label: "5h", value: percent(summary.primaryRemaining), x: 24, valueColor: NSColor(calibratedRed: 0.20, green: 0.92, blue: 0.44, alpha: 1))
-            drawColumn(icon: .week, label: "7d", value: percent(summary.secondaryRemaining), x: 156, valueColor: NSColor(calibratedRed: 0.76, green: 0.48, blue: 1.0, alpha: 1))
+            drawColumn(icon: .timer, label: "5h", value: percent(summary.primaryRemaining), x: 24, valueColor: primaryValueColor)
+            drawColumn(icon: .week, label: "7d", value: percent(summary.secondaryRemaining), x: 156, valueColor: secondaryValueColor)
             let credits = summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0")
-            drawColumn(icon: .none, label: L10n.shared.t("credits"), value: credits, x: 288, valueColor: NSColor(calibratedRed: 0.46, green: 0.94, blue: 0.72, alpha: 1))
+            drawColumn(icon: .none, label: L10n.shared.t("credits"), value: credits, x: 288, valueColor: tertiaryValueColor)
             if let pReset = summary.primaryResetAfterSeconds {
                 drawResetBlock(seconds: pReset, timestamp: summary.primaryResetAt, x: 24)
             }
@@ -961,9 +975,9 @@ final class UsageCardView: NSView {
         }
         let update = timeString(summary.fetchedAt)
         if let errorText {
-            drawText(errorText, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10, weight: .regular), color: NSColor(calibratedRed: 1, green: 0.72, blue: 0.52, alpha: 1), alignment: .right)
+            drawText(errorText, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10, weight: .regular), color: NSColor(calibratedRed: 0.62, green: 0.30, blue: 0.22, alpha: 1.0), alignment: .right)
         } else {
-            drawText(update, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10.5, weight: .regular), color: NSColor(white: 1, alpha: 0.56), alignment: .right)
+            drawText(update, x: 288, y: 32, width: 96, height: 16, font: .systemFont(ofSize: 10.5, weight: .regular), color: mutedTextColor, alignment: .right)
         }
     }
 
@@ -1587,7 +1601,7 @@ final class UsageCardView: NSView {
     }
 
     private func drawColumn(icon: ColumnIcon, label: String, value: String, x: CGFloat, valueColor: NSColor) {
-        let labelColor = NSColor(white: 1, alpha: 0.62)
+        let labelColor = NSColor(calibratedRed: 0.20, green: 0.18, blue: 0.16, alpha: 0.58)
         if icon != .none {
             drawIcon(icon, in: NSRect(x: x, y: 92, width: 14, height: 14), color: labelColor)
             drawText(label, x: x + 18, y: 90, width: 87, height: 16, font: .systemFont(ofSize: 11, weight: .medium), color: labelColor)
@@ -1642,7 +1656,7 @@ final class UsageCardView: NSView {
     }
 
     private func drawDivider(x: CGFloat) {
-        NSColor(white: 1, alpha: 0.18).setStroke()
+        NSColor(calibratedRed: 0.30, green: 0.26, blue: 0.22, alpha: 0.14).setStroke()
         let path = NSBezierPath()
         path.move(to: NSPoint(x: x, y: 54))
         path.line(to: NSPoint(x: x, y: 106))
@@ -1651,7 +1665,7 @@ final class UsageCardView: NSView {
     }
 
     private func drawResetBlock(seconds: Int, timestamp: TimeInterval?, x: CGFloat) {
-        let color = NSColor(white: 1, alpha: 0.56)
+        let color = NSColor(calibratedRed: 0.20, green: 0.18, blue: 0.16, alpha: 0.52)
         drawText(duration(seconds), x: x, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: color)
         let point = resetPoint(timestamp) ?? L10n.shared.t("unknown")
         drawText(point, x: x, y: 18, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: color)
