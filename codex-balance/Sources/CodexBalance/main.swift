@@ -861,12 +861,12 @@ final class UsageCardView: NSView {
         )
     ]
 
-    static var styleCount: Int { trainStyles.count }
+    static let trainThemeNames = ["space", "rpg", "tools", "elemental"]
 
-    private enum TrainSegment: Hashable {
-        case locomotive
-        case carA
-        case carB
+    static var styleCount: Int { trainThemeNames.count }
+
+    private struct TrainSegment: Hashable {
+        let index: Int
     }
 
     private let summary: CodexUsageSummary
@@ -880,11 +880,16 @@ final class UsageCardView: NSView {
     private var staticCardImage: NSImage?
     private var trainSegmentImageCache: [TrainSegment: NSImage] = [:]
     private let trainSegmentSize = NSSize(width: 38, height: 34)
+    private let trainSegmentSpacing: CGFloat = 30
     private let trainTrackInset: CGFloat = 0
     private let trainTrackRadius: CGFloat = 18
 
     private var trainStyle: TrainStyle {
         Self.trainStyles[trainStyleIndex % Self.trainStyles.count]
+    }
+
+    private var trainThemeName: String {
+        Self.trainThemeNames[trainStyleIndex % Self.trainThemeNames.count]
     }
 
     init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, onTrainClick: @escaping () -> Void) {
@@ -1003,15 +1008,9 @@ final class UsageCardView: NSView {
         hostLayer.addSublayer(containerLayer)
         trainLayer = containerLayer
 
-        let segments: [(segment: TrainSegment, offset: CGFloat)] = [
-            (.carA, 32),
-            (.carB, 17),
-            (.locomotive, 0)
-        ]
-
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for item in segments {
+        for item in trainSegments() {
             let segmentLayer = makeTrainSegmentLayer(item.segment)
             let pose = currentTrainPose(in: card, distanceOffset: item.offset)
             segmentLayer.position = pose.point
@@ -1028,6 +1027,12 @@ final class UsageCardView: NSView {
         trainLayer?.removeAllAnimations()
         trainLayer?.removeFromSuperlayer()
         trainLayer = nil
+    }
+
+    private func trainSegments() -> [(segment: TrainSegment, offset: CGFloat)] {
+        (0..<5).reversed().map { index in
+            (TrainSegment(index: index), -CGFloat(index) * trainSegmentSpacing)
+        }
     }
 
     private func makeTrainSegmentLayer(_ segment: TrainSegment) -> CALayer {
@@ -1091,7 +1096,7 @@ final class UsageCardView: NSView {
         var previousAngle: CGFloat?
         for index in 0...sampleCount {
             let progress = CGFloat(index) / CGFloat(sampleCount)
-            let pose = trainPose(on: track, radius: radius, distance: progress * perimeter - distanceOffset)
+            let pose = trainPose(on: track, radius: radius, distance: (1 - progress) * perimeter - distanceOffset)
             var angle = pose.angle
             if let previousAngle {
                 while angle - previousAngle > CGFloat.pi {
@@ -1115,22 +1120,28 @@ final class UsageCardView: NSView {
             return cached
         }
 
+        if let image = loadTrainSegmentImage(segment) {
+            trainSegmentImageCache[segment] = image
+            return image
+        }
+
         let image = NSImage(size: trainSegmentSize)
         image.lockFocus()
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
         transform.translateX(by: trainSegmentSize.width / 2, yBy: trainSegmentSize.height / 2)
         transform.concat()
-        switch segment {
-        case .locomotive:
-            drawElectricMouseEngine()
+
+        if segment.index == 0 {
+            drawLocomotive(at: NSPoint(x: 0, y: 0), angle: 0)
             if isTrainBrokenDown {
                 drawBreakdownSmoke(near: NSPoint(x: 0, y: 0))
             }
-        case .carA:
-            drawSeedCreatureCar()
-        case .carB:
-            drawWaterTurtleCar()
+        } else if segment.index % 2 == 1 {
+            drawTrainCar(at: NSPoint(x: 0, y: 0), angle: 0, color: trainStyle.carA)
+        } else {
+            drawTrainCar(at: NSPoint(x: 0, y: 0), angle: 0, color: trainStyle.carB)
+
         }
         NSGraphicsContext.restoreGraphicsState()
         image.unlockFocus()
@@ -1138,146 +1149,30 @@ final class UsageCardView: NSView {
         return image
     }
 
-    private func drawElectricMouseEngine() {
-        let outline = NSColor(white: 0.06, alpha: 0.36)
-        let yellow = NSColor(calibratedRed: 0.98, green: 0.78, blue: 0.24, alpha: 0.98)
-        let warmYellow = NSColor(calibratedRed: 1.0, green: 0.88, blue: 0.42, alpha: 0.95)
-        let cheek = NSColor(calibratedRed: 0.92, green: 0.24, blue: 0.20, alpha: 0.92)
-        let dark = NSColor(calibratedRed: 0.13, green: 0.12, blue: 0.10, alpha: 0.92)
-        let spark = NSColor(calibratedRed: 1.0, green: 0.91, blue: 0.36, alpha: 0.94)
 
-        yellow.setFill()
-        let body = NSBezierPath(roundedRect: NSRect(x: -8.2, y: -5.4, width: 16.4, height: 10.8), xRadius: 5.0, yRadius: 5.0)
-        body.fill()
-        outline.setStroke()
-        body.lineWidth = 0.7
-        body.stroke()
+    private func loadTrainSegmentImage(_ segment: TrainSegment) -> NSImage? {
+        let fileManager = FileManager.default
+        let env = ProcessInfo.processInfo.environment
+        let roots: [URL] = [
+            env["CODEX_BALANCE_ASSET_DIR"].map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) },
+            fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/CodexBalance/train-themes", isDirectory: true)
+        ].compactMap { $0 }
 
-        drawTriangle(points: [NSPoint(x: -6.0, y: 4.5), NSPoint(x: -3.2, y: 12.4), NSPoint(x: -1.2, y: 4.0)], fill: yellow, stroke: outline, lineWidth: 0.65)
-        drawTriangle(points: [NSPoint(x: 0.6, y: 4.2), NSPoint(x: 3.8, y: 12.0), NSPoint(x: 5.4, y: 3.8)], fill: yellow, stroke: outline, lineWidth: 0.65)
-        drawTriangle(points: [NSPoint(x: -3.9, y: 9.0), NSPoint(x: -3.2, y: 12.4), NSPoint(x: -2.2, y: 8.7)], fill: dark)
-        drawTriangle(points: [NSPoint(x: 2.6, y: 8.5), NSPoint(x: 3.8, y: 12.0), NSPoint(x: 4.4, y: 8.3)], fill: dark)
+        for root in roots {
+            let url = root
+                .appendingPathComponent(trainThemeName, isDirectory: true)
+                .appendingPathComponent("\(segment.index).png")
+            if let image = NSImage(contentsOf: url), image.isValid {
+                return image
+            }
+        }
+        return nil
 
-        warmYellow.setFill()
-        NSBezierPath(roundedRect: NSRect(x: -5.8, y: -2.7, width: 9.0, height: 5.4), xRadius: 2.6, yRadius: 2.6).fill()
-        dark.setFill()
-        NSBezierPath(ovalIn: NSRect(x: -3.8, y: 0.3, width: 1.7, height: 1.9)).fill()
-        NSBezierPath(ovalIn: NSRect(x: 2.4, y: 0.3, width: 1.7, height: 1.9)).fill()
-        cheek.setFill()
-        NSBezierPath(ovalIn: NSRect(x: -6.8, y: -2.2, width: 2.7, height: 2.7)).fill()
-        NSBezierPath(ovalIn: NSRect(x: 5.0, y: -2.2, width: 2.7, height: 2.7)).fill()
-
-        spark.setFill()
-        let bolt = NSBezierPath()
-        bolt.move(to: NSPoint(x: -10.4, y: 0.8))
-        bolt.line(to: NSPoint(x: -14.0, y: 3.2))
-        bolt.line(to: NSPoint(x: -12.2, y: 0.2))
-        bolt.line(to: NSPoint(x: -15.4, y: -2.7))
-        bolt.line(to: NSPoint(x: -10.6, y: -1.0))
-        bolt.close()
-        bolt.fill()
-        outline.setStroke()
-        bolt.lineWidth = 0.55
-        bolt.stroke()
-
-        drawCornerLight(x: 8.2, y: -3.8)
-    }
-
-    private func drawWaterTurtleCar() {
-        let outline = NSColor(white: 0.05, alpha: 0.28)
-        let shell = NSColor(calibratedRed: 0.22, green: 0.52, blue: 0.82, alpha: 0.96)
-        let shellDark = NSColor(calibratedRed: 0.10, green: 0.32, blue: 0.58, alpha: 0.88)
-        let skin = NSColor(calibratedRed: 0.46, green: 0.79, blue: 0.95, alpha: 0.96)
-        let belly = NSColor(calibratedRed: 0.98, green: 0.84, blue: 0.52, alpha: 0.92)
-        let dark = NSColor(calibratedRed: 0.07, green: 0.12, blue: 0.18, alpha: 0.90)
-        let water = NSColor(calibratedRed: 0.56, green: 0.92, blue: 1.0, alpha: 0.82)
-
-        shell.setFill()
-        let body = NSBezierPath(roundedRect: NSRect(x: -8.4, y: -5.4, width: 16.2, height: 10.8), xRadius: 5.2, yRadius: 5.2)
-        body.fill()
-        outline.setStroke()
-        body.lineWidth = 0.7
-        body.stroke()
-
-        shellDark.setFill()
-        NSBezierPath(roundedRect: NSRect(x: -6.5, y: 1.0, width: 8.8, height: 2.2), xRadius: 1.0, yRadius: 1.0).fill()
-        belly.setFill()
-        NSBezierPath(roundedRect: NSRect(x: -5.5, y: -4.2, width: 8.0, height: 4.2), xRadius: 2.0, yRadius: 2.0).fill()
-
-        skin.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 4.6, y: -3.7, width: 7.2, height: 7.4)).fill()
-        NSBezierPath(ovalIn: NSRect(x: -10.5, y: -4.2, width: 4.0, height: 4.0)).fill()
-        NSBezierPath(ovalIn: NSRect(x: -10.3, y: 0.4, width: 4.0, height: 4.0)).fill()
-        outline.setStroke()
-        NSBezierPath(ovalIn: NSRect(x: 4.6, y: -3.7, width: 7.2, height: 7.4)).stroke()
-
-        dark.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 8.0, y: 0.7, width: 1.5, height: 1.8)).fill()
-        NSBezierPath(ovalIn: NSRect(x: 8.0, y: -2.4, width: 1.5, height: 1.8)).fill()
-
-        water.setStroke()
-        let wave = NSBezierPath()
-        wave.lineWidth = 0.9
-        wave.move(to: NSPoint(x: -4.8, y: -7.0))
-        wave.curve(to: NSPoint(x: 0.0, y: -7.0), controlPoint1: NSPoint(x: -3.2, y: -5.7), controlPoint2: NSPoint(x: -1.6, y: -8.3))
-        wave.curve(to: NSPoint(x: 4.8, y: -7.0), controlPoint1: NSPoint(x: 1.6, y: -5.7), controlPoint2: NSPoint(x: 3.2, y: -8.3))
-        wave.stroke()
-    }
-
-    private func drawSeedCreatureCar() {
-        let outline = NSColor(white: 0.05, alpha: 0.28)
-        let bodyGreen = NSColor(calibratedRed: 0.42, green: 0.74, blue: 0.48, alpha: 0.96)
-        let belly = NSColor(calibratedRed: 0.62, green: 0.88, blue: 0.58, alpha: 0.92)
-        let spot = NSColor(calibratedRed: 0.18, green: 0.48, blue: 0.32, alpha: 0.52)
-        let bulb = NSColor(calibratedRed: 0.32, green: 0.64, blue: 0.42, alpha: 0.96)
-        let bulbDark = NSColor(calibratedRed: 0.16, green: 0.42, blue: 0.30, alpha: 0.78)
-        let dark = NSColor(calibratedRed: 0.06, green: 0.13, blue: 0.09, alpha: 0.88)
-
-        bodyGreen.setFill()
-        let body = NSBezierPath(roundedRect: NSRect(x: -8.6, y: -5.0, width: 16.4, height: 10.0), xRadius: 4.8, yRadius: 4.8)
-        body.fill()
-        outline.setStroke()
-        body.lineWidth = 0.7
-        body.stroke()
-
-        belly.setFill()
-        NSBezierPath(roundedRect: NSRect(x: -5.2, y: -3.6, width: 8.2, height: 4.6), xRadius: 2.1, yRadius: 2.1).fill()
-        spot.setFill()
-        NSBezierPath(ovalIn: NSRect(x: -6.5, y: 1.4, width: 2.4, height: 1.7)).fill()
-        NSBezierPath(ovalIn: NSRect(x: 0.4, y: 2.0, width: 2.8, height: 1.8)).fill()
-
-        bulb.setFill()
-        let seed = NSBezierPath()
-        seed.move(to: NSPoint(x: -3.8, y: 5.2))
-        seed.curve(to: NSPoint(x: 0.4, y: 11.5), controlPoint1: NSPoint(x: -3.2, y: 8.4), controlPoint2: NSPoint(x: -1.2, y: 10.8))
-        seed.curve(to: NSPoint(x: 5.1, y: 5.0), controlPoint1: NSPoint(x: 2.4, y: 10.2), controlPoint2: NSPoint(x: 4.6, y: 8.2))
-        seed.curve(to: NSPoint(x: -3.8, y: 5.2), controlPoint1: NSPoint(x: 2.4, y: 6.2), controlPoint2: NSPoint(x: -0.5, y: 6.1))
-        seed.close()
-        seed.fill()
-        outline.setStroke()
-        seed.lineWidth = 0.65
-        seed.stroke()
-
-        bulbDark.setStroke()
-        let vein = NSBezierPath()
-        vein.lineWidth = 0.6
-        vein.move(to: NSPoint(x: 0.3, y: 5.6))
-        vein.line(to: NSPoint(x: 0.5, y: 10.5))
-        vein.move(to: NSPoint(x: -0.2, y: 7.4))
-        vein.line(to: NSPoint(x: -2.2, y: 8.9))
-        vein.move(to: NSPoint(x: 1.0, y: 7.3))
-        vein.line(to: NSPoint(x: 3.1, y: 8.8))
-        vein.stroke()
-
-        dark.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 4.6, y: 0.9, width: 1.5, height: 1.8)).fill()
-        NSBezierPath(ovalIn: NSRect(x: 4.6, y: -2.2, width: 1.5, height: 1.8)).fill()
-        drawCornerLight(x: -8.4, y: -5.0)
     }
 
     private func currentTrainPoses(in card: NSRect) -> [(point: NSPoint, angle: CGFloat)] {
-        let offsets: [CGFloat] = [0, 17, 32]
-        return offsets.map { currentTrainPose(in: card, distanceOffset: $0) }
+        trainSegments().map { currentTrainPose(in: card, distanceOffset: $0.offset) }
     }
 
     private func currentTrainPose(in card: NSRect, distanceOffset: CGFloat) -> (point: NSPoint, angle: CGFloat) {
@@ -1292,7 +1187,7 @@ final class UsageCardView: NSView {
         }
         let radius = trainTrackRadius
         let perimeter = roundedRectPerimeter(track, radius: radius)
-        let headDistance = progress * perimeter
+        let headDistance = (1 - progress) * perimeter
         return trainPose(on: track, radius: radius, distance: headDistance - distanceOffset)
     }
 
@@ -1313,7 +1208,7 @@ final class UsageCardView: NSView {
         currentTrainPoses(in: card).contains { pose in
             let dx = point.x - pose.point.x
             let dy = point.y - pose.point.y
-            return sqrt(dx * dx + dy * dy) <= 14
+            return sqrt(dx * dx + dy * dy) <= 20
         }
     }
 

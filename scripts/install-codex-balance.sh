@@ -40,6 +40,11 @@ if [[ -x "$BIN" ]]; then
   cp "$BIN" "$BIN.bak.$(date +%Y%m%d-%H%M%S)"
 fi
 install -m 755 "$BUILT_BIN" "$BIN"
+if [[ -d "$ROOT/codex-balance/Assets/train-themes" ]]; then
+  rm -rf "$APP_SUPPORT/train-themes"
+  mkdir -p "$APP_SUPPORT/train-themes"
+  cp -R "$ROOT/codex-balance/Assets/train-themes/." "$APP_SUPPORT/train-themes/"
+fi
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --sign - --identifier CodexBalance "$BIN" >/dev/null 2>&1 || true
 fi
