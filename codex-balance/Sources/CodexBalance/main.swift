@@ -1900,19 +1900,90 @@ final class CodexPanelViewController: NSViewController {
 
 @preconcurrency @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @unchecked Sendable {
+    fileprivate enum TaskLightState: Equatable {
+        case idle
+        case running
+        case unread
+
+        static func from(_ raw: String?) -> TaskLightState {
+            switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "running", "busy", "in_progress", "in-progress", "yellow":
+                return .running
+            case "unread", "done", "completed", "complete", "finished", "red":
+                return .unread
+            case "idle", "none", "empty", "green":
+                return .idle
+            default:
+                return .idle
+            }
+        }
+
+        var rawValue: String {
+            switch self {
+            case .idle: return "idle"
+            case .running: return "running"
+            case .unread: return "unread"
+            }
+        }
+
+        var activeLightIndex: Int {
+            switch self {
+            case .unread: return 0
+            case .running: return 1
+            case .idle: return 2
+            }
+        }
+
+        var tooltipText: String {
+            switch self {
+            case .idle: return "任务：当前无任务"
+            case .running: return "任务：正在执行中"
+            case .unread: return "任务：已完成，未读"
+            }
+        }
+    }
+
+    private struct CodexThreadSnapshot {
+        let id: String
+        let updatedAt: TimeInterval
+        let rolloutPath: String?
+        let threadSource: String
+        let agentNickname: String
+        let agentRole: String
+        let agentPath: String
+
+        var isUserVisible: Bool {
+            if threadSource.lowercased() == "subagent" {
+                return false
+            }
+            if !agentNickname.isEmpty || !agentRole.isEmpty || !agentPath.isEmpty {
+                return false
+            }
+            return true
+        }
+    }
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private let menu = NSMenu()
     private let fetcher = CodexUsageFetcher()
     private var timer: Timer?
+    private var taskLightTimer: Timer?
     private var outsideClickMonitor: Any?
     private var lastSummary: CodexUsageSummary?
     private var lastError: String?
+    private var taskLightState: TaskLightState = .idle
     private var trainStyleIndex = 0
     private let trainStartTime = Date.timeIntervalSinceReferenceDate
+    private let taskStatusFile = AppDelegate.defaultTaskStatusFile()
+    private let codexStateDatabase = AppDelegate.defaultCodexStateDatabase()
+    private let codexGlobalStateFile = AppDelegate.defaultCodexGlobalStateFile()
+    private let codexActiveWindowSeconds: TimeInterval = 75
+    private let codexUnreadWindowSeconds: TimeInterval = 7 * 24 * 60 * 60
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        taskLightState = readTaskLightState()
         updateStatusButton(title: "5h … / 7d …")
         statusItem.button?.toolTip = L10n.shared.t("title")
         statusItem.button?.target = self
@@ -1925,6 +1996,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             guard let delegate = self else { return }
             Task { @MainActor in
                 delegate.refresh(nil)
+            }
+        }
+        taskLightTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let delegate = self else { return }
+            Task { @MainActor in
+                delegate.refreshTaskLight()
             }
         }
     }
@@ -2071,6 +2148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         result.append(NSAttributedString(string: " \(parsed.primary) / ", attributes: attrs))
         appendSymbol("week", to: result)
         result.append(NSAttributedString(string: " \(parsed.secondary)", attributes: attrs))
+        appendTaskLight(to: result)
         return result
     }
 
@@ -2081,7 +2159,279 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         let api = summary.apiUsage
         appendSymbol("money", to: result)
         result.append(NSAttributedString(string: " \(apiAmount(api?.displayRemaining, unit: api?.unit)) / T \(compactNumber(api?.todayTokens ?? api?.totalTokens))", attributes: attrs))
+        appendTaskLight(to: result)
         return result
+    }
+
+    private static func defaultTaskStatusFile() -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let stateDir: URL
+        if let value = environment["CODEX_BALANCE_STATE_DIR"], !value.isEmpty {
+            stateDir = URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true)
+        } else {
+            stateDir = home.appendingPathComponent("Library/Application Support/CodexBalance", isDirectory: true)
+        }
+        return stateDir.appendingPathComponent("task-status.json")
+    }
+
+    private static func defaultCodexHome() -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        if let value = environment["CODEX_HOME"], !value.isEmpty {
+            return URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+    }
+
+    private static func defaultCodexStateDatabase() -> URL {
+        defaultCodexHome().appendingPathComponent("state_5.sqlite")
+    }
+
+    private static func defaultCodexGlobalStateFile() -> URL {
+        defaultCodexHome().appendingPathComponent(".codex-global-state.json")
+    }
+
+    fileprivate func readTaskLightState() -> TaskLightState {
+        if let manual = readManualTaskLightState(requireOverride: true) {
+            return manual
+        }
+        if let automatic = readAutomaticTaskLightState() {
+            return automatic
+        }
+        return .idle
+    }
+
+    private func readManualTaskLightState(requireOverride: Bool) -> TaskLightState? {
+        guard let data = try? Data(contentsOf: taskStatusFile) else {
+            return nil
+        }
+        let manualMode = ProcessInfo.processInfo.environment["CODEX_BALANCE_TASK_LIGHT_MODE"] == "manual"
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let state = object["state"] as? String {
+            let override = (object["override"] as? Bool) == true
+            if requireOverride && !manualMode && !override {
+                return nil
+            }
+            return TaskLightState.from(state)
+        }
+        if let text = String(data: data, encoding: .utf8) {
+            if requireOverride && !manualMode {
+                return nil
+            }
+            return TaskLightState.from(text)
+        }
+        return nil
+    }
+
+    private func readAutomaticTaskLightState() -> TaskLightState? {
+        guard let threads = readCodexThreadSnapshots() else {
+            return nil
+        }
+        let now = Date().timeIntervalSince1970
+        if threads.contains(where: { isRecentlyActive($0, now: now) }) {
+            return .running
+        }
+        let unreadThreadIDs = readUnreadCodexThreadIDs()
+        if !unreadThreadIDs.isEmpty {
+            let hasRecentUnread = threads.contains { thread in
+                thread.isUserVisible && unreadThreadIDs.contains(thread.id) && isRecent(thread.updatedAt, now: now, window: codexUnreadWindowSeconds)
+            }
+            if hasRecentUnread {
+                return .unread
+            }
+        }
+        return .idle
+    }
+
+    private func readCodexThreadSnapshots() -> [CodexThreadSnapshot]? {
+        guard FileManager.default.fileExists(atPath: codexStateDatabase.path) else {
+            return nil
+        }
+        let sql = """
+        SELECT id, updated_at, IFNULL(rollout_path, ''), IFNULL(thread_source, ''), IFNULL(agent_nickname, ''), IFNULL(agent_role, ''), IFNULL(agent_path, '')
+        FROM threads
+        WHERE archived = 0
+        ORDER BY updated_at DESC
+        LIMIT 250;
+        """
+        guard let rows = runSQLiteRows(sql, database: codexStateDatabase) else {
+            return nil
+        }
+        return rows.compactMap { row in
+            let columns = row.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard columns.count >= 2, let updatedAt = TimeInterval(columns[1]) else {
+                return nil
+            }
+            let rolloutPath = columns.count >= 3 && !columns[2].isEmpty ? columns[2] : nil
+            return CodexThreadSnapshot(
+                id: columns[0],
+                updatedAt: updatedAt,
+                rolloutPath: rolloutPath,
+                threadSource: columns.count >= 4 ? columns[3] : "",
+                agentNickname: columns.count >= 5 ? columns[4] : "",
+                agentRole: columns.count >= 6 ? columns[5] : "",
+                agentPath: columns.count >= 7 ? columns[6] : ""
+            )
+        }
+    }
+
+    private func runSQLiteRows(_ sql: String, database: URL) -> [String]? {
+        let sqlitePath = "/usr/bin/sqlite3"
+        guard FileManager.default.isExecutableFile(atPath: sqlitePath) else {
+            return nil
+        }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: sqlitePath)
+        process.arguments = ["-readonly", "-separator", "\t", "-noheader", database.path, sql]
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+    }
+
+    private func isRecentlyActive(_ thread: CodexThreadSnapshot, now: TimeInterval) -> Bool {
+        guard let rolloutPath = thread.rolloutPath else {
+            return false
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: rolloutPath),
+              let modifiedAt = attributes[.modificationDate] as? Date,
+              isRecent(modifiedAt.timeIntervalSince1970, now: now, window: codexActiveWindowSeconds) else {
+            return false
+        }
+        return rolloutHasOpenTurn(at: rolloutPath)
+    }
+
+    private func rolloutHasOpenTurn(at path: String) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
+            return false
+        }
+        let tailLimit = 96 * 1024
+        let tail: Data
+        if data.count > tailLimit {
+            tail = data.subdata(in: (data.count - tailLimit)..<data.count)
+        } else {
+            tail = data
+        }
+        guard let text = String(data: tail, encoding: .utf8) else {
+            return false
+        }
+        var openTurn = false
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let lineData = String(rawLine).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+                continue
+            }
+            let eventType = object["type"] as? String
+            let payload = object["payload"] as? [String: Any]
+            let payloadType = payload?["type"] as? String
+
+            if eventType == "turn_context" {
+                openTurn = true
+                continue
+            }
+
+            switch payloadType {
+            case "task_complete":
+                openTurn = false
+            case "message":
+                if payload?["role"] as? String == "assistant",
+                   payload?["phase"] as? String == "final_answer" {
+                    openTurn = false
+                }
+            case "agent_message":
+                if payload?["phase"] as? String == "final_answer" {
+                    openTurn = false
+                }
+            case "function_call", "function_call_output", "tool_search_call", "tool_search_output", "custom_tool_call", "custom_tool_call_output", "reasoning":
+                openTurn = true
+            default:
+                break
+            }
+        }
+        return openTurn
+    }
+
+    private func isRecent(_ timestamp: TimeInterval, now: TimeInterval, window: TimeInterval) -> Bool {
+        let age = now - timestamp
+        return age >= 0 && age <= window
+    }
+
+    private func readUnreadCodexThreadIDs() -> Set<String> {
+        guard let data = try? Data(contentsOf: codexGlobalStateFile),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let persisted = root["electron-persisted-atom-state"] as? [String: Any],
+              let unreadByHost = persisted["unread-thread-ids-by-host-v1"] as? [String: Any] else {
+            return []
+        }
+        var result = Set<String>()
+        if let local = unreadByHost["local"] as? [String] {
+            result.formUnion(local)
+        }
+        return result
+    }
+
+    private func refreshTaskLight() {
+        let nextState = readTaskLightState()
+        guard nextState != taskLightState else { return }
+        taskLightState = nextState
+        if let summary = lastSummary {
+            updateStatusButton(summary: summary)
+            statusItem.button?.toolTip = tooltip(for: summary)
+        } else {
+            updateStatusButton(title: "5h … / 7d …")
+            statusItem.button?.toolTip = L10n.shared.t("title") + "\n" + taskLightState.tooltipText
+        }
+    }
+
+    private func appendTaskLight(to result: NSMutableAttributedString) {
+        result.append(NSAttributedString(string: " "))
+        let attachment = NSTextAttachment()
+        attachment.image = taskLightImage()
+        attachment.bounds = NSRect(x: 0, y: -3, width: 40, height: 14)
+        result.append(NSAttributedString(attachment: attachment))
+    }
+
+    private func taskLightImage() -> NSImage {
+        let image = NSImage(size: NSSize(width: 40, height: 14))
+        image.lockFocus()
+        let lights: [(NSColor, Int)] = [
+            (NSColor(calibratedRed: 1.00, green: 0.25, blue: 0.22, alpha: 1), 0),
+            (NSColor(calibratedRed: 1.00, green: 0.74, blue: 0.22, alpha: 1), 1),
+            (NSColor(calibratedRed: 0.23, green: 0.88, blue: 0.38, alpha: 1), 2)
+        ]
+        NSColor.labelColor.withAlphaComponent(0.10).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0.5, y: 0.5, width: 39, height: 13), xRadius: 6.5, yRadius: 6.5).fill()
+        NSColor.labelColor.withAlphaComponent(0.18).setStroke()
+        let shell = NSBezierPath(roundedRect: NSRect(x: 0.5, y: 0.5, width: 39, height: 13), xRadius: 6.5, yRadius: 6.5)
+        shell.lineWidth = 0.6
+        shell.stroke()
+        for (color, index) in lights {
+            let x = CGFloat(5 + index * 12)
+            let isActive = index == taskLightState.activeLightIndex
+            color.withAlphaComponent(isActive ? 1.0 : 0.23).setFill()
+            NSBezierPath(ovalIn: NSRect(x: x, y: 2.75, width: 8.5, height: 8.5)).fill()
+            if isActive {
+                color.withAlphaComponent(0.30).setStroke()
+                let glow = NSBezierPath(ovalIn: NSRect(x: x - 1.4, y: 1.35, width: 11.3, height: 11.3))
+                glow.lineWidth = 1.0
+                glow.stroke()
+            }
+        }
+        image.unlockFocus()
+        return image
     }
 
     private func apiAmount(_ value: Double?, unit: String?) -> String {
@@ -2273,11 +2623,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                 lines.append(l.t("todayCost") + ": \(apiAmount(usage.displayTodayCost, unit: usage.unit))")
                 lines.append(l.t("todayTokens") + ": \(compactNumber(usage.todayTokens))")
             }
+            lines.append(taskLightState.tooltipText)
             return lines.joined(separator: "\n")
         }
         var lines = [l.t("title"), summary.email]
         if let p = summary.primaryRemaining { lines.append(l.t("primaryRemaining") + ": \(p)%") }
         if let s = summary.secondaryRemaining { lines.append(l.t("secondaryRemaining") + ": \(s)%") }
+        lines.append(taskLightState.tooltipText)
         return lines.joined(separator: "\n")
     }
 
@@ -2309,6 +2661,13 @@ if CommandLine.arguments.contains("--once") {
         printJSON(["ok": false, "error": error.description])
         exit(1)
     }
+}
+
+if CommandLine.arguments.contains("--task-light-once") {
+    let delegate = AppDelegate()
+    let state = delegate.readTaskLightState()
+    printJSON(["ok": true, "state": state.rawValue])
+    exit(0)
 }
 
 let app = NSApplication.shared

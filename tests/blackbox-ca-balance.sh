@@ -209,6 +209,61 @@ assert obj["api_total_tokens"] == 987654, obj
 assert "sandbox-fake-key" not in open(sys.argv[1]).read(), obj
 PY
 
+TASK_DB="$CODEX_HOME/state_5.sqlite"
+TASK_GLOBAL="$CODEX_HOME/.codex-global-state.json"
+TASK_NOW="$(date +%s)"
+write_task_db() {
+  rm -f "$TASK_DB"
+  /usr/bin/sqlite3 "$TASK_DB" <<'SQL'
+CREATE TABLE threads (
+  id TEXT PRIMARY KEY,
+  updated_at INTEGER,
+  archived INTEGER DEFAULT 0,
+  thread_source TEXT,
+  agent_nickname TEXT,
+  agent_role TEXT,
+  agent_path TEXT,
+  title TEXT,
+  rollout_path TEXT
+);
+SQL
+}
+write_unread_state() {
+  "$PYTHON_BIN" - "$TASK_GLOBAL" "$@" <<'PY'
+import json, sys
+path = sys.argv[1]
+thread_ids = sys.argv[2:]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump({"electron-persisted-atom-state": {"unread-thread-ids-by-host-v1": {"local": thread_ids}}}, f)
+PY
+}
+assert_task_light() {
+  local expected="$1"
+  local actual
+  actual="$(CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_BALANCE_STATE_DIR="$CODEX_BALANCE_STATE_DIR" "$BALANCE_BIN" --task-light-once | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "expected task light '$expected', got '$actual'" >&2
+    exit 1
+  fi
+}
+
+write_task_db
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('sub-unread', $TASK_NOW, 0, 'subagent', 'worker1', 'worker', '', 'worker unread', '');"
+write_unread_state sub-unread
+assert_task_light idle
+
+write_task_db
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('user-unread', $TASK_NOW, 0, 'user', '', '', '', 'user unread', '');"
+write_unread_state user-unread
+assert_task_light unread
+
+write_task_db
+TASK_ROLLOUT="$TMP/open-turn.jsonl"
+printf '%s\n' '{"type":"turn_context"}' > "$TASK_ROLLOUT"
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('worker-running', $TASK_NOW, 0, 'subagent', 'worker1', 'worker', '', 'worker running', '$TASK_ROLLOUT');"
+write_unread_state
+assert_task_light running
+
 run_ca s fox --skip-expiry-check --no-backup >/dev/null
 [[ "$(run_ca current)" == "fox" ]]
 assert_not_contains "$CODEX_HOME/config.toml" 'model_provider = "relay"'
