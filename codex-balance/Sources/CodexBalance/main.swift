@@ -924,6 +924,7 @@ final class UsageCardView: NSView {
     static let trainThemeNames = ["space", "rpg", "tools", "elemental", "flying-sword"]
 
     static var styleCount: Int { trainThemeNames.count }
+    static let maximumTrainSegmentCount = 5
 
     private struct TrainSegment: Hashable {
         let index: Int
@@ -934,6 +935,7 @@ final class UsageCardView: NSView {
     private let trainStyleIndex: Int
     private let trainStartTime: TimeInterval
     private let themeMode: CardThemeMode
+    private let trainSegmentMask: Int
     private let onTrainClick: () -> Void
     private let fastestTrainPeriod: TimeInterval = 4.5
     private let slowestTrainPeriod: TimeInterval = 24.0
@@ -956,12 +958,13 @@ final class UsageCardView: NSView {
         Self.trainThemeNames[trainStyleIndex % Self.trainThemeNames.count]
     }
 
-    init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, themeMode: CardThemeMode, onTrainClick: @escaping () -> Void) {
+    init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, themeMode: CardThemeMode, trainSegmentMask: Int, onTrainClick: @escaping () -> Void) {
         self.summary = summary
         self.errorText = errorText
         self.trainStyleIndex = trainStyleIndex
         self.trainStartTime = trainStartTime
         self.themeMode = themeMode
+        self.trainSegmentMask = trainSegmentMask & ((1 << Self.maximumTrainSegmentCount) - 1)
         self.onTrainClick = onTrainClick
         super.init(frame: NSRect(x: 0, y: 0, width: 410, height: 162))
         wantsLayer = true
@@ -1119,7 +1122,7 @@ final class UsageCardView: NSView {
     }
 
     private func startTrainAnimation() {
-        guard trainLayer == nil, let hostLayer = layer else { return }
+        guard trainSegmentMask != 0, trainLayer == nil, let hostLayer = layer else { return }
         let card = bounds.insetBy(dx: 10, dy: 10)
         let track = trainTrackRect(in: card)
 
@@ -1152,7 +1155,9 @@ final class UsageCardView: NSView {
     }
 
     private func trainSegments() -> [(segment: TrainSegment, offset: CGFloat)] {
-        (0..<5).reversed().map { index in
+        (0..<Self.maximumTrainSegmentCount).filter { index in
+            (trainSegmentMask & (1 << index)) != 0
+        }.reversed().map { index in
             (TrainSegment(index: index), -CGFloat(index) * trainSegmentSpacing)
         }
     }
@@ -1797,14 +1802,16 @@ final class CodexPanelViewController: NSViewController {
         quitAction: Selector,
         languageAction: Selector,
         themeAction: Selector,
+        animationSegmentToggleAction: Selector,
         trainStyleIndex: Int,
         trainStartTime: TimeInterval,
         themeMode: CardThemeMode,
+        trainSegmentMask: Int,
         trainClickAction: @escaping () -> Void
     ) {
         super.init(nibName: nil, bundle: nil)
         let l = L10n.shared
-        let root = ThemePanelView(frame: NSRect(x: 0, y: 0, width: 410, height: 372), themeMode: themeMode)
+        let root = ThemePanelView(frame: NSRect(x: 0, y: 0, width: 410, height: 404), themeMode: themeMode)
         root.appearance = panelAppearance(for: themeMode)
         root.wantsLayer = true
         root.layer?.backgroundColor = NSColor.clear.cgColor
@@ -1814,37 +1821,37 @@ final class CodexPanelViewController: NSViewController {
         let tertiaryTextColor = panelLight ? NSColor(calibratedRed: 0.24, green: 0.22, blue: 0.20, alpha: 0.42) : NSColor.tertiaryLabelColor
 
         if let summary {
-            let card = UsageCardView(summary: summary, errorText: errorText, trainStyleIndex: trainStyleIndex, trainStartTime: trainStartTime, themeMode: themeMode, onTrainClick: trainClickAction)
-            card.frame = NSRect(x: 0, y: 200, width: 410, height: 162)
+            let card = UsageCardView(summary: summary, errorText: errorText, trainStyleIndex: trainStyleIndex, trainStartTime: trainStartTime, themeMode: themeMode, trainSegmentMask: trainSegmentMask, onTrainClick: trainClickAction)
+            card.frame = NSRect(x: 0, y: 232, width: 410, height: 162)
             root.addSubview(card)
 
             let accountText = l.t("account") + " " + [summary.alias, summary.email].compactMap { $0 }.joined(separator: " · ")
-            root.addSubview(label(accountText, x: 22, y: 176, width: 360, height: 18, size: 12, weight: .semibold, color: primaryTextColor))
+            root.addSubview(label(accountText, x: 22, y: 208, width: 360, height: 18, size: 12, weight: .semibold, color: primaryTextColor))
             let statusPlan = l.t("status") + " " + statusText(summary) + " · " + l.t("plan") + " " + summary.plan.uppercased()
-            root.addSubview(label(statusPlan, x: 22, y: 154, width: 360, height: 16, size: 11, color: secondaryTextColor))
+            root.addSubview(label(statusPlan, x: 22, y: 186, width: 360, height: 16, size: 11, color: secondaryTextColor))
 
             if summary.isAPIAccount {
                 let api = summary.apiUsage
-                addInfoRow(root, y: 124, title: l.t("balance"), value: apiAmount(api?.displayRemaining, unit: api?.unit), detail: quotaDetail(api), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
-                addInfoRow(root, y: 94, title: l.t("cost"), value: l.t("todayPrefix") + " " + apiAmount(api?.displayTodayCost, unit: api?.unit), detail: l.t("totalPrefix") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
-                addInfoRow(root, y: 64, title: l.t("tokens"), value: l.t("todayPrefix") + " " + compactNumber(api?.todayTokens), detail: l.t("totalPrefix") + " " + compactNumber(api?.totalTokens), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 156, title: l.t("balance"), value: apiAmount(api?.displayRemaining, unit: api?.unit), detail: quotaDetail(api), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 126, title: l.t("cost"), value: l.t("todayPrefix") + " " + apiAmount(api?.displayTodayCost, unit: api?.unit), detail: l.t("totalPrefix") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 96, title: l.t("tokens"), value: l.t("todayPrefix") + " " + compactNumber(api?.todayTokens), detail: l.t("totalPrefix") + " " + compactNumber(api?.totalTokens), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
                 let detail = apiDetailLine(api)
-                root.addSubview(label(detail, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: api?.error == nil ? tertiaryTextColor : .systemOrange))
+                root.addSubview(label(detail, x: 22, y: 76, width: 360, height: 14, size: 10.5, color: api?.error == nil ? tertiaryTextColor : .systemOrange))
             } else {
-                addInfoRow(root, y: 124, title: l.t("fiveHours"), value: remainingLine(summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
-                addInfoRow(root, y: 94, title: l.t("weeklyQuota"), value: remainingLine(summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 156, title: l.t("fiveHours"), value: remainingLine(summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 126, title: l.t("weeklyQuota"), value: remainingLine(summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
                 let credits = summary.creditsUnlimited ? l.t("unlimited") : (summary.creditsBalance ?? l.t("unknown"))
                 let resetCredits = summary.resetCreditsAvailable.map { l.t("resetCredits") + " \($0)" } ?? (l.t("resetCredits") + " " + l.t("unknown"))
-                addInfoRow(root, y: 64, title: l.t("credits"), value: credits, detail: resetCredits, primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 96, title: l.t("credits"), value: credits, detail: resetCredits, primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
 
                 if summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
                     let spark = "5h " + remainingLine(summary.sparkPrimaryRemaining) + " · 7d " + remainingLine(summary.sparkSecondaryRemaining)
-                    root.addSubview(label("Spark " + spark, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: tertiaryTextColor))
+                    root.addSubview(label("Spark " + spark, x: 22, y: 76, width: 360, height: 14, size: 10.5, color: tertiaryTextColor))
                 }
             }
         } else {
             let loading = NSTextField(labelWithString: l.t("loading"))
-            loading.frame = NSRect(x: 22, y: 250, width: 300, height: 22)
+            loading.frame = NSRect(x: 22, y: 282, width: 300, height: 22)
             loading.font = .systemFont(ofSize: 14, weight: .medium)
             loading.textColor = primaryTextColor
             root.addSubview(loading)
@@ -1852,29 +1859,54 @@ final class CodexPanelViewController: NSViewController {
 
         if let errorText {
             let error = NSTextField(labelWithString: errorText)
-            error.frame = NSRect(x: 22, y: 44, width: 360, height: 16)
+            error.frame = NSRect(x: 22, y: 76, width: 360, height: 16)
             error.font = .systemFont(ofSize: 11, weight: .regular)
             error.textColor = .systemOrange
             root.addSubview(error)
         }
 
+        let leftInset: CGFloat = 22
+        let controlWidth: CGFloat = 112
+        let controlGap: CGFloat = 15
+        let firstColumn = leftInset
+        let secondColumn = firstColumn + controlWidth + controlGap
+        let thirdColumn = secondColumn + controlWidth + controlGap
+        let settingsRowY: CGFloat = 44
+        let actionsRowY: CGFloat = 14
+
         let refresh = NSButton(title: l.t("refresh"), target: target, action: refreshAction)
-        refresh.frame = NSRect(x: 18, y: 14, width: 64, height: 28)
+        refresh.frame = NSRect(x: firstColumn, y: actionsRowY, width: controlWidth, height: 28)
         refresh.bezelStyle = .rounded
         root.addSubview(refresh)
 
         let open = NSButton(title: l.t("usagePage"), target: target, action: openAction)
-        open.frame = NSRect(x: 88, y: 14, width: 72, height: 28)
+        open.frame = NSRect(x: secondColumn, y: actionsRowY, width: controlWidth, height: 28)
         open.bezelStyle = .rounded
         root.addSubview(open)
 
         let theme = NSButton(title: themeMode.buttonTitle(), target: target, action: themeAction)
-        theme.frame = NSRect(x: 166, y: 14, width: 72, height: 28)
+        theme.frame = NSRect(x: firstColumn, y: settingsRowY, width: controlWidth, height: 28)
         theme.bezelStyle = .rounded
         root.addSubview(theme)
 
-        let language = NSPopUpButton(frame: NSRect(x: 244, y: 14, width: 90, height: 28), pullsDown: false)
+        let normalizedMask = normalizedAnimationMask(trainSegmentMask)
+        let animationSegments = NSSegmentedControl(
+            labels: (1...UsageCardView.maximumTrainSegmentCount).map { "\($0)" },
+            trackingMode: .selectAny,
+            target: target,
+            action: animationSegmentToggleAction
+        )
+        animationSegments.frame = NSRect(x: secondColumn, y: settingsRowY, width: controlWidth, height: 28)
+        animationSegments.segmentStyle = .rounded
+        animationSegments.toolTip = L10n.shared.effectiveCode.hasPrefix("zh") ? "选择要显示的动画节段" : "Choose animation segments"
+        for index in 0..<UsageCardView.maximumTrainSegmentCount {
+            animationSegments.setSelected((normalizedMask & (1 << index)) != 0, forSegment: index)
+        }
+        root.addSubview(animationSegments)
+
+        let language = NSPopUpButton(frame: NSRect(x: thirdColumn, y: settingsRowY, width: controlWidth, height: 28), pullsDown: false)
         language.bezelStyle = .rounded
+        language.alignment = .center
         for option in l.languageMenuOptions() {
             language.addItem(withTitle: l.displayLanguageTitle(option))
             language.lastItem?.representedObject = option.code
@@ -1888,7 +1920,7 @@ final class CodexPanelViewController: NSViewController {
         root.addSubview(language)
 
         let quit = NSButton(title: l.t("quit"), target: target, action: quitAction)
-        quit.frame = NSRect(x: 340, y: 14, width: 52, height: 28)
+        quit.frame = NSRect(x: thirdColumn, y: actionsRowY, width: controlWidth, height: 28)
         quit.bezelStyle = .rounded
         root.addSubview(quit)
 
@@ -1908,6 +1940,14 @@ final class CodexPanelViewController: NSViewController {
         case .dark:
             return NSAppearance(named: .darkAqua)
         }
+    }
+
+    private func normalizedAnimationMask(_ mask: Int) -> Int {
+        mask & animationAllMask()
+    }
+
+    private func animationAllMask() -> Int {
+        (1 << UsageCardView.maximumTrainSegmentCount) - 1
     }
 
     private func addInfoRow(_ root: NSView, y: CGFloat, title: String, value: String, detail: String, primaryColor: NSColor, secondaryColor: NSColor) {
@@ -2053,11 +2093,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     private static let trainStyleIndexKey = "CodexBalance.trainStyleIndex"
+    private static let trainSegmentMaskKey = "CodexBalance.trainSegmentMask"
+    private static let legacyTrainSegmentCountKey = "CodexBalance.trainSegmentCount"
 
     private static func storedTrainStyleIndex() -> Int {
         let value = UserDefaults.standard.integer(forKey: trainStyleIndexKey)
         guard value >= 0 else { return 0 }
         return value % UsageCardView.styleCount
+    }
+
+    private static var allTrainSegmentMask: Int {
+        (1 << UsageCardView.maximumTrainSegmentCount) - 1
+    }
+
+    private static func normalizedTrainSegmentMask(_ mask: Int) -> Int {
+        mask & allTrainSegmentMask
+    }
+
+    private static func storedTrainSegmentMask() -> Int {
+        guard UserDefaults.standard.object(forKey: trainSegmentMaskKey) != nil else {
+            if UserDefaults.standard.object(forKey: legacyTrainSegmentCountKey) != nil {
+                let count = max(0, min(UsageCardView.maximumTrainSegmentCount, UserDefaults.standard.integer(forKey: legacyTrainSegmentCountKey)))
+                return count == 0 ? 0 : (1 << count) - 1
+            }
+            return allTrainSegmentMask
+        }
+        return normalizedTrainSegmentMask(UserDefaults.standard.integer(forKey: trainSegmentMaskKey))
     }
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -2071,6 +2132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     private var lastError: String?
     private var taskLightState: TaskLightState = .idle
     private var trainStyleIndex = AppDelegate.storedTrainStyleIndex()
+    private var trainSegmentMask = AppDelegate.storedTrainSegmentMask()
     private var cardThemeMode = CardThemeMode.stored
     private let trainStartTime = Date.timeIntervalSinceReferenceDate
     private let taskStatusFile = AppDelegate.defaultTaskStatusFile()
@@ -2158,7 +2220,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     func popoverDidClose(_ notification: Notification) {
-        removeOutsideClickMonitor()
+        if notification.object as? NSPopover === popover {
+            removeOutsideClickMonitor()
+        }
     }
 
     private func installOutsideClickMonitor() {
@@ -2188,14 +2252,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             quitAction: #selector(quit),
             languageAction: #selector(languageChanged(_:)),
             themeAction: #selector(themeChanged(_:)),
+            animationSegmentToggleAction: #selector(animationSegmentChanged(_:)),
             trainStyleIndex: trainStyleIndex,
             trainStartTime: trainStartTime,
             themeMode: cardThemeMode,
+            trainSegmentMask: trainSegmentMask,
             trainClickAction: { [weak self] in
                 self?.cycleTrainStyle()
             }
         )
-        popover.contentSize = NSSize(width: 410, height: 372)
+        popover.contentSize = NSSize(width: 410, height: 404)
     }
 
     private func cycleTrainStyle() {
@@ -2207,6 +2273,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     @objc private func themeChanged(_ sender: Any?) {
         cardThemeMode = cardThemeMode.next(systemUsesDark: systemUsesDarkAppearance())
         cardThemeMode.save()
+        updatePopoverContent()
+        rebuildMenu()
+    }
+
+    @objc private func animationSegmentChanged(_ sender: Any?) {
+        guard let control = sender as? NSSegmentedControl else { return }
+        var mask = 0
+        for index in 0..<UsageCardView.maximumTrainSegmentCount {
+            if control.isSelected(forSegment: index) {
+                mask |= 1 << index
+            }
+        }
+        trainSegmentMask = Self.normalizedTrainSegmentMask(mask)
+        UserDefaults.standard.set(trainSegmentMask, forKey: Self.trainSegmentMaskKey)
         updatePopoverContent()
         rebuildMenu()
     }
@@ -2692,6 +2772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                 trainStyleIndex: trainStyleIndex,
                 trainStartTime: trainStartTime,
                 themeMode: cardThemeMode,
+                trainSegmentMask: trainSegmentMask,
                 onTrainClick: { [weak self] in
                     self?.cycleTrainStyle()
                 }
