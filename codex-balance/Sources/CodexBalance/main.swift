@@ -1866,45 +1866,62 @@ final class CodexPanelViewController: NSViewController {
         }
 
         let leftInset: CGFloat = 22
-        let controlWidth: CGFloat = 112
-        let controlGap: CGFloat = 15
+        let sideControlWidth: CGFloat = 96
+        let centerControlWidth: CGFloat = 150
+        let controlGap: CGFloat = 12
         let firstColumn = leftInset
-        let secondColumn = firstColumn + controlWidth + controlGap
-        let thirdColumn = secondColumn + controlWidth + controlGap
+        let secondColumn = firstColumn + sideControlWidth + controlGap
+        let thirdColumn = secondColumn + centerControlWidth + controlGap
         let settingsRowY: CGFloat = 44
         let actionsRowY: CGFloat = 14
 
         let refresh = NSButton(title: l.t("refresh"), target: target, action: refreshAction)
-        refresh.frame = NSRect(x: firstColumn, y: actionsRowY, width: controlWidth, height: 28)
+        refresh.frame = NSRect(x: firstColumn, y: actionsRowY, width: sideControlWidth, height: 28)
         refresh.bezelStyle = .rounded
         root.addSubview(refresh)
 
         let open = NSButton(title: l.t("usagePage"), target: target, action: openAction)
-        open.frame = NSRect(x: secondColumn, y: actionsRowY, width: controlWidth, height: 28)
+        open.frame = NSRect(x: secondColumn, y: actionsRowY, width: centerControlWidth, height: 28)
         open.bezelStyle = .rounded
         root.addSubview(open)
 
         let theme = NSButton(title: themeMode.buttonTitle(), target: target, action: themeAction)
-        theme.frame = NSRect(x: firstColumn, y: settingsRowY, width: controlWidth, height: 28)
+        theme.frame = NSRect(x: firstColumn, y: settingsRowY, width: sideControlWidth, height: 28)
         theme.bezelStyle = .rounded
         root.addSubview(theme)
 
         let normalizedMask = normalizedAnimationMask(trainSegmentMask)
-        let animationSegments = NSSegmentedControl(
-            labels: (1...UsageCardView.maximumTrainSegmentCount).map { "\($0)" },
-            trackingMode: .selectAny,
-            target: target,
-            action: animationSegmentToggleAction
-        )
-        animationSegments.frame = NSRect(x: secondColumn, y: settingsRowY, width: controlWidth, height: 28)
-        animationSegments.segmentStyle = .rounded
-        animationSegments.toolTip = L10n.shared.effectiveCode.hasPrefix("zh") ? "选择要显示的动画节段" : "Choose animation segments"
+        let segmentGap: CGFloat = 4
+        let segmentWidth = (centerControlWidth - segmentGap * CGFloat(UsageCardView.maximumTrainSegmentCount - 1)) / CGFloat(UsageCardView.maximumTrainSegmentCount)
         for index in 0..<UsageCardView.maximumTrainSegmentCount {
-            animationSegments.setSelected((normalizedMask & (1 << index)) != 0, forSegment: index)
+            let selected = (normalizedMask & (1 << index)) != 0
+            let button = NSButton(title: "\(index + 1)", target: target, action: animationSegmentToggleAction)
+            button.frame = NSRect(
+                x: secondColumn + CGFloat(index) * (segmentWidth + segmentGap),
+                y: settingsRowY,
+                width: segmentWidth,
+                height: 28
+            )
+            button.bezelStyle = .rounded
+            button.setButtonType(.toggle)
+            button.state = selected ? .on : .off
+            button.isBordered = false
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 8
+            button.layer?.backgroundColor = (selected ? NSColor.controlAccentColor : NSColor.controlColor).cgColor
+            button.attributedTitle = NSAttributedString(
+                string: "\(index + 1)",
+                attributes: [
+                    .foregroundColor: selected ? NSColor.white : NSColor.labelColor,
+                    .font: NSFont.systemFont(ofSize: 13, weight: .semibold)
+                ]
+            )
+            button.tag = index
+            button.toolTip = L10n.shared.effectiveCode.hasPrefix("zh") ? "动画第 \(index + 1) 节" : "Animation segment \(index + 1)"
+            root.addSubview(button)
         }
-        root.addSubview(animationSegments)
 
-        let language = NSPopUpButton(frame: NSRect(x: thirdColumn, y: settingsRowY, width: controlWidth, height: 28), pullsDown: false)
+        let language = NSPopUpButton(frame: NSRect(x: thirdColumn, y: settingsRowY, width: sideControlWidth, height: 28), pullsDown: false)
         language.bezelStyle = .rounded
         language.alignment = .center
         for option in l.languageMenuOptions() {
@@ -1920,7 +1937,7 @@ final class CodexPanelViewController: NSViewController {
         root.addSubview(language)
 
         let quit = NSButton(title: l.t("quit"), target: target, action: quitAction)
-        quit.frame = NSRect(x: thirdColumn, y: actionsRowY, width: controlWidth, height: 28)
+        quit.frame = NSRect(x: thirdColumn, y: actionsRowY, width: sideControlWidth, height: 28)
         quit.bezelStyle = .rounded
         root.addSubview(quit)
 
@@ -2278,14 +2295,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     @objc private func animationSegmentChanged(_ sender: Any?) {
-        guard let control = sender as? NSSegmentedControl else { return }
-        var mask = 0
-        for index in 0..<UsageCardView.maximumTrainSegmentCount {
-            if control.isSelected(forSegment: index) {
-                mask |= 1 << index
-            }
-        }
-        trainSegmentMask = Self.normalizedTrainSegmentMask(mask)
+        guard let button = sender as? NSButton,
+              button.tag >= 0,
+              button.tag < UsageCardView.maximumTrainSegmentCount else { return }
+        trainSegmentMask = Self.normalizedTrainSegmentMask(trainSegmentMask ^ (1 << button.tag))
         UserDefaults.standard.set(trainSegmentMask, forKey: Self.trainSegmentMaskKey)
         updatePopoverContent()
         rebuildMenu()
