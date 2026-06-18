@@ -784,6 +784,66 @@ final class CodexUsageFetcher: @unchecked Sendable {
     }
 }
 
+
+enum CardThemeMode: String {
+    case system
+    case light
+    case dark
+
+    private static let storageKey = "CodexBalance.cardThemeMode"
+
+    static var stored: CardThemeMode {
+        if let raw = UserDefaults.standard.string(forKey: storageKey), let mode = CardThemeMode(rawValue: raw) {
+            return mode
+        }
+        return .system
+    }
+
+    func save() {
+        if self == .system {
+            UserDefaults.standard.removeObject(forKey: Self.storageKey)
+        } else {
+            UserDefaults.standard.set(rawValue, forKey: Self.storageKey)
+        }
+    }
+
+    func next(systemUsesDark: Bool) -> CardThemeMode {
+        switch self {
+        case .system:
+            return systemUsesDark ? .light : .dark
+        case .light:
+            return .dark
+        case .dark:
+            return .system
+        }
+    }
+
+    var usesLightThemeOverride: Bool? {
+        switch self {
+        case .system: return nil
+        case .light: return true
+        case .dark: return false
+        }
+    }
+
+    func buttonTitle() -> String {
+        let code = L10n.shared.effectiveCode
+        let isChinese = code.hasPrefix("zh")
+        switch self {
+        case .system:
+            return "🌗 " + L10n.shared.t("auto")
+        case .light:
+            return isChinese ? "☀️ 明亮" : "☀️ Light"
+        case .dark:
+            return isChinese ? "🌙 暗黑" : "🌙 Dark"
+        }
+    }
+
+    func usesLightTheme(for appearance: NSAppearance) -> Bool {
+        usesLightThemeOverride ?? (appearance.bestMatch(from: [.aqua, .darkAqua]) != .darkAqua)
+    }
+}
+
 final class UsageCardView: NSView {
     enum TrainKind {
         case steam
@@ -861,7 +921,7 @@ final class UsageCardView: NSView {
         )
     ]
 
-    static let trainThemeNames = ["space", "rpg", "tools", "elemental"]
+    static let trainThemeNames = ["space", "rpg", "tools", "elemental", "flying-sword"]
 
     static var styleCount: Int { trainThemeNames.count }
 
@@ -873,15 +933,18 @@ final class UsageCardView: NSView {
     private let errorText: String?
     private let trainStyleIndex: Int
     private let trainStartTime: TimeInterval
+    private let themeMode: CardThemeMode
     private let onTrainClick: () -> Void
     private let fastestTrainPeriod: TimeInterval = 4.5
     private let slowestTrainPeriod: TimeInterval = 24.0
     private var trainLayer: CALayer?
     private var staticCardImage: NSImage?
-    private var staticCardAppearanceKey: NSAppearance.Name?
+    private var staticCardAppearanceKey: String?
     private var trainSegmentImageCache: [TrainSegment: NSImage] = [:]
     private let trainSegmentSize = NSSize(width: 38, height: 34)
-    private let trainSegmentSpacing: CGFloat = 30
+    private var trainSegmentSpacing: CGFloat {
+        trainThemeName == "flying-sword" ? 62 : 30
+    }
     private let trainTrackInset: CGFloat = 0
     private let trainTrackRadius: CGFloat = 18
 
@@ -893,11 +956,12 @@ final class UsageCardView: NSView {
         Self.trainThemeNames[trainStyleIndex % Self.trainThemeNames.count]
     }
 
-    init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, onTrainClick: @escaping () -> Void) {
+    init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, themeMode: CardThemeMode, onTrainClick: @escaping () -> Void) {
         self.summary = summary
         self.errorText = errorText
         self.trainStyleIndex = trainStyleIndex
         self.trainStartTime = trainStartTime
+        self.themeMode = themeMode
         self.onTrainClick = onTrainClick
         super.init(frame: NSRect(x: 0, y: 0, width: 410, height: 162))
         wantsLayer = true
@@ -930,8 +994,8 @@ final class UsageCardView: NSView {
     }
 
     private func staticCardSnapshot() -> NSImage {
-        let appearanceKey = cardAppearanceKey()
-        if let staticCardImage, staticCardAppearanceKey == appearanceKey {
+        let cacheKey = cardCacheKey()
+        if let staticCardImage, staticCardAppearanceKey == cacheKey {
             return staticCardImage
         }
         let image = NSImage(size: bounds.size)
@@ -939,8 +1003,12 @@ final class UsageCardView: NSView {
         drawStaticCard()
         image.unlockFocus()
         staticCardImage = image
-        staticCardAppearanceKey = appearanceKey
+        staticCardAppearanceKey = cacheKey
         return image
+    }
+
+    private func cardCacheKey() -> String {
+        themeMode.rawValue + ":" + cardAppearanceKey().rawValue
     }
 
     private func cardAppearanceKey() -> NSAppearance.Name {
@@ -948,7 +1016,7 @@ final class UsageCardView: NSView {
     }
 
     private var usesLightCardTheme: Bool {
-        cardAppearanceKey() != .darkAqua
+        themeMode.usesLightTheme(for: effectiveAppearance)
     }
 
     private func drawStaticCard() {
@@ -1068,7 +1136,7 @@ final class UsageCardView: NSView {
             let segmentLayer = makeTrainSegmentLayer(item.segment)
             let pose = currentTrainPose(in: card, distanceOffset: item.offset)
             segmentLayer.position = pose.point
-            segmentLayer.transform = CATransform3DMakeRotation(pose.angle, 0, 0, 1)
+            segmentLayer.transform = CATransform3DMakeRotation(pose.angle + CGFloat.pi, 0, 0, 1)
             containerLayer.addSublayer(segmentLayer)
             if !isTrainBrokenDown {
                 addTrainLoopAnimation(to: segmentLayer, on: track, distanceOffset: item.offset)
@@ -1161,7 +1229,7 @@ final class UsageCardView: NSView {
                 }
             }
             points.append(NSValue(point: pose.point))
-            angles.append(NSNumber(value: Double(angle)))
+            angles.append(NSNumber(value: Double(angle + CGFloat.pi)))
             times.append(NSNumber(value: Double(progress)))
             previousAngle = angle
         }
@@ -1677,6 +1745,39 @@ final class UsageCardView: NSView {
     }
 }
 
+final class ThemePanelView: NSView {
+    let themeMode: CardThemeMode
+
+    init(frame frameRect: NSRect, themeMode: CardThemeMode) {
+        self.themeMode = themeMode
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 28
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let light = themeMode.usesLightTheme(for: effectiveAppearance)
+        if light {
+            NSColor(calibratedRed: 0.970, green: 0.950, blue: 0.910, alpha: 1.0).setFill()
+            bounds.fill()
+        } else {
+            NSColor(calibratedWhite: 0.07, alpha: 1.0).setFill()
+            bounds.fill()
+        }
+    }
+}
+
 final class CodexPanelViewController: NSViewController {
     init(
         summary: CodexUsageSummary?,
@@ -1686,49 +1787,57 @@ final class CodexPanelViewController: NSViewController {
         openAction: Selector,
         quitAction: Selector,
         languageAction: Selector,
+        themeAction: Selector,
         trainStyleIndex: Int,
         trainStartTime: TimeInterval,
+        themeMode: CardThemeMode,
         trainClickAction: @escaping () -> Void
     ) {
         super.init(nibName: nil, bundle: nil)
         let l = L10n.shared
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 410, height: 372))
+        let root = ThemePanelView(frame: NSRect(x: 0, y: 0, width: 410, height: 372), themeMode: themeMode)
+        root.appearance = panelAppearance(for: themeMode)
         root.wantsLayer = true
         root.layer?.backgroundColor = NSColor.clear.cgColor
+        let panelLight = themeMode.usesLightTheme(for: root.effectiveAppearance)
+        let primaryTextColor = panelLight ? NSColor(calibratedRed: 0.16, green: 0.15, blue: 0.13, alpha: 0.86) : NSColor.labelColor
+        let secondaryTextColor = panelLight ? NSColor(calibratedRed: 0.22, green: 0.20, blue: 0.18, alpha: 0.62) : NSColor.secondaryLabelColor
+        let tertiaryTextColor = panelLight ? NSColor(calibratedRed: 0.24, green: 0.22, blue: 0.20, alpha: 0.42) : NSColor.tertiaryLabelColor
 
         if let summary {
-            let card = UsageCardView(summary: summary, errorText: errorText, trainStyleIndex: trainStyleIndex, trainStartTime: trainStartTime, onTrainClick: trainClickAction)
+            let card = UsageCardView(summary: summary, errorText: errorText, trainStyleIndex: trainStyleIndex, trainStartTime: trainStartTime, themeMode: themeMode, onTrainClick: trainClickAction)
             card.frame = NSRect(x: 0, y: 200, width: 410, height: 162)
             root.addSubview(card)
 
             let accountText = l.t("account") + " " + [summary.alias, summary.email].compactMap { $0 }.joined(separator: " · ")
-            root.addSubview(label(accountText, x: 22, y: 176, width: 360, height: 18, size: 12, weight: .semibold, color: .labelColor))
+            root.addSubview(label(accountText, x: 22, y: 176, width: 360, height: 18, size: 12, weight: .semibold, color: primaryTextColor))
             let statusPlan = l.t("status") + " " + statusText(summary) + " · " + l.t("plan") + " " + summary.plan.uppercased()
-            root.addSubview(label(statusPlan, x: 22, y: 154, width: 360, height: 16, size: 11, color: .secondaryLabelColor))
+            root.addSubview(label(statusPlan, x: 22, y: 154, width: 360, height: 16, size: 11, color: secondaryTextColor))
 
             if summary.isAPIAccount {
                 let api = summary.apiUsage
-                addInfoRow(root, y: 124, title: l.t("balance"), value: apiAmount(api?.displayRemaining, unit: api?.unit), detail: quotaDetail(api))
-                addInfoRow(root, y: 94, title: l.t("cost"), value: l.t("todayPrefix") + " " + apiAmount(api?.displayTodayCost, unit: api?.unit), detail: l.t("totalPrefix") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit))
-                addInfoRow(root, y: 64, title: l.t("tokens"), value: l.t("todayPrefix") + " " + compactNumber(api?.todayTokens), detail: l.t("totalPrefix") + " " + compactNumber(api?.totalTokens))
+                addInfoRow(root, y: 124, title: l.t("balance"), value: apiAmount(api?.displayRemaining, unit: api?.unit), detail: quotaDetail(api), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 94, title: l.t("cost"), value: l.t("todayPrefix") + " " + apiAmount(api?.displayTodayCost, unit: api?.unit), detail: l.t("totalPrefix") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 64, title: l.t("tokens"), value: l.t("todayPrefix") + " " + compactNumber(api?.todayTokens), detail: l.t("totalPrefix") + " " + compactNumber(api?.totalTokens), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
                 let detail = apiDetailLine(api)
-                root.addSubview(label(detail, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: api?.error == nil ? .tertiaryLabelColor : .systemOrange))
+                root.addSubview(label(detail, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: api?.error == nil ? tertiaryTextColor : .systemOrange))
             } else {
-                addInfoRow(root, y: 124, title: l.t("fiveHours"), value: remainingLine(summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt))
-                addInfoRow(root, y: 94, title: l.t("weeklyQuota"), value: remainingLine(summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt))
+                addInfoRow(root, y: 124, title: l.t("fiveHours"), value: remainingLine(summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 94, title: l.t("weeklyQuota"), value: remainingLine(summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
                 let credits = summary.creditsUnlimited ? l.t("unlimited") : (summary.creditsBalance ?? l.t("unknown"))
                 let resetCredits = summary.resetCreditsAvailable.map { l.t("resetCredits") + " \($0)" } ?? (l.t("resetCredits") + " " + l.t("unknown"))
-                addInfoRow(root, y: 64, title: l.t("credits"), value: credits, detail: resetCredits)
+                addInfoRow(root, y: 64, title: l.t("credits"), value: credits, detail: resetCredits, primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
 
                 if summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
                     let spark = "5h " + remainingLine(summary.sparkPrimaryRemaining) + " · 7d " + remainingLine(summary.sparkSecondaryRemaining)
-                    root.addSubview(label("Spark " + spark, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: .tertiaryLabelColor))
+                    root.addSubview(label("Spark " + spark, x: 22, y: 44, width: 360, height: 14, size: 10.5, color: tertiaryTextColor))
                 }
             }
         } else {
             let loading = NSTextField(labelWithString: l.t("loading"))
             loading.frame = NSRect(x: 22, y: 250, width: 300, height: 22)
             loading.font = .systemFont(ofSize: 14, weight: .medium)
+            loading.textColor = primaryTextColor
             root.addSubview(loading)
         }
 
@@ -1741,16 +1850,21 @@ final class CodexPanelViewController: NSViewController {
         }
 
         let refresh = NSButton(title: l.t("refresh"), target: target, action: refreshAction)
-        refresh.frame = NSRect(x: 22, y: 14, width: 78, height: 28)
+        refresh.frame = NSRect(x: 18, y: 14, width: 64, height: 28)
         refresh.bezelStyle = .rounded
         root.addSubview(refresh)
 
         let open = NSButton(title: l.t("usagePage"), target: target, action: openAction)
-        open.frame = NSRect(x: 108, y: 14, width: 90, height: 28)
+        open.frame = NSRect(x: 88, y: 14, width: 72, height: 28)
         open.bezelStyle = .rounded
         root.addSubview(open)
 
-        let language = NSPopUpButton(frame: NSRect(x: 208, y: 14, width: 92, height: 28), pullsDown: false)
+        let theme = NSButton(title: themeMode.buttonTitle(), target: target, action: themeAction)
+        theme.frame = NSRect(x: 166, y: 14, width: 72, height: 28)
+        theme.bezelStyle = .rounded
+        root.addSubview(theme)
+
+        let language = NSPopUpButton(frame: NSRect(x: 244, y: 14, width: 90, height: 28), pullsDown: false)
         language.bezelStyle = .rounded
         for option in l.languageMenuOptions() {
             language.addItem(withTitle: l.displayLanguageTitle(option))
@@ -1765,7 +1879,7 @@ final class CodexPanelViewController: NSViewController {
         root.addSubview(language)
 
         let quit = NSButton(title: l.t("quit"), target: target, action: quitAction)
-        quit.frame = NSRect(x: 308, y: 14, width: 76, height: 28)
+        quit.frame = NSRect(x: 340, y: 14, width: 52, height: 28)
         quit.bezelStyle = .rounded
         root.addSubview(quit)
 
@@ -1776,10 +1890,21 @@ final class CodexPanelViewController: NSViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private func addInfoRow(_ root: NSView, y: CGFloat, title: String, value: String, detail: String) {
-        root.addSubview(label(title, x: 22, y: y, width: 78, height: 16, size: 11, weight: .semibold, color: .secondaryLabelColor))
-        root.addSubview(label(value, x: 104, y: y, width: 128, height: 16, size: 11, weight: .medium, color: .labelColor))
-        root.addSubview(label(detail, x: 232, y: y, width: 156, height: 16, size: 10.5, color: .secondaryLabelColor, alignment: .right))
+    private func panelAppearance(for mode: CardThemeMode) -> NSAppearance? {
+        switch mode {
+        case .system:
+            return nil
+        case .light:
+            return NSAppearance(named: .aqua)
+        case .dark:
+            return NSAppearance(named: .darkAqua)
+        }
+    }
+
+    private func addInfoRow(_ root: NSView, y: CGFloat, title: String, value: String, detail: String, primaryColor: NSColor, secondaryColor: NSColor) {
+        root.addSubview(label(title, x: 22, y: y, width: 78, height: 16, size: 11, weight: .semibold, color: secondaryColor))
+        root.addSubview(label(value, x: 104, y: y, width: 128, height: 16, size: 11, weight: .medium, color: primaryColor))
+        root.addSubview(label(detail, x: 232, y: y, width: 156, height: 16, size: 10.5, color: secondaryColor, alignment: .right))
     }
 
     private func label(_ text: String, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor, alignment: NSTextAlignment = .left) -> NSTextField {
@@ -1918,6 +2043,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         }
     }
 
+    private static let trainStyleIndexKey = "CodexBalance.trainStyleIndex"
+
+    private static func storedTrainStyleIndex() -> Int {
+        let value = UserDefaults.standard.integer(forKey: trainStyleIndexKey)
+        guard value >= 0 else { return 0 }
+        return value % UsageCardView.styleCount
+    }
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private let menu = NSMenu()
@@ -1928,13 +2061,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     private var lastSummary: CodexUsageSummary?
     private var lastError: String?
     private var taskLightState: TaskLightState = .idle
-    private var trainStyleIndex = 0
+    private var trainStyleIndex = AppDelegate.storedTrainStyleIndex()
+    private var cardThemeMode = CardThemeMode.stored
     private let trainStartTime = Date.timeIntervalSinceReferenceDate
     private let taskStatusFile = AppDelegate.defaultTaskStatusFile()
     private let codexStateDatabase = AppDelegate.defaultCodexStateDatabase()
     private let codexGlobalStateFile = AppDelegate.defaultCodexGlobalStateFile()
     private let codexActiveWindowSeconds: TimeInterval = 75
-    private let codexUnreadWindowSeconds: TimeInterval = 7 * 24 * 60 * 60
+    private let codexUnreadWindowSeconds: TimeInterval = 24 * 60 * 60
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -2044,8 +2178,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             openAction: #selector(openUsagePageFromPopover(_:)),
             quitAction: #selector(quit),
             languageAction: #selector(languageChanged(_:)),
+            themeAction: #selector(themeChanged(_:)),
             trainStyleIndex: trainStyleIndex,
             trainStartTime: trainStartTime,
+            themeMode: cardThemeMode,
             trainClickAction: { [weak self] in
                 self?.cycleTrainStyle()
             }
@@ -2055,7 +2191,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
 
     private func cycleTrainStyle() {
         trainStyleIndex = (trainStyleIndex + 1) % UsageCardView.styleCount
+        UserDefaults.standard.set(trainStyleIndex, forKey: Self.trainStyleIndexKey)
         updatePopoverContent()
+    }
+
+    @objc private func themeChanged(_ sender: Any?) {
+        cardThemeMode = cardThemeMode.next(systemUsesDark: systemUsesDarkAppearance())
+        cardThemeMode.save()
+        updatePopoverContent()
+        rebuildMenu()
+    }
+
+    private func systemUsesDarkAppearance() -> Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
     @objc private func refreshFromPopover(_ sender: Any?) {
@@ -2184,14 +2332,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             return unreadThreadIDs.isEmpty ? nil : TaskLightState(hasUnread: true, hasRunning: false)
         }
         let now = Date().timeIntervalSince1970
-        let activeWorkspaceRoots = readActiveWorkspaceRoots()
         let hasRunning = threads.contains(where: { isRecentlyActive($0, now: now) })
-        let hasUnread = threads.contains { thread in
-            thread.isUserVisible
-                && isInActiveWorkspace(thread, activeWorkspaceRoots: activeWorkspaceRoots)
-                && unreadThreadIDs.contains(thread.id)
+        let visibleThreads = threads.filter(\.isUserVisible)
+        let hasPersistedUnread = visibleThreads.contains { thread in
+            unreadThreadIDs.contains(thread.id)
                 && isRecent(thread.updatedAt, now: now, window: codexUnreadWindowSeconds)
         }
+        let hasUnread = hasPersistedUnread
         if hasUnread || hasRunning {
             return TaskLightState(hasUnread: hasUnread, hasRunning: hasRunning)
         }
@@ -2333,8 +2480,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             return []
         }
         var result = Set<String>()
-        if let local = unreadByHost["local"] as? [String] {
-            result.formUnion(local)
+        for value in unreadByHost.values {
+            if let ids = value as? [String] {
+                result.formUnion(ids)
+            }
         }
         return result
     }
@@ -2533,6 +2682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                 errorText: lastError == nil ? nil : l.t("readFailed"),
                 trainStyleIndex: trainStyleIndex,
                 trainStartTime: trainStartTime,
+                themeMode: cardThemeMode,
                 onTrainClick: { [weak self] in
                     self?.cycleTrainStyle()
                 }

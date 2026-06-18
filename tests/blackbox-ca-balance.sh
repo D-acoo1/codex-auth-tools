@@ -246,6 +246,14 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump({"active-workspace-roots": [root], "electron-persisted-atom-state": {"unread-thread-ids-by-host-v1": {"local": [thread_id]}}}, f)
 PY
 }
+write_unread_state_with_host() {
+  "$PYTHON_BIN" - "$TASK_GLOBAL" "$1" "$2" <<'PY'
+import json, sys
+path, host, thread_id = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump({"electron-persisted-atom-state": {"unread-thread-ids-by-host-v1": {host: [thread_id]}}}, f)
+PY
+}
 assert_task_light() {
   local expected="$1"
   local actual
@@ -276,13 +284,42 @@ write_unread_state user-unread
 assert_task_light unread
 
 write_task_db
+TASK_OLD=$((TASK_NOW - 180))
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('stale-user-unread', $TASK_OLD, 0, 'user', '', '', '', 'stale user unread', '');"
+write_unread_state stale-user-unread
+assert_task_light unread
+
+write_task_db
+TASK_OLD=$((TASK_NOW - 172800))
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('stale-user-unread', $TASK_OLD, 0, 'user', '', '', '', 'stale user unread', '');"
+write_unread_state stale-user-unread
+assert_task_light idle
+
+write_task_db
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('app-current-thread', $TASK_NOW, 0, 'user', '', '', '', 'app current thread', '');"
+write_unread_state
+assert_task_light idle
+
+write_task_db
+TASK_RECENT=$((TASK_NOW - 1800))
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('app-thread-a', $TASK_NOW, 0, 'user', '', '', '', 'app thread a', '');"
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('app-thread-b', $TASK_RECENT, 0, 'user', '', '', '', 'app thread b', '');"
+write_unread_state
+assert_task_light idle
+
+write_task_db
 /usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, cwd, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('other-workspace-unread', $TASK_NOW, '/tmp/other-project', 0, 'user', '', '', '', 'other workspace unread', '');"
 write_unread_state_with_active_root /tmp/current-project other-workspace-unread
-assert_task_light idle
+assert_task_light unread
 
 write_task_db
 /usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, cwd, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('current-workspace-unread', $TASK_NOW, '/tmp/current-project/app', 0, 'user', '', '', '', 'current workspace unread', '');"
 write_unread_state_with_active_root /tmp/current-project current-workspace-unread
+assert_task_light unread
+
+write_task_db
+/usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('host-unread', $TASK_NOW, 0, 'user', '', '', '', 'host unread', '');"
+write_unread_state_with_host "$HOSTNAME" host-unread
 assert_task_light unread
 
 write_task_db
