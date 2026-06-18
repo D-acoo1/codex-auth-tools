@@ -1111,7 +1111,7 @@ final class UsageCardView: NSView {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let card = bounds.insetBy(dx: 10, dy: 10)
-        if isPointOnTrain(point, in: card) {
+        if card.contains(point) {
             onTrainClick()
             return
         }
@@ -1286,6 +1286,15 @@ final class UsageCardView: NSView {
                 .appendingPathComponent(trainThemeName, isDirectory: true)
                 .appendingPathComponent("\(segment.index).png")
             if let image = NSImage(contentsOf: url), image.isValid {
+                if trainThemeName == "flying-sword",
+                   let representation = image.representations.first,
+                   representation.pixelsWide >= 200,
+                   representation.pixelsHigh >= 70 {
+                    image.size = NSSize(
+                        width: CGFloat(representation.pixelsWide) / 2,
+                        height: CGFloat(representation.pixelsHigh) / 2
+                    )
+                }
                 return image
             }
         }
