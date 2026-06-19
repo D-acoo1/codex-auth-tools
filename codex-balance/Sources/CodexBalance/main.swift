@@ -1052,7 +1052,7 @@ final class UsageCardView: NSView {
     private var trainSegmentImageCache: [TrainSegment: NSImage] = [:]
     private let trainSegmentSize = NSSize(width: 38, height: 34)
     private var trainSegmentSpacing: CGFloat {
-        trainThemeName == "flying-sword" ? 62 : 30
+        isFlyingSwordTheme ? 62 : 30
     }
     private let trainTrackInset: CGFloat = 0
     private let trainTrackRadius: CGFloat = 18
@@ -1063,6 +1063,10 @@ final class UsageCardView: NSView {
 
     private var trainThemeName: String {
         Self.trainThemeNames[trainStyleIndex % Self.trainThemeNames.count]
+    }
+
+    private var isFlyingSwordTheme: Bool {
+        trainThemeName == "flying-sword"
     }
 
     init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, themeMode: CardThemeMode, trainSegmentMask: Int, onTrainClick: @escaping () -> Void) {
@@ -1277,10 +1281,169 @@ final class UsageCardView: NSView {
         segmentLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         segmentLayer.contentsGravity = .resizeAspect
         segmentLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        segmentLayer.shouldRasterize = true
-        segmentLayer.rasterizationScale = segmentLayer.contentsScale
         segmentLayer.contents = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        if isFlyingSwordTheme {
+            addFlyingSwordEffects(to: segmentLayer, segment: segment)
+        } else {
+            segmentLayer.shouldRasterize = true
+            segmentLayer.rasterizationScale = segmentLayer.contentsScale
+        }
         return segmentLayer
+    }
+
+    private func addFlyingSwordEffects(to layer: CALayer, segment: TrainSegment) {
+        layer.masksToBounds = false
+        layer.shadowColor = flyingSwordGlowColor(segment.index).cgColor
+        layer.shadowOffset = .zero
+        layer.shadowOpacity = 0.58
+        layer.shadowRadius = 5.5
+
+        addFlyingSwordShadowPulse(to: layer, segment: segment)
+        addFlyingSwordTrail(to: layer, segment: segment)
+        addFlyingSwordGlint(to: layer, segment: segment)
+        addFlyingSwordSpark(to: layer, segment: segment)
+    }
+
+    private func addFlyingSwordShadowPulse(to layer: CALayer, segment: TrainSegment) {
+        let delay = Double(segment.index) * 0.18
+        let opacity = CAKeyframeAnimation(keyPath: "shadowOpacity")
+        opacity.values = [0.36, 0.82, 0.48, 0.68]
+        opacity.keyTimes = [0, 0.34, 0.68, 1]
+        opacity.duration = 1.45
+        opacity.repeatCount = .infinity
+        opacity.beginTime = CACurrentMediaTime() + delay
+        opacity.isRemovedOnCompletion = false
+        layer.add(opacity, forKey: "swordGlowOpacity")
+
+        let radius = CAKeyframeAnimation(keyPath: "shadowRadius")
+        radius.values = [3.0, 8.0, 4.0, 6.5]
+        radius.keyTimes = [0, 0.34, 0.68, 1]
+        radius.duration = 1.45
+        radius.repeatCount = .infinity
+        radius.beginTime = CACurrentMediaTime() + delay
+        radius.isRemovedOnCompletion = false
+        layer.add(radius, forKey: "swordGlowRadius")
+    }
+
+    private func addFlyingSwordTrail(to layer: CALayer, segment: TrainSegment) {
+        let bounds = layer.bounds
+        let color = flyingSwordGlowColor(segment.index)
+        let trail = CAGradientLayer()
+        trail.name = "swordTrail"
+        trail.frame = CGRect(x: -26, y: bounds.midY - 6, width: bounds.width * 0.58, height: 12)
+        trail.startPoint = CGPoint(x: 0, y: 0.5)
+        trail.endPoint = CGPoint(x: 1, y: 0.5)
+        trail.colors = [
+            color.withAlphaComponent(0.0).cgColor,
+            color.withAlphaComponent(0.55).cgColor,
+            NSColor.white.withAlphaComponent(0.40).cgColor,
+            color.withAlphaComponent(0.0).cgColor
+        ]
+        trail.locations = [0, 0.34, 0.70, 1]
+        trail.cornerRadius = 6
+        trail.opacity = 0.62
+        layer.addSublayer(trail)
+
+        let pulse = CAKeyframeAnimation(keyPath: "opacity")
+        pulse.values = [0.30, 0.82, 0.44, 0.66]
+        pulse.keyTimes = [0, 0.32, 0.68, 1]
+        pulse.duration = 1.05
+        pulse.repeatCount = .infinity
+        pulse.beginTime = CACurrentMediaTime() + Double(segment.index) * 0.12
+        pulse.isRemovedOnCompletion = false
+        trail.add(pulse, forKey: "trailPulse")
+
+        let stretch = CAKeyframeAnimation(keyPath: "transform.scale.x")
+        stretch.values = [0.82, 1.18, 0.92, 1.04]
+        stretch.keyTimes = [0, 0.32, 0.68, 1]
+        stretch.duration = 1.05
+        stretch.repeatCount = .infinity
+        stretch.beginTime = pulse.beginTime
+        stretch.isRemovedOnCompletion = false
+        trail.add(stretch, forKey: "trailStretch")
+    }
+
+    private func addFlyingSwordGlint(to layer: CALayer, segment: TrainSegment) {
+        let bounds = layer.bounds
+        let glint = CAGradientLayer()
+        glint.name = "swordGlint"
+        glint.frame = CGRect(x: -12, y: bounds.midY - 13, width: 18, height: 26)
+        glint.startPoint = CGPoint(x: 0, y: 0.5)
+        glint.endPoint = CGPoint(x: 1, y: 0.5)
+        glint.colors = [
+            NSColor.white.withAlphaComponent(0.0).cgColor,
+            NSColor.white.withAlphaComponent(0.95).cgColor,
+            flyingSwordGlowColor(segment.index).withAlphaComponent(0.35).cgColor,
+            NSColor.white.withAlphaComponent(0.0).cgColor
+        ]
+        glint.locations = [0, 0.42, 0.56, 1]
+        glint.transform = CATransform3DMakeRotation(CGFloat.pi / 5, 0, 0, 1)
+        glint.opacity = 0
+        layer.addSublayer(glint)
+
+        let move = CABasicAnimation(keyPath: "position.x")
+        move.fromValue = -8
+        move.toValue = bounds.width + 10
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = [0, 0.95, 0]
+        fade.keyTimes = [0, 0.48, 1]
+        let group = CAAnimationGroup()
+        group.animations = [move, fade]
+        group.duration = 2.2
+        group.repeatCount = .infinity
+        group.beginTime = CACurrentMediaTime() + 0.35 + Double(segment.index) * 0.22
+        group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        group.isRemovedOnCompletion = false
+        glint.add(group, forKey: "glintSweep")
+    }
+
+    private func addFlyingSwordSpark(to layer: CALayer, segment: TrainSegment) {
+        let bounds = layer.bounds
+        let color = flyingSwordGlowColor(segment.index)
+        for sparkIndex in 0..<2 {
+            let spark = CALayer()
+            spark.name = "swordSpark"
+            let size = CGFloat(2 + sparkIndex)
+            spark.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            spark.cornerRadius = size / 2
+            spark.backgroundColor = (sparkIndex == 0 ? NSColor.white : color).withAlphaComponent(0.90).cgColor
+            spark.position = CGPoint(x: bounds.midX - CGFloat(8 + sparkIndex * 18), y: bounds.midY + CGFloat(sparkIndex == 0 ? -10 : 10))
+            spark.opacity = 0
+            layer.addSublayer(spark)
+
+            let drift = CAKeyframeAnimation(keyPath: "position")
+            drift.values = [
+                NSValue(point: NSPoint(x: bounds.midX + CGFloat(6 * sparkIndex), y: bounds.midY + CGFloat(sparkIndex == 0 ? -4 : 4))),
+                NSValue(point: NSPoint(x: bounds.midX - CGFloat(20 + sparkIndex * 12), y: bounds.midY + CGFloat(sparkIndex == 0 ? -13 : 13))),
+                NSValue(point: NSPoint(x: bounds.midX - CGFloat(42 + sparkIndex * 12), y: bounds.midY + CGFloat(sparkIndex == 0 ? -2 : 2)))
+            ]
+            drift.keyTimes = [0, 0.48, 1]
+            drift.calculationMode = .paced
+
+            let fade = CAKeyframeAnimation(keyPath: "opacity")
+            fade.values = [0, 0.95, 0]
+            fade.keyTimes = [0, 0.40, 1]
+
+            let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+            scale.values = [0.6, 1.35, 0.25]
+            scale.keyTimes = [0, 0.40, 1]
+
+            let group = CAAnimationGroup()
+            group.animations = [drift, fade, scale]
+            group.duration = 1.25 + Double(sparkIndex) * 0.18
+            group.repeatCount = .infinity
+            group.beginTime = CACurrentMediaTime() + Double(segment.index) * 0.16 + Double(sparkIndex) * 0.34
+            group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            group.isRemovedOnCompletion = false
+            spark.add(group, forKey: "sparkDrift")
+        }
+    }
+
+    private func flyingSwordGlowColor(_ index: Int) -> NSColor {
+        if index % 2 == 0 {
+            return NSColor(calibratedRed: 1.00, green: 0.74, blue: 0.18, alpha: 1.0)
+        }
+        return NSColor(calibratedRed: 0.28, green: 0.88, blue: 1.00, alpha: 1.0)
     }
 
     private func addTrainLoopAnimation(to layer: CALayer, on track: NSRect, distanceOffset: CGFloat) {
@@ -1398,7 +1561,7 @@ final class UsageCardView: NSView {
                 .appendingPathComponent(trainThemeName, isDirectory: true)
                 .appendingPathComponent("\(segment.index).png")
             if let image = NSImage(contentsOf: url), image.isValid {
-                if trainThemeName == "flying-sword",
+                if isFlyingSwordTheme,
                    let representation = image.representations.first,
                    representation.pixelsWide >= 200,
                    representation.pixelsHigh >= 70 {
