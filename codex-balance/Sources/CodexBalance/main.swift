@@ -1331,11 +1331,11 @@ final class UsageCardView: NSView {
         let lineOffsets: [CGFloat] = [-5, 4]
         for (lineIndex, offset) in lineOffsets.enumerated() {
             let path = CGMutablePath()
-            path.move(to: CGPoint(x: bounds.minX + 8, y: bounds.midY + offset))
+            path.move(to: CGPoint(x: bounds.maxX - 18, y: bounds.midY + offset * 0.20))
             path.addCurve(
-                to: CGPoint(x: bounds.minX + 52, y: bounds.midY + offset * 0.20),
-                control1: CGPoint(x: bounds.minX + 18, y: bounds.midY + offset * 1.8),
-                control2: CGPoint(x: bounds.minX + 36, y: bounds.midY - offset * 1.2)
+                to: CGPoint(x: bounds.maxX - 64, y: bounds.midY + offset),
+                control1: CGPoint(x: bounds.maxX - 30, y: bounds.midY - offset * 1.2),
+                control2: CGPoint(x: bounds.maxX - 48, y: bounds.midY + offset * 1.8)
             )
 
             let line = CAShapeLayer()
@@ -1389,8 +1389,8 @@ final class UsageCardView: NSView {
         layer.addSublayer(glint)
 
         let move = CABasicAnimation(keyPath: "position.x")
-        move.fromValue = bounds.midX - 18
-        move.toValue = bounds.midX + 24
+        move.fromValue = bounds.midX + 24
+        move.toValue = bounds.midX - 18
         let fade = CAKeyframeAnimation(keyPath: "opacity")
         fade.values = [0, 0.58, 0]
         fade.keyTimes = [0, 0.48, 1]
@@ -1420,9 +1420,9 @@ final class UsageCardView: NSView {
 
             let drift = CAKeyframeAnimation(keyPath: "position")
             drift.values = [
-                NSValue(point: NSPoint(x: bounds.midX - CGFloat(2 + sparkIndex * 3), y: bounds.midY + CGFloat(sparkIndex == 0 ? -3 : 3))),
-                NSValue(point: NSPoint(x: bounds.midX - CGFloat(17 + sparkIndex * 8), y: bounds.midY + CGFloat(sparkIndex == 0 ? -9 : 9))),
-                NSValue(point: NSPoint(x: bounds.midX - CGFloat(31 + sparkIndex * 9), y: bounds.midY + CGFloat(sparkIndex == 0 ? -2 : 2)))
+                NSValue(point: NSPoint(x: bounds.midX + CGFloat(18 - sparkIndex * 3), y: bounds.midY + CGFloat(sparkIndex == 0 ? -3 : 3))),
+                NSValue(point: NSPoint(x: bounds.midX - CGFloat(3 + sparkIndex * 8), y: bounds.midY + CGFloat(sparkIndex == 0 ? -9 : 9))),
+                NSValue(point: NSPoint(x: bounds.midX - CGFloat(24 + sparkIndex * 9), y: bounds.midY + CGFloat(sparkIndex == 0 ? -2 : 2)))
             ]
             drift.keyTimes = [0, 0.48, 1]
             drift.calculationMode = .paced
