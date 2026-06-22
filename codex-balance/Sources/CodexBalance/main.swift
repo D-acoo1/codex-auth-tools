@@ -1069,6 +1069,10 @@ final class UsageCardView: NSView {
         trainThemeName == "flying-sword"
     }
 
+    private var trainVisualRotationOffset: CGFloat {
+        isFlyingSwordTheme ? CGFloat.pi : 0
+    }
+
     init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, themeMode: CardThemeMode, trainSegmentMask: Int, onTrainClick: @escaping () -> Void) {
         self.summary = summary
         self.errorText = errorText
@@ -1250,7 +1254,7 @@ final class UsageCardView: NSView {
             let segmentLayer = makeTrainSegmentLayer(item.segment)
             let pose = currentTrainPose(in: card, distanceOffset: item.offset)
             segmentLayer.position = pose.point
-            segmentLayer.transform = CATransform3DMakeRotation(pose.angle + CGFloat.pi, 0, 0, 1)
+            segmentLayer.transform = CATransform3DMakeRotation(trainVisualAngle(pose.angle), 0, 0, 1)
             containerLayer.addSublayer(segmentLayer)
             if !isTrainBrokenDown {
                 addTrainLoopAnimation(to: segmentLayer, on: track, distanceOffset: item.offset)
@@ -1511,12 +1515,16 @@ final class UsageCardView: NSView {
                 }
             }
             points.append(NSValue(point: pose.point))
-            angles.append(NSNumber(value: Double(angle + CGFloat.pi)))
+            angles.append(NSNumber(value: Double(trainVisualAngle(angle))))
             times.append(NSNumber(value: Double(progress)))
             previousAngle = angle
         }
 
         return (points, angles, times)
+    }
+
+    private func trainVisualAngle(_ angle: CGFloat) -> CGFloat {
+        angle + trainVisualRotationOffset
     }
 
     private func trainSegmentImage(_ segment: TrainSegment) -> NSImage {
