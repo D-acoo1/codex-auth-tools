@@ -2073,6 +2073,7 @@ final class ResetCreditsBubbleView: NSView {
     private let summary: CodexUsageSummary
     private let panelLight: Bool
     private let arrowTipX: CGFloat
+    private let arrowHeight: CGFloat = 7
 
     init(frame frameRect: NSRect, summary: CodexUsageSummary, panelLight: Bool, arrowTipX: CGFloat) {
         self.summary = summary
@@ -2093,7 +2094,6 @@ final class ResetCreditsBubbleView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let arrowHeight: CGFloat = 7
         let arrowHalfWidth: CGFloat = 7
         let bodyRect = NSRect(x: 0, y: arrowHeight, width: bounds.width, height: bounds.height - arrowHeight)
         let fill = panelLight ? NSColor(calibratedWhite: 1.0, alpha: 0.96) : NSColor(calibratedWhite: 0.08, alpha: 0.97)
@@ -2145,9 +2145,19 @@ final class ResetCreditsBubbleView: NSView {
         let credits = summary.resetCredits.isEmpty ? [] : Array(summary.resetCredits.prefix(5))
         let textColor = panelLight ? NSColor(calibratedWhite: 0.16, alpha: 0.82) : NSColor.white.withAlphaComponent(0.88)
         let lines = credits.isEmpty ? [L10n.shared.t("unknown")] : credits.map { "\(dateText($0.grantedAt)) – \(dateText($0.expiresAt))" }
+        let lineHeight: CGFloat = 15
+        let lineGap: CGFloat = 2
+        let bodyHeight = bounds.height - arrowHeight
+        let totalLineHeight = CGFloat(lines.count) * lineHeight + CGFloat(max(0, lines.count - 1)) * lineGap
+        let firstLineY = arrowHeight + max(0, (bodyHeight - totalLineHeight) / 2)
         for (index, line) in lines.enumerated() {
             let field = NSTextField(labelWithString: line)
-            field.frame = NSRect(x: 10, y: bounds.height - 24 - CGFloat(index * 17), width: bounds.width - 20, height: 14)
+            field.frame = NSRect(
+                x: 10,
+                y: firstLineY + CGFloat(lines.count - 1 - index) * (lineHeight + lineGap),
+                width: bounds.width - 20,
+                height: lineHeight
+            )
             field.font = .systemFont(ofSize: 11, weight: .semibold)
             field.textColor = textColor
             field.alignment = .center
