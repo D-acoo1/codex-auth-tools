@@ -2144,7 +2144,7 @@ final class ResetCreditsBubbleView: NSView {
     private func addDateLines() {
         let credits = summary.resetCredits.isEmpty ? [] : Array(summary.resetCredits.prefix(5))
         let textColor = panelLight ? NSColor(calibratedWhite: 0.16, alpha: 0.82) : NSColor.white.withAlphaComponent(0.88)
-        let lines = credits.isEmpty ? [L10n.shared.t("unknown")] : credits.map { "\(dateText($0.grantedAt)) – \(dateText($0.expiresAt))" }
+        let lines = credits.isEmpty ? [L10n.shared.t("unknown")] : credits.map { "\(dateText($0.grantedAt)) - \(dateText($0.expiresAt))" }
         let lineHeight: CGFloat = 15
         let lineGap: CGFloat = 2
         let bodyHeight = bounds.height - arrowHeight
@@ -2170,8 +2170,64 @@ final class ResetCreditsBubbleView: NSView {
         guard let date else { return L10n.shared.t("unknown") }
         let formatter = DateFormatter()
         formatter.locale = L10n.shared.locale
-        formatter.dateFormat = "M/d"
+        formatter.dateFormat = "M.d"
         return formatter.string(from: date)
+    }
+}
+
+final class ResetCreditsDismissOverlayView: NSButton {
+    private let passthroughRects: [NSRect]
+    private let onDismiss: () -> Void
+    private var didDismiss = false
+
+    init(frame frameRect: NSRect, passthroughRects: [NSRect], onDismiss: @escaping () -> Void) {
+        self.passthroughRects = passthroughRects
+        self.onDismiss = onDismiss
+        super.init(frame: frameRect)
+        title = ""
+        target = self
+        action = #selector(performDismiss(_:))
+        isBordered = false
+        isTransparent = true
+        setButtonType(.momentaryChange)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+        if passthroughRects.contains(where: { $0.insetBy(dx: -4, dy: -4).contains(point) }) {
+            return nil
+        }
+        return self
+    }
+
+    @objc private func performDismiss(_ sender: Any?) {
+        dismissOnce()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dismissOnce()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        dismissOnce()
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        dismissOnce()
+    }
+
+    private func dismissOnce() {
+        guard !didDismiss else { return }
+        didDismiss = true
+        onDismiss()
     }
 }
 
@@ -2192,7 +2248,7 @@ final class CodexPanelViewController: NSViewController {
         themeMode: CardThemeMode,
         trainSegmentMask: Int,
         showResetCreditsDetail: Bool,
-        dismissResetCreditsAction: Selector,
+        dismissResetCredits: @escaping () -> Void,
         trainClickAction: @escaping () -> Void
     ) {
         super.init(nibName: nil, bundle: nil)
@@ -2340,7 +2396,7 @@ final class CodexPanelViewController: NSViewController {
         if showResetCreditsDetail,
            let summary,
            (summary.resetCreditsAvailable ?? 0) > 0 {
-            addResetCreditsBubble(root, summary: summary, panelLight: panelLight, target: target, dismissAction: dismissResetCreditsAction)
+            addResetCreditsBubble(root, summary: summary, panelLight: panelLight, dismiss: dismissResetCredits)
         }
 
         self.view = root
@@ -2400,10 +2456,10 @@ final class CodexPanelViewController: NSViewController {
         L10n.shared.effectiveCode.hasPrefix("zh") ? "查看每张重置券的授权日和截止日期" : "Show each reset credit grant and expiration date"
     }
 
-    private func addResetCreditsBubble(_ root: NSView, summary: CodexUsageSummary, panelLight: Bool, target: AnyObject, dismissAction: Selector) {
+    private func addResetCreditsBubble(_ root: NSView, summary: CodexUsageSummary, panelLight: Bool, dismiss: @escaping () -> Void) {
         let lineCount = max(1, min(5, summary.resetCredits.count))
         let triggerFrame = NSRect(x: 232, y: 94, width: 156, height: 20)
-        let bubbleWidth: CGFloat = 112
+        let bubbleWidth: CGFloat = 122
         let bubbleHeight = 15 + CGFloat(lineCount * 17)
         let bubbleFrame = NSRect(
             x: triggerFrame.maxX - bubbleWidth,
@@ -2411,7 +2467,6 @@ final class CodexPanelViewController: NSViewController {
             width: bubbleWidth,
             height: bubbleHeight
         )
-        addResetCreditsDismissRegions(root, protectedRects: [triggerFrame, bubbleFrame], target: target, action: dismissAction)
         let triggerTextCenterX = triggerFrame.maxX - 22
         let bubble = ResetCreditsBubbleView(
             frame: bubbleFrame,
@@ -2419,43 +2474,28 @@ final class CodexPanelViewController: NSViewController {
             panelLight: panelLight,
             arrowTipX: triggerTextCenterX - bubbleFrame.minX
         )
-        root.addSubview(bubble)
-    }
-
-    private func addResetCreditsDismissRegions(_ root: NSView, protectedRects: [NSRect], target: AnyObject, action: Selector) {
-        let protected = protectedRects.map { $0.insetBy(dx: -4, dy: -4) }
-        let xs = uniqueSorted(([root.bounds.minX, root.bounds.maxX] + protected.flatMap { [$0.minX, $0.maxX] }).map { max(root.bounds.minX, min(root.bounds.maxX, $0)) })
-        let ys = uniqueSorted(([root.bounds.minY, root.bounds.maxY] + protected.flatMap { [$0.minY, $0.maxY] }).map { max(root.bounds.minY, min(root.bounds.maxY, $0)) })
-        for xIndex in 0..<(xs.count - 1) {
-            for yIndex in 0..<(ys.count - 1) {
-                let rect = NSRect(x: xs[xIndex], y: ys[yIndex], width: xs[xIndex + 1] - xs[xIndex], height: ys[yIndex + 1] - ys[yIndex])
-                guard rect.width >= 1, rect.height >= 1 else { continue }
-                let center = NSPoint(x: rect.midX, y: rect.midY)
-                if protected.contains(where: { $0.contains(center) }) {
-                    continue
-                }
-                addResetCreditsDismissButton(root, frame: rect, target: target, action: action)
+        bubble.alphaValue = 0
+        var overlay: ResetCreditsDismissOverlayView?
+        var isDismissing = false
+        overlay = ResetCreditsDismissOverlayView(frame: root.bounds, passthroughRects: [triggerFrame, bubbleFrame]) {
+            guard !isDismissing else { return }
+            isDismissing = true
+            dismiss()
+            overlay?.isHidden = true
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                bubble.animator().alphaValue = 0
             }
         }
-    }
-
-    private func addResetCreditsDismissButton(_ root: NSView, frame: NSRect, target: AnyObject, action: Selector) {
-        let button = NSButton(frame: frame)
-        button.title = ""
-        button.target = target
-        button.action = action
-        button.bezelStyle = .regularSquare
-        button.isBordered = false
-        button.isTransparent = true
-        button.setButtonType(.momentaryChange)
-        root.addSubview(button)
-    }
-
-    private func uniqueSorted(_ values: [CGFloat]) -> [CGFloat] {
-        values.sorted().reduce(into: [CGFloat]()) { result, value in
-            if result.last.map({ abs($0 - value) > 0.5 }) ?? true {
-                result.append(value)
-            }
+        if let overlay {
+            root.addSubview(overlay)
+        }
+        root.addSubview(bubble)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.10
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            bubble.animator().alphaValue = 1
         }
     }
 
@@ -2766,7 +2806,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             themeMode: cardThemeMode,
             trainSegmentMask: trainSegmentMask,
             showResetCreditsDetail: resetCreditsDetailVisible,
-            dismissResetCreditsAction: #selector(hideResetCreditsFromPopover(_:)),
+            dismissResetCredits: { [weak self] in
+                self?.resetCreditsDetailVisible = false
+            },
             trainClickAction: { [weak self] in
                 self?.cycleTrainStyle()
             }
@@ -2776,12 +2818,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
 
     private func closeResetCreditsPopover() {
         resetCreditsDetailVisible = false
-    }
-
-    @objc private func hideResetCreditsFromPopover(_ sender: Any?) {
-        guard resetCreditsDetailVisible else { return }
-        resetCreditsDetailVisible = false
-        updatePopoverContent()
     }
 
     private func cycleTrainStyle() {
