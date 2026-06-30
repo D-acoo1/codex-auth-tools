@@ -251,7 +251,10 @@ mkdir -p "$DIST_DIR"
     /usr/bin/ditto -c -k --keepParent "$PACKAGE_NAME" "$ZIP_PATH"
   fi
 )
-shasum -a 256 "$ZIP_PATH" > "$ZIP_PATH.sha256"
+(
+  cd "$DIST_DIR"
+  shasum -a 256 "$(basename "$ZIP_PATH")" > "$(basename "$ZIP_PATH").sha256"
+)
 
 printf 'Package: %s\n' "$ZIP_PATH"
 printf 'Checksum: %s\n' "$ZIP_PATH.sha256"
