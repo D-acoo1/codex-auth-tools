@@ -70,6 +70,8 @@ install -m 700 codex-auth/lib/list.mjs "$PACKAGE_ROOT/lib/codex-ac/list.mjs"
 install -m 700 codex-auth/bin/codex-ac "$PACKAGE_ROOT/bin/codex-ac"
 ln -s codex-ac "$PACKAGE_ROOT/bin/ca"
 cp LICENSE README.md SECURITY.md "$PACKAGE_ROOT/"
+cp -R assets "$PACKAGE_ROOT/assets"
+cp -R docs "$PACKAGE_ROOT/docs"
 cp scripts/uninstall-codex-balance.sh "$PACKAGE_ROOT/uninstall-codex-balance.sh"
 chmod +x "$PACKAGE_ROOT/uninstall-codex-balance.sh"
 
