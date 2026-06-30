@@ -25,6 +25,18 @@ Popover sample:
 
 The popover screenshot is generated with sample data and contains no real account information.
 
+## Install from a release package
+
+Download the latest `codex-auth-tools-*-macos-*.zip` from GitHub Releases, then run:
+
+```bash
+unzip codex-auth-tools-*-macos-*.zip
+cd codex-auth-tools-*-macos-*
+./install.sh
+```
+
+The release package includes a prebuilt `CodexBalance.app`, `ca` / `codex-ac`, animation assets, install instructions, and SHA-256 checksums. It does not include any account, token, cookie, or local auth snapshot.
+
 ## Repository layout
 
 ```text
@@ -68,7 +80,7 @@ When the active account is an API relay profile, Codex Balance reads the relay u
 The default install path is:
 
 ```text
-~/Library/Application Support/CodexBalance/CodexBalance
+~/Library/Application Support/CodexBalance/CodexBalance.app
 ```
 
 The default LaunchAgent label is:
@@ -194,6 +206,18 @@ MIT.
 
 面板截图使用示例数据重新生成，不包含真实账号信息。
 
+## 从 Release 包安装
+
+从 GitHub Releases 下载最新的 `codex-auth-tools-*-macos-*.zip`，然后运行：
+
+```bash
+unzip codex-auth-tools-*-macos-*.zip
+cd codex-auth-tools-*-macos-*
+./install.sh
+```
+
+Release 包包含预编译的 `CodexBalance.app`、`ca` / `codex-ac`、动画资源、安装说明和 SHA-256 校验值；不包含任何账号、token、cookie 或本机登录快照。
+
 ## 仓库结构
 
 ```text
@@ -237,7 +261,7 @@ Codex Balance 会自动跟随 macOS 首选语言里的第一个受支持语言�
 默认安装路径：
 
 ```text
-~/Library/Application Support/CodexBalance/CodexBalance
+~/Library/Application Support/CodexBalance/CodexBalance.app
 ```
 
 默认 LaunchAgent 名称：

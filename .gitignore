@@ -26,3 +26,6 @@ last-status.json
 *.pem
 *.key
 .env
+
+# Release artifacts
+dist/
