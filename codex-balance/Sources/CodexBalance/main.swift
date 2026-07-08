@@ -3080,15 +3080,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     private func rolloutHasOpenTurn(at path: String) -> Bool {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
-            return false
-        }
         let tailLimit = 96 * 1024
-        let tail: Data
-        if data.count > tailLimit {
-            tail = data.subdata(in: (data.count - tailLimit)..<data.count)
-        } else {
-            tail = data
+        guard let tail = readFileTail(at: path, limit: tailLimit) else {
+            return false
         }
         guard let text = String(data: tail, encoding: .utf8) else {
             return false
@@ -3127,6 +3121,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             }
         }
         return openTurn
+    }
+
+    private func readFileTail(at path: String, limit: Int) -> Data? {
+        guard limit > 0 else {
+            return Data()
+        }
+        do {
+            let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+            defer {
+                try? handle.close()
+            }
+            let fileSize = try handle.seekToEnd()
+            let readSize = min(UInt64(limit), fileSize)
+            try handle.seek(toOffset: fileSize - readSize)
+            return try handle.read(upToCount: Int(readSize)) ?? Data()
+        } catch {
+            return nil
+        }
     }
 
     private func isRecent(_ timestamp: TimeInterval, now: TimeInterval, window: TimeInterval) -> Bool {
