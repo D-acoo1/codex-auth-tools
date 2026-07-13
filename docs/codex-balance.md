@@ -40,6 +40,9 @@ GET https://relay.example.com/v1/usage
 - The UI follows the first supported macOS preferred language by default.
 - The popover language picker supports Automatic/System plus 40 manual languages.
 - `CODEX_BALANCE_LANG=<code>` can override the language for one process, which is useful for black-box checks.
+- Animation is disabled by default only when no prior preference exists; upgrades preserve the existing animation mask.
+- Segment buttons are not shown in the main popover. Right-clicking the quota card opens animation settings with the visibility switch, style picker, and segment selectors 1–5.
+- Animation settings stay open during multi-selection and close when clicking outside. Re-enabling animation restores the last non-empty segment selection.
 
 ## Refresh behavior
 

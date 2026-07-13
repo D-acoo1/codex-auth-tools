@@ -1073,11 +1073,12 @@ final class UsageCardView: NSView {
 
     private let summary: CodexUsageSummary
     private let errorText: String?
-    private let trainStyleIndex: Int
+    private var trainStyleIndex: Int
     private let trainStartTime: TimeInterval
     private let themeMode: CardThemeMode
-    private let trainSegmentMask: Int
+    private var trainSegmentMask: Int
     private let onTrainClick: () -> Void
+    private let onAnimationSettingsRequest: (UsageCardView, NSPoint) -> Void
     private let fastestTrainPeriod: TimeInterval = 4.5
     private let slowestTrainPeriod: TimeInterval = 24.0
     private var trainLayer: CALayer?
@@ -1107,7 +1108,16 @@ final class UsageCardView: NSView {
         isFlyingSwordTheme ? CGFloat.pi : 0
     }
 
-    init(summary: CodexUsageSummary, errorText: String?, trainStyleIndex: Int, trainStartTime: TimeInterval, themeMode: CardThemeMode, trainSegmentMask: Int, onTrainClick: @escaping () -> Void) {
+    init(
+        summary: CodexUsageSummary,
+        errorText: String?,
+        trainStyleIndex: Int,
+        trainStartTime: TimeInterval,
+        themeMode: CardThemeMode,
+        trainSegmentMask: Int,
+        onTrainClick: @escaping () -> Void,
+        onAnimationSettingsRequest: @escaping (UsageCardView, NSPoint) -> Void
+    ) {
         self.summary = summary
         self.errorText = errorText
         self.trainStyleIndex = trainStyleIndex
@@ -1115,9 +1125,11 @@ final class UsageCardView: NSView {
         self.themeMode = themeMode
         self.trainSegmentMask = trainSegmentMask & ((1 << Self.maximumTrainSegmentCount) - 1)
         self.onTrainClick = onTrainClick
+        self.onAnimationSettingsRequest = onAnimationSettingsRequest
         super.init(frame: NSRect(x: 0, y: 0, width: 410, height: 162))
         wantsLayer = true
         layer?.masksToBounds = false
+        toolTip = animationSettingsHint()
     }
 
     required init?(coder: NSCoder) {
@@ -1264,10 +1276,37 @@ final class UsageCardView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         let card = bounds.insetBy(dx: 10, dy: 10)
         if card.contains(point) {
-            onTrainClick()
+            if trainSegmentMask != 0 {
+                onTrainClick()
+            }
             return
         }
         super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let card = bounds.insetBy(dx: 10, dy: 10)
+        if card.contains(point) {
+            onAnimationSettingsRequest(self, point)
+            return
+        }
+        super.rightMouseDown(with: event)
+    }
+
+    func updateTrainPresentation(styleIndex: Int, segmentMask: Int) {
+        let nextStyleIndex = max(0, styleIndex) % Self.styleCount
+        let nextSegmentMask = segmentMask & ((1 << Self.maximumTrainSegmentCount) - 1)
+        guard nextStyleIndex != trainStyleIndex || nextSegmentMask != trainSegmentMask else { return }
+        stopTrainAnimation()
+        trainStyleIndex = nextStyleIndex
+        trainSegmentMask = nextSegmentMask
+        trainSegmentImageCache.removeAll()
+        startTrainAnimation()
+    }
+
+    private func animationSettingsHint() -> String {
+        L10n.shared.effectiveCode.hasPrefix("zh") ? "右键设置动画" : "Right-click for animation settings"
     }
 
     private func startTrainAnimation() {
@@ -1304,11 +1343,12 @@ final class UsageCardView: NSView {
     }
 
     private func trainSegments() -> [(segment: TrainSegment, offset: CGFloat)] {
-        (0..<Self.maximumTrainSegmentCount).filter { index in
+        let selected = (0..<Self.maximumTrainSegmentCount).filter { index in
             (trainSegmentMask & (1 << index)) != 0
-        }.reversed().map { index in
-            (TrainSegment(index: index), -CGFloat(index) * trainSegmentSpacing)
         }
+        return selected.enumerated().map { position, index in
+            (TrainSegment(index: index), -CGFloat(position) * trainSegmentSpacing)
+        }.reversed()
     }
 
     private func makeTrainSegmentLayer(_ segment: TrainSegment) -> CALayer {
@@ -2277,7 +2317,133 @@ final class ResetCreditsDismissOverlayView: NSButton {
     }
 }
 
+final class AnimationSettingsViewController: NSViewController {
+    private let onAnimationToggle: (Bool) -> Void
+    private let onStyleChange: (Int) -> Void
+    private let onSegmentToggle: (Int) -> Void
+
+    init(
+        trainStyleIndex: Int,
+        trainSegmentMask: Int,
+        onAnimationToggle: @escaping (Bool) -> Void,
+        onStyleChange: @escaping (Int) -> Void,
+        onSegmentToggle: @escaping (Int) -> Void
+    ) {
+        self.onAnimationToggle = onAnimationToggle
+        self.onStyleChange = onStyleChange
+        self.onSegmentToggle = onSegmentToggle
+        super.init(nibName: nil, bundle: nil)
+
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 272, height: 142))
+        let enabled = trainSegmentMask != 0
+        root.addSubview(settingsLabel(animationText("animationSettings"), x: 16, y: 111, width: 112, weight: .semibold))
+
+        let animationToggle = NSButton(
+            checkboxWithTitle: animationText("showAnimation"),
+            target: self,
+            action: #selector(animationToggleChanged(_:))
+        )
+        animationToggle.frame = NSRect(x: 142, y: 106, width: 116, height: 24)
+        animationToggle.state = enabled ? .on : .off
+        root.addSubview(animationToggle)
+
+        root.addSubview(settingsLabel(animationText("animationStyle"), x: 16, y: 70, width: 68))
+        let style = NSPopUpButton(frame: NSRect(x: 92, y: 65, width: 164, height: 28), pullsDown: false)
+        for (index, title) in animationStyleNames().enumerated() {
+            style.addItem(withTitle: title)
+            style.lastItem?.representedObject = index
+        }
+        style.selectItem(at: max(0, trainStyleIndex) % UsageCardView.styleCount)
+        style.target = self
+        style.action = #selector(styleChanged(_:))
+        style.isEnabled = enabled
+        root.addSubview(style)
+
+        root.addSubview(settingsLabel(animationText("animationSegments"), x: 16, y: 27, width: 68))
+        let segmentWidth: CGFloat = 28
+        let segmentGap: CGFloat = 6
+        for index in 0..<UsageCardView.maximumTrainSegmentCount {
+            let selected = (trainSegmentMask & (1 << index)) != 0
+            let button = NSButton(title: "\(index + 1)", target: self, action: #selector(segmentChanged(_:)))
+            button.frame = NSRect(
+                x: 92 + CGFloat(index) * (segmentWidth + segmentGap),
+                y: 22,
+                width: segmentWidth,
+                height: 28
+            )
+            button.tag = index
+            button.bezelStyle = .rounded
+            button.setButtonType(.toggle)
+            button.state = selected ? .on : .off
+            button.isBordered = false
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 7
+            button.layer?.backgroundColor = (selected ? NSColor.controlAccentColor : NSColor.controlColor).cgColor
+            button.attributedTitle = NSAttributedString(
+                string: "\(index + 1)",
+                attributes: [
+                    .foregroundColor: selected ? NSColor.white : NSColor.labelColor,
+                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold)
+                ]
+            )
+            button.isEnabled = enabled
+            button.alphaValue = enabled ? 1 : 0.42
+            root.addSubview(button)
+        }
+
+        self.view = root
+        preferredContentSize = root.frame.size
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func animationToggleChanged(_ sender: NSButton) {
+        onAnimationToggle(sender.state == .on)
+    }
+
+    @objc private func styleChanged(_ sender: NSPopUpButton) {
+        guard let index = sender.selectedItem?.representedObject as? Int else { return }
+        onStyleChange(index)
+    }
+
+    @objc private func segmentChanged(_ sender: NSButton) {
+        guard sender.tag >= 0, sender.tag < UsageCardView.maximumTrainSegmentCount else { return }
+        onSegmentToggle(sender.tag)
+    }
+
+    private func settingsLabel(_ text: String, x: CGFloat, y: CGFloat, width: CGFloat, weight: NSFont.Weight = .medium) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.frame = NSRect(x: x, y: y, width: width, height: 20)
+        field.font = .systemFont(ofSize: 12, weight: weight)
+        field.textColor = .labelColor
+        field.lineBreakMode = .byTruncatingTail
+        return field
+    }
+
+    private func animationText(_ key: String) -> String {
+        let chinese = L10n.shared.effectiveCode.hasPrefix("zh")
+        switch key {
+        case "animationSettings": return chinese ? "动画设置" : "Animation"
+        case "showAnimation": return chinese ? "展示动画" : "Show animation"
+        case "animationStyle": return chinese ? "动画样式" : "Style"
+        case "animationSegments": return chinese ? "展示段" : "Segments"
+        default: return key
+        }
+    }
+
+    private func animationStyleNames() -> [String] {
+        if L10n.shared.effectiveCode.hasPrefix("zh") {
+            return ["星际列车", "奇幻列车", "工具列车", "元素列车", "飞剑"]
+        }
+        return ["Space Train", "RPG Train", "Tool Train", "Elemental Train", "Flying Sword"]
+    }
+}
+
 final class CodexPanelViewController: NSViewController {
+    private weak var cardView: UsageCardView?
+
     init(
         summary: CodexUsageSummary?,
         errorText: String?,
@@ -2288,14 +2454,14 @@ final class CodexPanelViewController: NSViewController {
         languageAction: Selector,
         themeAction: Selector,
         resetCreditsAction: Selector,
-        animationSegmentToggleAction: Selector,
         trainStyleIndex: Int,
         trainStartTime: TimeInterval,
         themeMode: CardThemeMode,
         trainSegmentMask: Int,
         showResetCreditsDetail: Bool,
         dismissResetCredits: @escaping () -> Void,
-        trainClickAction: @escaping () -> Void
+        trainClickAction: @escaping () -> Void,
+        animationSettingsAction: @escaping (UsageCardView, NSPoint) -> Void
     ) {
         super.init(nibName: nil, bundle: nil)
         let l = L10n.shared
@@ -2309,9 +2475,19 @@ final class CodexPanelViewController: NSViewController {
         let tertiaryTextColor = panelLight ? NSColor(calibratedRed: 0.24, green: 0.22, blue: 0.20, alpha: 0.42) : NSColor.tertiaryLabelColor
 
         if let summary {
-            let card = UsageCardView(summary: summary, errorText: errorText, trainStyleIndex: trainStyleIndex, trainStartTime: trainStartTime, themeMode: themeMode, trainSegmentMask: trainSegmentMask, onTrainClick: trainClickAction)
+            let card = UsageCardView(
+                summary: summary,
+                errorText: errorText,
+                trainStyleIndex: trainStyleIndex,
+                trainStartTime: trainStartTime,
+                themeMode: themeMode,
+                trainSegmentMask: trainSegmentMask,
+                onTrainClick: trainClickAction,
+                onAnimationSettingsRequest: animationSettingsAction
+            )
             card.frame = NSRect(x: 0, y: 232, width: 410, height: 162)
             root.addSubview(card)
+            cardView = card
 
             let accountText = l.t("account") + " " + [summary.alias, summary.email].compactMap { $0 }.joined(separator: " · ")
             root.addSubview(label(accountText, x: 22, y: 208, width: 360, height: 18, size: 12, weight: .semibold, color: primaryTextColor))
@@ -2363,63 +2539,36 @@ final class CodexPanelViewController: NSViewController {
             root.addSubview(error)
         }
 
-        let leftInset: CGFloat = 22
-        let sideControlWidth: CGFloat = 96
-        let centerControlWidth: CGFloat = 150
+        let panelWidth = root.bounds.width
+        let horizontalInset: CGFloat = 22
         let controlGap: CGFloat = 12
-        let firstColumn = leftInset
-        let secondColumn = firstColumn + sideControlWidth + controlGap
-        let thirdColumn = secondColumn + centerControlWidth + controlGap
-        let settingsRowY: CGFloat = 44
+        let actionControlWidth = (panelWidth - horizontalInset * 2 - controlGap * 2) / 3
+        let firstColumn = horizontalInset
+        let secondColumn = firstColumn + actionControlWidth + controlGap
+        let thirdColumn = secondColumn + actionControlWidth + controlGap
+        let settingsControlWidth = (panelWidth - horizontalInset * 2 - controlGap) / 2
+        let settingsRowY: CGFloat = 46
         let actionsRowY: CGFloat = 14
 
         let refresh = NSButton(title: l.t("refresh"), target: target, action: refreshAction)
-        refresh.frame = NSRect(x: firstColumn, y: actionsRowY, width: sideControlWidth, height: 28)
+        refresh.frame = NSRect(x: firstColumn, y: actionsRowY, width: actionControlWidth, height: 28)
         refresh.bezelStyle = .rounded
         root.addSubview(refresh)
 
         let open = NSButton(title: l.t("usagePage"), target: target, action: openAction)
-        open.frame = NSRect(x: secondColumn, y: actionsRowY, width: centerControlWidth, height: 28)
+        open.frame = NSRect(x: secondColumn, y: actionsRowY, width: actionControlWidth, height: 28)
         open.bezelStyle = .rounded
         root.addSubview(open)
 
         let theme = NSButton(title: themeMode.buttonTitle(), target: target, action: themeAction)
-        theme.frame = NSRect(x: firstColumn, y: settingsRowY, width: sideControlWidth, height: 28)
+        theme.frame = NSRect(x: horizontalInset, y: settingsRowY, width: settingsControlWidth, height: 28)
         theme.bezelStyle = .rounded
         root.addSubview(theme)
 
-        let normalizedMask = normalizedAnimationMask(trainSegmentMask)
-        let segmentGap: CGFloat = 4
-        let segmentWidth = (centerControlWidth - segmentGap * CGFloat(UsageCardView.maximumTrainSegmentCount - 1)) / CGFloat(UsageCardView.maximumTrainSegmentCount)
-        for index in 0..<UsageCardView.maximumTrainSegmentCount {
-            let selected = (normalizedMask & (1 << index)) != 0
-            let button = NSButton(title: "\(index + 1)", target: target, action: animationSegmentToggleAction)
-            button.frame = NSRect(
-                x: secondColumn + CGFloat(index) * (segmentWidth + segmentGap),
-                y: settingsRowY,
-                width: segmentWidth,
-                height: 28
-            )
-            button.bezelStyle = .rounded
-            button.setButtonType(.toggle)
-            button.state = selected ? .on : .off
-            button.isBordered = false
-            button.wantsLayer = true
-            button.layer?.cornerRadius = 8
-            button.layer?.backgroundColor = (selected ? NSColor.controlAccentColor : NSColor.controlColor).cgColor
-            button.attributedTitle = NSAttributedString(
-                string: "\(index + 1)",
-                attributes: [
-                    .foregroundColor: selected ? NSColor.white : NSColor.labelColor,
-                    .font: NSFont.systemFont(ofSize: 13, weight: .semibold)
-                ]
-            )
-            button.tag = index
-            button.toolTip = L10n.shared.effectiveCode.hasPrefix("zh") ? "动画第 \(index + 1) 节" : "Animation segment \(index + 1)"
-            root.addSubview(button)
-        }
-
-        let language = NSPopUpButton(frame: NSRect(x: thirdColumn, y: settingsRowY, width: sideControlWidth, height: 28), pullsDown: false)
+        let language = NSPopUpButton(
+            frame: NSRect(x: horizontalInset + settingsControlWidth + controlGap, y: settingsRowY, width: settingsControlWidth, height: 28),
+            pullsDown: false
+        )
         language.bezelStyle = .rounded
         language.alignment = .center
         for option in l.languageMenuOptions() {
@@ -2435,7 +2584,7 @@ final class CodexPanelViewController: NSViewController {
         root.addSubview(language)
 
         let quit = NSButton(title: l.t("quit"), target: target, action: quitAction)
-        quit.frame = NSRect(x: thirdColumn, y: actionsRowY, width: sideControlWidth, height: 28)
+        quit.frame = NSRect(x: thirdColumn, y: actionsRowY, width: actionControlWidth, height: 28)
         quit.bezelStyle = .rounded
         root.addSubview(quit)
 
@@ -2452,6 +2601,10 @@ final class CodexPanelViewController: NSViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
+    func updateTrainPresentation(styleIndex: Int, segmentMask: Int) {
+        cardView?.updateTrainPresentation(styleIndex: styleIndex, segmentMask: segmentMask)
+    }
+
     private func panelAppearance(for mode: CardThemeMode) -> NSAppearance? {
         switch mode {
         case .system:
@@ -2461,14 +2614,6 @@ final class CodexPanelViewController: NSViewController {
         case .dark:
             return NSAppearance(named: .darkAqua)
         }
-    }
-
-    private func normalizedAnimationMask(_ mask: Int) -> Int {
-        mask & animationAllMask()
-    }
-
-    private func animationAllMask() -> Int {
-        (1 << UsageCardView.maximumTrainSegmentCount) - 1
     }
 
     private func addInfoRow(
@@ -2684,6 +2829,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
 
     private static let trainStyleIndexKey = "CodexBalance.trainStyleIndex"
     private static let trainSegmentMaskKey = "CodexBalance.trainSegmentMask"
+    private static let lastTrainSegmentMaskKey = "CodexBalance.lastNonzeroTrainSegmentMask"
     private static let legacyTrainSegmentCountKey = "CodexBalance.trainSegmentCount"
 
     private static func storedTrainStyleIndex() -> Int {
@@ -2706,13 +2852,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                 let count = max(0, min(UsageCardView.maximumTrainSegmentCount, UserDefaults.standard.integer(forKey: legacyTrainSegmentCountKey)))
                 return count == 0 ? 0 : (1 << count) - 1
             }
-            return allTrainSegmentMask
+            return 0
         }
         return normalizedTrainSegmentMask(UserDefaults.standard.integer(forKey: trainSegmentMaskKey))
     }
 
+    private static func storedLastNonzeroTrainSegmentMask() -> Int {
+        let current = storedTrainSegmentMask()
+        if current != 0 { return current }
+        let stored = normalizedTrainSegmentMask(UserDefaults.standard.integer(forKey: lastTrainSegmentMaskKey))
+        return stored == 0 ? allTrainSegmentMask : stored
+    }
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
+    private let animationSettingsPopover = NSPopover()
     private let menu = NSMenu()
     private let fetcher = CodexUsageFetcher()
     private var timer: Timer?
@@ -2723,8 +2877,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     private var taskLightState: TaskLightState = .idle
     private var trainStyleIndex = AppDelegate.storedTrainStyleIndex()
     private var trainSegmentMask = AppDelegate.storedTrainSegmentMask()
+    private var lastNonzeroTrainSegmentMask = AppDelegate.storedLastNonzeroTrainSegmentMask()
     private var cardThemeMode = CardThemeMode.stored
     private var resetCreditsDetailVisible = false
+    private var animationSettingsNeedsPanelRefresh = false
     private let trainStartTime = Date.timeIntervalSinceReferenceDate
     private let taskStatusFile = AppDelegate.defaultTaskStatusFile()
     private let codexStateDatabase = AppDelegate.defaultCodexStateDatabase()
@@ -2739,8 +2895,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         statusItem.button?.toolTip = L10n.shared.t("title")
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover(_:))
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined
         popover.delegate = self
+        animationSettingsPopover.behavior = .transient
+        animationSettingsPopover.delegate = self
         updatePopoverContent()
         refresh(nil)
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -2782,7 +2940,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                     delegate.statusItem.button?.toolTip = L10n.shared.t("fetchFailed") + ": \(error.description)"
                 }
                 if delegate.popover.isShown == true {
-                    delegate.updatePopoverContent()
+                    if delegate.animationSettingsPopover.isShown {
+                        delegate.animationSettingsNeedsPanelRefresh = true
+                    } else {
+                        delegate.updatePopoverContent()
+                    }
                 }
             }
         }
@@ -2798,6 +2960,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     private func showPopover() {
+        closeAnimationSettingsPopover()
         closeResetCreditsPopover()
         updatePopoverContent()
         refresh(nil)
@@ -2807,6 +2970,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     private func closePopover(_ sender: Any?) {
+        closeAnimationSettingsPopover()
         closeResetCreditsPopover()
         popover.performClose(sender)
         removeOutsideClickMonitor()
@@ -2814,8 +2978,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
 
     func popoverDidClose(_ notification: Notification) {
         if notification.object as? NSPopover === popover {
+            closeAnimationSettingsPopover()
             closeResetCreditsPopover()
             removeOutsideClickMonitor()
+        } else if notification.object as? NSPopover === animationSettingsPopover {
+            if animationSettingsNeedsPanelRefresh, popover.isShown {
+                animationSettingsNeedsPanelRefresh = false
+                updatePopoverContent()
+            }
         }
     }
 
@@ -2847,7 +3017,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             languageAction: #selector(languageChanged(_:)),
             themeAction: #selector(themeChanged(_:)),
             resetCreditsAction: #selector(showResetCreditsFromPopover(_:)),
-            animationSegmentToggleAction: #selector(animationSegmentChanged(_:)),
             trainStyleIndex: trainStyleIndex,
             trainStartTime: trainStartTime,
             themeMode: cardThemeMode,
@@ -2858,9 +3027,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             },
             trainClickAction: { [weak self] in
                 self?.cycleTrainStyle()
+            },
+            animationSettingsAction: { [weak self] card, point in
+                self?.showAnimationSettings(from: card, at: point)
             }
         )
         popover.contentSize = NSSize(width: 410, height: 404)
+    }
+
+    private func showAnimationSettings(from card: UsageCardView, at point: NSPoint) {
+        closeResetCreditsPopover()
+        if animationSettingsPopover.isShown {
+            animationSettingsPopover.performClose(nil)
+        }
+        animationSettingsNeedsPanelRefresh = false
+        configureAnimationSettingsPopover()
+        let anchorPoint = NSPoint(
+            x: max(14, min(card.bounds.width - 14, point.x)),
+            y: max(14, min(card.bounds.height - 14, point.y))
+        )
+        let anchorRect = NSRect(origin: anchorPoint, size: NSSize(width: 1, height: 1))
+        let preferredEdge: NSRectEdge = point.y < card.bounds.midY ? .minY : .maxY
+        animationSettingsPopover.show(relativeTo: anchorRect, of: card, preferredEdge: preferredEdge)
+    }
+
+    private func configureAnimationSettingsPopover() {
+        let controller = AnimationSettingsViewController(
+            trainStyleIndex: trainStyleIndex,
+            trainSegmentMask: trainSegmentMask,
+            onAnimationToggle: { [weak self] enabled in
+                self?.setAnimationEnabled(enabled)
+            },
+            onStyleChange: { [weak self] index in
+                self?.setAnimationStyle(index)
+            },
+            onSegmentToggle: { [weak self] index in
+                self?.toggleAnimationSegment(index)
+            }
+        )
+        animationSettingsPopover.contentViewController = controller
+        animationSettingsPopover.contentSize = controller.preferredContentSize
+    }
+
+    private func closeAnimationSettingsPopover() {
+        animationSettingsNeedsPanelRefresh = false
+        if animationSettingsPopover.isShown {
+            animationSettingsPopover.performClose(nil)
+        }
+    }
+
+    private func setAnimationEnabled(_ enabled: Bool) {
+        if enabled {
+            guard trainSegmentMask == 0 else { return }
+            trainSegmentMask = lastNonzeroTrainSegmentMask == 0 ? Self.allTrainSegmentMask : lastNonzeroTrainSegmentMask
+        } else {
+            guard trainSegmentMask != 0 else { return }
+            lastNonzeroTrainSegmentMask = trainSegmentMask
+            UserDefaults.standard.set(lastNonzeroTrainSegmentMask, forKey: Self.lastTrainSegmentMaskKey)
+            trainSegmentMask = 0
+        }
+        UserDefaults.standard.set(trainSegmentMask, forKey: Self.trainSegmentMaskKey)
+        refreshVisibleTrainPresentation()
+        configureAnimationSettingsPopover()
+        rebuildMenu()
+    }
+
+    private func setAnimationStyle(_ index: Int) {
+        guard index >= 0, index < UsageCardView.styleCount, index != trainStyleIndex else { return }
+        trainStyleIndex = index
+        UserDefaults.standard.set(trainStyleIndex, forKey: Self.trainStyleIndexKey)
+        refreshVisibleTrainPresentation()
+        configureAnimationSettingsPopover()
+        rebuildMenu()
+    }
+
+    private func toggleAnimationSegment(_ index: Int) {
+        guard trainSegmentMask != 0,
+              index >= 0,
+              index < UsageCardView.maximumTrainSegmentCount else { return }
+        let nextMask = Self.normalizedTrainSegmentMask(trainSegmentMask ^ (1 << index))
+        guard nextMask != 0 else {
+            NSSound.beep()
+            configureAnimationSettingsPopover()
+            return
+        }
+        trainSegmentMask = nextMask
+        lastNonzeroTrainSegmentMask = nextMask
+        UserDefaults.standard.set(trainSegmentMask, forKey: Self.trainSegmentMaskKey)
+        UserDefaults.standard.set(lastNonzeroTrainSegmentMask, forKey: Self.lastTrainSegmentMaskKey)
+        refreshVisibleTrainPresentation()
+        configureAnimationSettingsPopover()
+        rebuildMenu()
+    }
+
+    private func refreshVisibleTrainPresentation() {
+        (popover.contentViewController as? CodexPanelViewController)?.updateTrainPresentation(
+            styleIndex: trainStyleIndex,
+            segmentMask: trainSegmentMask
+        )
     }
 
     private func closeResetCreditsPopover() {
@@ -2868,6 +3132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     private func cycleTrainStyle() {
+        closeAnimationSettingsPopover()
         closeResetCreditsPopover()
         trainStyleIndex = (trainStyleIndex + 1) % UsageCardView.styleCount
         UserDefaults.standard.set(trainStyleIndex, forKey: Self.trainStyleIndexKey)
@@ -2875,20 +3140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     @objc private func themeChanged(_ sender: Any?) {
+        closeAnimationSettingsPopover()
         closeResetCreditsPopover()
         cardThemeMode = cardThemeMode.next(systemUsesDark: systemUsesDarkAppearance())
         cardThemeMode.save()
-        updatePopoverContent()
-        rebuildMenu()
-    }
-
-    @objc private func animationSegmentChanged(_ sender: Any?) {
-        closeResetCreditsPopover()
-        guard let button = sender as? NSButton,
-              button.tag >= 0,
-              button.tag < UsageCardView.maximumTrainSegmentCount else { return }
-        trainSegmentMask = Self.normalizedTrainSegmentMask(trainSegmentMask ^ (1 << button.tag))
-        UserDefaults.standard.set(trainSegmentMask, forKey: Self.trainSegmentMaskKey)
         updatePopoverContent()
         rebuildMenu()
     }
@@ -2898,16 +3153,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     @objc private func refreshFromPopover(_ sender: Any?) {
+        closeAnimationSettingsPopover()
         closeResetCreditsPopover()
         refresh(nil)
     }
 
     @objc private func openUsagePageFromPopover(_ sender: Any?) {
+        closeAnimationSettingsPopover()
         closeResetCreditsPopover()
         openUsagePage()
     }
 
     @objc private func showResetCreditsFromPopover(_ sender: Any?) {
+        closeAnimationSettingsPopover()
         guard let summary = lastSummary,
               (summary.resetCreditsAvailable ?? 0) > 0 else { return }
         resetCreditsDetailVisible = true
@@ -2915,6 +3173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     @objc private func languageChanged(_ sender: Any?) {
+        closeAnimationSettingsPopover()
         closeResetCreditsPopover()
         guard let popup = sender as? NSPopUpButton,
               let code = popup.selectedItem?.representedObject as? String else { return }
@@ -3399,6 +3658,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                 trainSegmentMask: trainSegmentMask,
                 onTrainClick: { [weak self] in
                     self?.cycleTrainStyle()
+                },
+                onAnimationSettingsRequest: { [weak self] card, point in
+                    self?.showAnimationSettings(from: card, at: point)
                 }
             )
             menu.addItem(card)
