@@ -62,6 +62,8 @@ Codex Balance is a lightweight macOS status bar app. It reads the active Codex O
 
 Quota windows are identified by their actual duration rather than by API field order. If the service temporarily omits the 5-hour limit, Codex Balance shows it as unlimited while continuing to display the weekly quota; if the 5-hour window returns later, it is displayed automatically.
 
+Animation is off by default for new installations, while existing user preferences are preserved. The main popover no longer shows permanent segment buttons; right-click the quota card to open animation settings, choose a style, and select segments 1–5. The settings popover stays open while selecting segments and closes when clicking elsewhere.
+
 It refreshes every 30 seconds. Opening the popover or clicking refresh updates immediately. If you switch accounts with `ca s <alias>`, the widget follows the new `~/.codex/auth.json` on the next refresh.
 
 Codex Balance automatically follows the first supported macOS preferred language. The popover also includes a language picker with Automatic/System plus 40 manual language choices. For scripting or debugging, `CODEX_BALANCE_LANG=<code>` can override the UI language for the current process.
@@ -242,6 +244,10 @@ Codex Balance 是一个轻量的 macOS 状态栏应用。它读取当前 Codex O
 - Credits
 - Spark 剩余额度
 - 距离重置还剩多久，以及具体重置时间点
+
+额度窗口会按真实周期识别，而不是固定按接口字段顺序判断。接口暂时不返回 5 小时限制时，控件会显示“无限”，周额度仍展示在周额度位置；以后恢复 5 小时窗口后会自动重新展示。
+
+新安装默认关闭动画，已有用户的设置保持不变。主面板不再常驻显示 1–5 按钮；右键点击额度卡片可以打开动画设置、选择样式和展示段。多选展示段时浮层不会关闭，点击其他位置才消失。
 
 它每 30 秒自动刷新一次。打开面板或点击刷新会立即更新。如果使用 `ca s <alias>` 切换账号，控件会在下一次刷新时跟随新的 `~/.codex/auth.json`。
 
