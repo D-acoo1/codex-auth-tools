@@ -60,6 +60,8 @@ Codex Balance is a lightweight macOS status bar app. It reads the active Codex O
 - Spark remaining quota
 - reset countdown and reset time
 
+Quota windows are identified by their actual duration rather than by API field order. If the service temporarily omits the 5-hour limit, Codex Balance shows it as unlimited while continuing to display the weekly quota; if the 5-hour window returns later, it is displayed automatically.
+
 It refreshes every 30 seconds. Opening the popover or clicking refresh updates immediately. If you switch accounts with `ca s <alias>`, the widget follows the new `~/.codex/auth.json` on the next refresh.
 
 Codex Balance automatically follows the first supported macOS preferred language. The popover also includes a language picker with Automatic/System plus 40 manual language choices. For scripting or debugging, `CODEX_BALANCE_LANG=<code>` can override the UI language for the current process.

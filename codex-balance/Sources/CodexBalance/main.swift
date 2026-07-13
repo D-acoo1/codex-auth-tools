@@ -70,6 +70,7 @@ struct CodexUsageSummary: Sendable {
     var plan: String
     var allowed: Bool
     var limitReached: Bool
+    var primaryUnlimited: Bool = false
     var primaryUsed: Int?
     var primaryWindowSeconds: Int?
     var primaryResetAfterSeconds: Int?
@@ -82,6 +83,7 @@ struct CodexUsageSummary: Sendable {
     var creditsUnlimited: Bool
     var resetCreditsAvailable: Int?
     var resetCredits: [ResetCredit] = []
+    var sparkPrimaryUnlimited: Bool = false
     var sparkPrimaryUsed: Int?
     var sparkSecondaryUsed: Int?
     var fetchedAt: Date
@@ -136,6 +138,7 @@ struct CodexUsageSummary: Sendable {
             if let v = usage.tpm { d["api_tpm"] = v }
             if let v = usage.error { d["api_usage_error"] = v }
         }
+        d["primary_unlimited"] = primaryUnlimited
         if let v = primaryUsed { d["primary_used_percent"] = v }
         if let v = primaryRemaining { d["primary_remaining_percent"] = v }
         if let v = primaryResetAfterSeconds { d["primary_reset_after_seconds"] = v }
@@ -148,6 +151,7 @@ struct CodexUsageSummary: Sendable {
         d["credits_unlimited"] = creditsUnlimited
         if let v = resetCreditsAvailable { d["rate_limit_reset_credits_available"] = v }
         if !resetCredits.isEmpty { d["rate_limit_reset_credits"] = resetCredits.map { $0.asDictionary() } }
+        d["spark_primary_unlimited"] = sparkPrimaryUnlimited
         if let v = sparkPrimaryUsed { d["spark_primary_used_percent"] = v }
         if let v = sparkPrimaryRemaining { d["spark_primary_remaining_percent"] = v }
         if let v = sparkSecondaryUsed { d["spark_secondary_used_percent"] = v }
@@ -737,30 +741,27 @@ final class CodexUsageFetcher: @unchecked Sendable {
         let rateLimit = root["rate_limit"] as? [String: Any] ?? [:]
         let allowed = bool(rateLimit["allowed"]) ?? false
         let limitReached = bool(rateLimit["limit_reached"]) ?? false
-        let primary = rateLimit["primary_window"] as? [String: Any]
-        let secondary = rateLimit["secondary_window"] as? [String: Any]
+        let windows = normalizedRateLimitWindows(rateLimit)
+        let primary = windows.fiveHour
+        let secondary = windows.weekly
+        let primaryUnlimited = primary == nil && secondary != nil
         let pUsed = int(primary?["used_percent"])
         let sUsed = int(secondary?["used_percent"])
         let pRemain = pUsed.map { max(0, 100 - $0) }
         let sRemain = sUsed.map { max(0, 100 - $0) }
-        let title: String
-        if let pRemain, let sRemain {
-            title = "5h \(pRemain)% / 7d \(sRemain)%"
-        } else if let pRemain {
-            title = "5h \(pRemain)%"
-        } else if let sRemain {
-            title = "5h ? / 7d \(sRemain)%"
-        } else {
-            title = "5h ? / 7d ?"
-        }
+        let primaryTitle = primaryUnlimited ? "∞" : pRemain.map { "\($0)%" } ?? "?"
+        let secondaryTitle = sRemain.map { "\($0)%" } ?? "?"
+        let title = "5h \(primaryTitle) / 7d \(secondaryTitle)"
 
         let credits = root["credits"] as? [String: Any] ?? [:]
         let resetCredits = root["rate_limit_reset_credits"] as? [String: Any] ?? [:]
         let additional = root["additional_rate_limits"] as? [[String: Any]] ?? []
         let spark = additional.first { (($0["limit_name"] as? String) ?? "").localizedCaseInsensitiveContains("Spark") }
         let sparkRate = spark?["rate_limit"] as? [String: Any]
-        let sparkPrimary = sparkRate?["primary_window"] as? [String: Any]
-        let sparkSecondary = sparkRate?["secondary_window"] as? [String: Any]
+        let sparkWindows = normalizedRateLimitWindows(sparkRate ?? [:])
+        let sparkPrimary = sparkWindows.fiveHour
+        let sparkSecondary = sparkWindows.weekly
+        let sparkPrimaryUnlimited = sparkPrimary == nil && sparkSecondary != nil
 
         return CodexUsageSummary(
             title: title,
@@ -770,6 +771,7 @@ final class CodexUsageFetcher: @unchecked Sendable {
             plan: plan,
             allowed: allowed,
             limitReached: limitReached,
+            primaryUnlimited: primaryUnlimited,
             primaryUsed: pUsed,
             primaryWindowSeconds: int(primary?["limit_window_seconds"]),
             primaryResetAfterSeconds: int(primary?["reset_after_seconds"]),
@@ -781,12 +783,44 @@ final class CodexUsageFetcher: @unchecked Sendable {
             creditsBalance: credits["balance"] as? String,
             creditsUnlimited: bool(credits["unlimited"]) ?? false,
             resetCreditsAvailable: int(resetCredits["available_count"]),
+            sparkPrimaryUnlimited: sparkPrimaryUnlimited,
             sparkPrimaryUsed: int(sparkPrimary?["used_percent"]),
             sparkSecondaryUsed: int(sparkSecondary?["used_percent"]),
             fetchedAt: Date(),
             kind: "chatgpt",
             baseURL: nil
         )
+    }
+
+    private func normalizedRateLimitWindows(_ rateLimit: [String: Any]) -> (fiveHour: [String: Any]?, weekly: [String: Any]?) {
+        let candidates: [(fallbackToFiveHour: Bool, window: [String: Any]?)] = [
+            (true, rateLimit["primary_window"] as? [String: Any]),
+            (false, rateLimit["secondary_window"] as? [String: Any])
+        ]
+        var fiveHour: [String: Any]?
+        var weekly: [String: Any]?
+
+        for candidate in candidates {
+            guard let window = candidate.window else { continue }
+            guard let seconds = int(window["limit_window_seconds"]) else {
+                if candidate.fallbackToFiveHour {
+                    fiveHour = fiveHour ?? window
+                } else {
+                    weekly = weekly ?? window
+                }
+                continue
+            }
+            if isWindow(seconds, closeTo: 5 * 60 * 60) {
+                fiveHour = fiveHour ?? window
+            } else if isWindow(seconds, closeTo: 7 * 24 * 60 * 60) {
+                weekly = weekly ?? window
+            }
+        }
+        return (fiveHour, weekly)
+    }
+
+    private func isWindow(_ seconds: Int, closeTo expected: Int) -> Bool {
+        abs(seconds - expected) <= expected / 4
     }
 
     private func parseResetCredits(_ data: Data) throws -> ResetCreditDetails {
@@ -1171,7 +1205,7 @@ final class UsageCardView: NSView {
             drawText(L10n.shared.t("total") + " " + apiAmount(api?.displayTotalCost, unit: api?.unit), x: 24, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: palette.muted)
             drawText(L10n.shared.t("total") + " " + compactNumber(api?.totalTokens), x: 156, y: 32, width: 116, height: 15, font: .systemFont(ofSize: 10.5, weight: .regular), color: palette.muted)
         } else {
-            drawColumn(icon: .timer, label: "5h", value: percent(summary.primaryRemaining), x: 24, labelColor: palette.label, valueColor: palette.primaryValue)
+            drawColumn(icon: .timer, label: "5h", value: quotaValue(summary.primaryRemaining, unlimited: summary.primaryUnlimited), x: 24, labelColor: palette.label, valueColor: palette.primaryValue)
             drawColumn(icon: .week, label: "7d", value: percent(summary.secondaryRemaining), x: 156, labelColor: palette.label, valueColor: palette.secondaryValue)
             let credits = summary.creditsUnlimited ? "∞" : (summary.creditsBalance ?? "0")
             drawColumn(icon: .none, label: L10n.shared.t("credits"), value: credits, x: 288, labelColor: palette.label, valueColor: palette.tertiaryValue)
@@ -1990,6 +2024,10 @@ final class UsageCardView: NSView {
         value.map { "\($0)%" } ?? "?"
     }
 
+    private func quotaValue(_ value: Int?, unlimited: Bool) -> String {
+        unlimited ? "∞" : percent(value)
+    }
+
     private func apiAmount(_ value: Double?, unit: String?) -> String {
         guard let value else { return "—" }
         if value < 0 { return L10n.shared.t("unlimited") }
@@ -2288,7 +2326,7 @@ final class CodexPanelViewController: NSViewController {
                 let detail = apiDetailLine(api)
                 root.addSubview(label(detail, x: 22, y: 76, width: 360, height: 14, size: 10.5, color: api?.error == nil ? tertiaryTextColor : .systemOrange))
             } else {
-                addInfoRow(root, y: 156, title: l.t("fiveHours"), value: remainingLine(summary.primaryRemaining), detail: resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
+                addInfoRow(root, y: 156, title: l.t("fiveHours"), value: remainingLine(summary.primaryRemaining, unlimited: summary.primaryUnlimited), detail: summary.primaryUnlimited ? "" : resetLine(after: summary.primaryResetAfterSeconds, at: summary.primaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
                 addInfoRow(root, y: 126, title: l.t("weeklyQuota"), value: remainingLine(summary.secondaryRemaining), detail: resetLine(after: summary.secondaryResetAfterSeconds, at: summary.secondaryResetAt), primaryColor: primaryTextColor, secondaryColor: secondaryTextColor)
                 let credits = summary.creditsUnlimited ? l.t("unlimited") : (summary.creditsBalance ?? l.t("unknown"))
                 let resetCredits = summary.resetCreditsAvailable.map { l.t("resetCredits") + " \($0)" } ?? (l.t("resetCredits") + " " + l.t("unknown"))
@@ -2304,8 +2342,8 @@ final class CodexPanelViewController: NSViewController {
                     detailAction: resetCreditsAction
                 )
 
-                if summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
-                    let spark = "5h " + remainingLine(summary.sparkPrimaryRemaining) + " · 7d " + remainingLine(summary.sparkSecondaryRemaining)
+                if summary.sparkPrimaryUnlimited || summary.sparkPrimaryUsed != nil || summary.sparkSecondaryUsed != nil {
+                    let spark = "5h " + remainingLine(summary.sparkPrimaryRemaining, unlimited: summary.sparkPrimaryUnlimited) + " · 7d " + remainingLine(summary.sparkSecondaryRemaining)
                     root.addSubview(label("Spark " + spark, x: 22, y: 76, width: 360, height: 14, size: 10.5, color: tertiaryTextColor))
                 }
             }
@@ -2567,8 +2605,9 @@ final class CodexPanelViewController: NSViewController {
         return todayIO + requests
     }
 
-    private func remainingLine(_ remaining: Int?) -> String {
-        remaining.map { "\($0)%" } ?? "?"
+    private func remainingLine(_ remaining: Int?, unlimited: Bool = false) -> String {
+        if unlimited { return L10n.shared.t("unlimited") }
+        return remaining.map { "\($0)%" } ?? "?"
     }
 
     private func resetLine(after seconds: Int?, at timestamp: TimeInterval?) -> String {
@@ -3368,12 +3407,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             menu.addItem(disabled(l.t("plan") + ": \(summary.plan)"))
             menu.addItem(disabled(l.t("status") + ": " + (summary.allowed && !summary.limitReached ? l.t("available") : l.t("limitReached"))))
             menu.addItem(.separator())
-            menu.addItem(disabled(l.t("fiveHours") + ": \(windowLine(remaining: summary.primaryRemaining, resetAfter: summary.primaryResetAfterSeconds, resetAt: summary.primaryResetAt))"))
+            menu.addItem(disabled(l.t("fiveHours") + ": \(windowLine(remaining: summary.primaryRemaining, resetAfter: summary.primaryResetAfterSeconds, resetAt: summary.primaryResetAt, unlimited: summary.primaryUnlimited))"))
             if summary.secondaryUsed != nil {
                 menu.addItem(disabled(l.t("weeklyQuota") + ": \(windowLine(remaining: summary.secondaryRemaining, resetAfter: summary.secondaryResetAfterSeconds, resetAt: summary.secondaryResetAt))"))
             }
-            if let sp = summary.sparkPrimaryRemaining, let ss = summary.sparkSecondaryRemaining {
-                menu.addItem(disabled("Spark: " + l.t("remaining") + " 5h \(sp)% / " + l.t("weeklyQuota") + " \(ss)%"))
+            if summary.sparkPrimaryUnlimited || summary.sparkPrimaryRemaining != nil || summary.sparkSecondaryRemaining != nil {
+                let sp = summary.sparkPrimaryUnlimited ? l.t("unlimited") : summary.sparkPrimaryRemaining.map { "\($0)%" } ?? l.t("unknown")
+                let ss = summary.sparkSecondaryRemaining.map { "\($0)%" } ?? l.t("unknown")
+                menu.addItem(disabled("Spark: " + l.t("remaining") + " 5h \(sp) / " + l.t("weeklyQuota") + " \(ss)"))
             }
             let credits = summary.creditsUnlimited ? l.t("unlimited") : (summary.creditsBalance ?? l.t("unknown"))
             menu.addItem(disabled(l.t("credits") + ": \(credits)"))
@@ -3409,8 +3450,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         return item
     }
 
-    private func windowLine(remaining: Int?, resetAfter: Int?, resetAt: TimeInterval?) -> String {
+    private func windowLine(remaining: Int?, resetAfter: Int?, resetAt: TimeInterval?, unlimited: Bool = false) -> String {
         let l = L10n.shared
+        if unlimited { return l.t("unlimited") }
         let remainText = remaining.map { "\($0)%" } ?? l.t("unknown")
         let resetText = resetAfter.map { " · " + l.t("reset") + " \(resetPoint(resetAt).map { "\($0) · " } ?? "")\(duration($0))" } ?? ""
         return "\(remainText)\(resetText)"
@@ -3443,7 +3485,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             return lines.joined(separator: "\n")
         }
         var lines = [l.t("title"), summary.email]
-        if let p = summary.primaryRemaining { lines.append(l.t("primaryRemaining") + ": \(p)%") }
+        if summary.primaryUnlimited {
+            lines.append(l.t("primaryRemaining") + ": " + l.t("unlimited"))
+        } else if let p = summary.primaryRemaining {
+            lines.append(l.t("primaryRemaining") + ": \(p)%")
+        }
         if let s = summary.secondaryRemaining { lines.append(l.t("secondaryRemaining") + ": \(s)%") }
         lines.append(taskLightState.tooltipText)
         return lines.joined(separator: "\n")
