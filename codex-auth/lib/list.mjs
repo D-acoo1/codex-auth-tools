@@ -361,6 +361,11 @@ function maskEmail(email) {
   return `${lm}@${d}`;
 }
 function asInt(v) { return Number.isFinite(v) ? Math.trunc(v) : null; }
+function windowMatchesMinutes(win, expectedMinutes) {
+  const actualMinutes = asInt(win?.window_minutes);
+  if (actualMinutes === null) return false;
+  return Math.abs(actualMinutes - expectedMinutes) <= Math.max(1, Math.trunc(expectedMinutes / 4));
+}
 function resetParts(ts) {
   const dt = new Date(ts * 1000); const now = new Date();
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -371,10 +376,16 @@ function resetParts(ts) {
 function windowFor(snap, minutes, fallbackPrimary) {
   if (!snap) return null;
   const p = snap.primary, s = snap.secondary;
-  for (const w of [p,s]) if (w && asInt(w.window_minutes) === minutes) return w;
-  return fallbackPrimary ? p : s;
+  for (const w of [p,s]) if (w && windowMatchesMinutes(w, minutes)) return w;
+  const fallback = fallbackPrimary ? p : s;
+  return fallback && asInt(fallback.window_minutes) === null ? fallback : null;
+}
+function fiveHourIsUnlimited(snap) {
+  if (!snap || windowFor(snap, 300, true)) return false;
+  return Boolean(windowFor(snap, 10080, false));
 }
 function fmtUsage(snap, minutes, fallbackPrimary) {
+  if (minutes === 300 && fiveHourIsUnlimited(snap)) return '∞';
   const w = windowFor(snap, minutes, fallbackPrimary);
   if (!w || !Number.isFinite(w.used_percent) || !w.resets_at) return '-';
   const now = Math.floor(Date.now()/1000);

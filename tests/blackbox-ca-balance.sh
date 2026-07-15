@@ -19,7 +19,8 @@ export CODEX_BALANCE_STATE_DIR="$TMP/codex-balance-state"
 export CODEX_AC_LIB="$ROOT/codex-auth/lib"
 mkdir -p "$CODEX_HOME" "$CODEX_AC_HOME" "$CODEX_BALANCE_STATE_DIR"
 
-CA="$ROOT/codex-auth/bin/codex-ac"
+CA_PY="$ROOT/codex-auth/lib/codex-ac.py"
+CA_LIST="$ROOT/codex-auth/lib/list.mjs"
 PYTHON_BIN="$(command -v python3)"
 NODE_BIN="$(command -v node || true)"
 if [[ -z "${NODE_BIN:-}" ]]; then
@@ -34,10 +35,18 @@ ln -sf "$PYTHON_EXE" "$SAFE_BIN/python3"
 ln -sf "$NODE_EXE" "$SAFE_BIN/node"
 SAFE_PATH="/bin:$SAFE_BIN"
 run_ca_no_security() {
-  env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" PATH="$SAFE_PATH" "$CA" "$@"
+  env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" PATH="$SAFE_PATH" "$PYTHON_EXE" "$CA_PY" "$@"
 }
 run_ca() {
-  env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" "$CA" "$@"
+  case "${1:-}" in
+    l|ll|ls|la|list)
+      shift
+      env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" "$NODE_EXE" "$CA_LIST" "$@"
+      ;;
+    *)
+      env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" "$PYTHON_EXE" "$CA_PY" "$@"
+      ;;
+  esac
 }
 assert_contains() {
   local file="$1" needle="$2"
@@ -51,6 +60,14 @@ assert_not_contains() {
   local file="$1" needle="$2"
   if grep -Fq "$needle" "$file"; then
     echo "did not expect to find '$needle' in $file" >&2
+    cat "$file" >&2 || true
+    exit 1
+  fi
+}
+assert_matches() {
+  local file="$1" pattern="$2"
+  if ! grep -Eq "$pattern" "$file"; then
+    echo "expected $file to match '$pattern'" >&2
     cat "$file" >&2 || true
     exit 1
   fi
@@ -351,5 +368,44 @@ PY
 run_ca ll --cached --alias --no-color > "$TMP/list-chatgpt.txt"
 assert_contains "$TMP/list-chatgpt.txt" '* 01 demo@example.com'
 assert_contains "$TMP/list-chatgpt.txt" 'fox'
+
+# A weekly-only response means the temporary 5-hour limit is absent. Both the
+# Node UI and the Python fallback must show infinity rather than copy 7d usage.
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+obj = json.load(open(path))
+obj["accounts"]["fox"]["last_usage"] = {
+    "primary": {"used_percent": 49, "window_minutes": 10080, "resets_at": int(time.time()) + 604800},
+    "secondary": None,
+}
+obj["accounts"]["fox"]["last_usage_at"] = int(time.time())
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PY
+run_ca ll --cached --alias --no-color > "$TMP/list-weekly-only-node.txt"
+run_ca_no_security list --cached > "$TMP/list-weekly-only-python.txt"
+assert_matches "$TMP/list-weekly-only-node.txt" 'Pro +∞ +51%'
+assert_matches "$TMP/list-weekly-only-python.txt" 'Pro +∞ +51%'
+
+# Duration, not API field order, identifies each window. This also proves a
+# future restored 5-hour window automatically returns to percentage display.
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+obj = json.load(open(path))
+obj["accounts"]["fox"]["last_usage"] = {
+    "primary": {"used_percent": 60, "window_minutes": 10080, "resets_at": int(time.time()) + 604800},
+    "secondary": {"used_percent": 20, "window_minutes": 300, "resets_at": int(time.time()) + 18000},
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PY
+run_ca ll --cached --alias --no-color > "$TMP/list-reordered-node.txt"
+run_ca_no_security list --cached > "$TMP/list-reordered-python.txt"
+assert_matches "$TMP/list-reordered-node.txt" 'Pro +80% .* +40%'
+assert_matches "$TMP/list-reordered-python.txt" 'Pro +80% .* +40%'
 
 echo "blackbox ca/balance sandbox test passed"
