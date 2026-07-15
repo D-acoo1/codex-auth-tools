@@ -27,8 +27,16 @@ rm -rf "$WORK_DIR" "$ZIP_PATH" "$ZIP_PATH.sha256"
 mkdir -p "$APP_CONTENTS/MacOS" "$APP_CONTENTS/Resources" "$PACKAGE_ROOT/bin" "$PACKAGE_ROOT/lib/codex-ac" "$PACKAGE_ROOT/train-themes"
 
 cd "$ROOT/codex-balance"
-swift build -c release >/dev/null
-BUILT_BIN="$(swift build -c release --show-bin-path)/CodexBalance"
+SWIFT_PATH_MAP="$ROOT=codex-auth-tools"
+SWIFT_SCRATCH="$WORK_DIR/swift-build"
+swift build -c release --scratch-path "$SWIFT_SCRATCH" \
+  -Xswiftc -file-prefix-map -Xswiftc "$SWIFT_PATH_MAP" \
+  -Xswiftc -debug-prefix-map -Xswiftc "$SWIFT_PATH_MAP" >/dev/null
+BUILT_BIN="$(swift build -c release --scratch-path "$SWIFT_SCRATCH" --show-bin-path)/CodexBalance"
+if LC_ALL=C grep -aFq "$ROOT" "$BUILT_BIN"; then
+  printf 'Release binary contains the local source path: %s\n' "$ROOT" >&2
+  exit 1
+fi
 
 install -m 755 "$BUILT_BIN" "$APP_CONTENTS/MacOS/CodexBalance"
 cat > "$APP_CONTENTS/Info.plist" <<PLIST
