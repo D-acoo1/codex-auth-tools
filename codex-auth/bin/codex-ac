@@ -14,7 +14,7 @@ if [[ "${1:-}" == "list" ]]; then
   exec python3 "$LIB/codex-ac.py" __list-ui "$@"
 fi
 if [[ "${1:-}" == "--version" || "${1:-}" == "-V" ]]; then
-  echo "codex-ac 0.8.0"
+  echo "codex-ac 0.8.1"
   exit 0
 fi
 exec python3 "$LIB/codex-ac.py" "$@"

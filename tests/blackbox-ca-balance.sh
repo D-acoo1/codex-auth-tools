@@ -115,50 +115,75 @@ USAGE_PORT_FILE="$TMP/usage-port"
 "$PYTHON_BIN" - "$USAGE_PORT_FILE" <<'PY' &
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.split("?", 1)[0] != "/v1/usage":
+        route = self.path.split("?", 1)[0]
+        if route == "/wham/usage":
+            expected = {
+                "acct-demo": "Bearer fake-access-token",
+                "acct-other": "Bearer fake-other-token",
+            }
+            account_id = self.headers.get("chatgpt-account-id")
+            if expected.get(account_id) != self.headers.get("Authorization"):
+                self.send_response(401)
+                self.end_headers()
+                return
+            body = {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 49,
+                        "limit_window_seconds": 7 * 24 * 60 * 60,
+                        "reset_at": int(time.time()) + 7 * 24 * 60 * 60,
+                    },
+                    "secondary_window": None,
+                },
+                "credits": {"has_credits": False, "unlimited": False, "balance": "0"},
+            }
+        elif route != "/v1/usage":
             self.send_response(404)
             self.end_headers()
             return
-        if self.headers.get("Authorization") != "Bearer sandbox-fake-key":
-            self.send_response(401)
-            self.end_headers()
-            return
-        body = {
-            "mode": "quota_limited",
-            "isValid": True,
-            "status": "active",
-            "remaining": 12.34,
-            "unit": "USD",
-            "quota": {"limit": 20.0, "used": 7.66, "remaining": 12.34, "unit": "USD"},
-            "usage": {
-                "today": {
-                    "requests": 9,
-                    "input_tokens": 10000,
-                    "output_tokens": 2000,
-                    "cache_creation_tokens": 100,
-                    "cache_read_tokens": 245,
-                    "total_tokens": 12345,
-                    "cost": 0.5,
-                    "actual_cost": 0.42,
+        else:
+            if self.headers.get("Authorization") != "Bearer sandbox-fake-key":
+                self.send_response(401)
+                self.end_headers()
+                return
+            body = {
+                "mode": "quota_limited",
+                "isValid": True,
+                "status": "active",
+                "remaining": 12.34,
+                "unit": "USD",
+                "quota": {"limit": 20.0, "used": 7.66, "remaining": 12.34, "unit": "USD"},
+                "usage": {
+                    "today": {
+                        "requests": 9,
+                        "input_tokens": 10000,
+                        "output_tokens": 2000,
+                        "cache_creation_tokens": 100,
+                        "cache_read_tokens": 245,
+                        "total_tokens": 12345,
+                        "cost": 0.5,
+                        "actual_cost": 0.42,
+                    },
+                    "total": {
+                        "requests": 321,
+                        "input_tokens": 700000,
+                        "output_tokens": 200000,
+                        "cache_creation_tokens": 30000,
+                        "cache_read_tokens": 57654,
+                        "total_tokens": 987654,
+                        "cost": 9.99,
+                        "actual_cost": 8.76,
+                    },
+                    "rpm": 1,
+                    "tpm": 42,
                 },
-                "total": {
-                    "requests": 321,
-                    "input_tokens": 700000,
-                    "output_tokens": 200000,
-                    "cache_creation_tokens": 30000,
-                    "cache_read_tokens": 57654,
-                    "total_tokens": 987654,
-                    "cost": 9.99,
-                    "actual_cost": 8.76,
-                },
-                "rpm": 1,
-                "tpm": 42,
-            },
-        }
+            }
         data = json.dumps(body).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -368,6 +393,68 @@ PY
 run_ca ll --cached --alias --no-color > "$TMP/list-chatgpt.txt"
 assert_contains "$TMP/list-chatgpt.txt" '* 01 demo@example.com'
 assert_contains "$TMP/list-chatgpt.txt" 'fox'
+
+# Old 0.7 installations may have only codex-ac snapshots and no native
+# ~/.codex/accounts registry. Active and inactive saved accounts must still
+# refresh directly instead of remaining on stale cached usage.
+"$PYTHON_BIN" - "$TMP/other.auth.json" <<'PY'
+import base64, json, sys
+from pathlib import Path
+
+def b64(obj):
+    raw = json.dumps(obj, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+payload = {
+    "email": "other@example.com",
+    "name": "Other User",
+    "sub": "user-other",
+    "https://api.openai.com/auth": {
+        "chatgpt_user_id": "user-other",
+        "chatgpt_account_id": "acct-other",
+        "chatgpt_plan_type": "pro",
+    },
+}
+auth = {
+    "auth_mode": "chatgpt",
+    "tokens": {
+        "access_token": "fake-other-token",
+        "id_token": f"{b64({'alg':'none'})}.{b64(payload)}.sig",
+        "account_id": "acct-other",
+    },
+}
+Path(sys.argv[1]).write_text(json.dumps(auth, indent=2) + "\n")
+PY
+run_ca import other "$TMP/other.auth.json" --force >/dev/null
+rm -rf "$CODEX_HOME/accounts"
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+obj = json.load(open(path))
+for alias in ["fox", "other"]:
+    obj["accounts"][alias]["last_usage_at"] = 0
+    obj["accounts"][alias].pop("last_usage", None)
+    obj["accounts"][alias].pop("last_usage_error", None)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PY
+WHAM_TEST_URL="${USAGE_BASE_URL%/v1}/wham/usage"
+env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
+  NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
+  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-no-native-registry.txt"
+[[ "$(grep -Ec 'Pro +∞ +51%' "$TMP/list-no-native-registry.txt")" == "2" ]]
+assert_not_contains "$TMP/list-no-native-registry.txt" 'fake-access-token'
+assert_not_contains "$TMP/list-no-native-registry.txt" 'fake-other-token'
+[[ ! -e "$CODEX_HOME/accounts/registry.json" ]]
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys
+obj = json.load(open(sys.argv[1]))
+for alias in ["fox", "other"]:
+    rec = obj["accounts"][alias]
+    assert rec.get("last_usage_at", 0) > 0, (alias, rec)
+    assert rec.get("last_usage_error") is None, (alias, rec)
+PY
 
 # A weekly-only response means the temporary 5-hour limit is absent. Both the
 # Node UI and the Python fallback must show infinity rather than copy 7d usage.

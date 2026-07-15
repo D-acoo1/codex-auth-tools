@@ -9,6 +9,10 @@ const home = os.homedir();
 const acHome = process.env.CODEX_AC_HOME || path.join(home, '.codex-ac');
 const codexHome = process.env.CODEX_HOME || path.join(home, '.codex');
 const usageProxy = process.env.CODEX_AC_USAGE_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || '';
+const defaultWhamUsageUrl = 'https://chatgpt.com/backend-api/wham/usage';
+const whamUsageUrl = process.env.NODE_ENV === 'test' && process.env.CODEX_AC_TEST_WHAM_USAGE_URL
+  ? process.env.CODEX_AC_TEST_WHAM_USAGE_URL
+  : defaultWhamUsageUrl;
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`usage: codex-ac list [--api] [--refresh] [--skip-api] [--cached] [--alias] [--mask] [--no-color]
@@ -175,6 +179,16 @@ function authInfoMatchesRecord(info, rec) {
   return false;
 }
 
+function authTokenForSavedAccount(alias, rec) {
+  const rel = rec?.auth_file || path.join('accounts', `${alias}.auth.json`);
+  const authPath = path.isAbsolute(rel) ? rel : path.join(acHome, rel);
+  if (!fs.existsSync(authPath)) return null;
+  const info = authInfo(authPath);
+  if (!authInfoMatchesRecord(info, rec)) return null;
+  const obj = readJson(authPath, null);
+  return obj?.tokens?.access_token || null;
+}
+
 function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
   const curl = spawnSync('curl', ['--version'], { encoding: 'utf8', timeout: 2000 });
   if (curl.status !== 0) throw new Error('curl not found');
@@ -190,11 +204,11 @@ function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
     'connect-timeout = 10',
     `max-time = ${Math.max(5, Math.ceil(timeoutMs / 1000))}`,
     ...(usageProxy ? [`proxy = "${q(usageProxy)}"`] : []),
-    'url = "https://chatgpt.com/backend-api/wham/usage"',
+    `url = "${q(whamUsageUrl)}"`,
     `output = "${q(bodyTmp)}"`,
     `header = "Authorization: Bearer ${q(token)}"`,
     'header = "Accept: application/json"',
-    'header = "User-Agent: codex-ac-list/0.7"',
+    'header = "User-Agent: codex-ac-list/0.8.1"',
     'header = "OpenAI-Beta: codex_cli_beta"',
     `header = "chatgpt-account-id: ${q(rec?.chatgpt_account_id || '')}"`,
     'write-out = "%{http_code}"',
@@ -225,13 +239,13 @@ async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch('https://chatgpt.com/backend-api/wham/usage', {
+      const res = await fetch(whamUsageUrl, {
         method: 'GET',
         signal: ctrl.signal,
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json',
-          'User-Agent': 'codex-ac-list/0.7',
+          'User-Agent': 'codex-ac-list/0.8.1',
           'OpenAI-Beta': 'codex_cli_beta',
           'chatgpt-account-id': rec?.chatgpt_account_id || '',
         },
@@ -247,11 +261,6 @@ async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
       clearTimeout(timer);
     }
   }
-}
-
-async function fetchWhamUsage(rec, timeoutMs=30000) {
-  const token = authTokenForCodexAuthRecord(rec);
-  return fetchWhamUsageWithToken(rec, token, timeoutMs);
 }
 
 async function syncCurrentAuthForAlias(alias, dst, nowSec) {
@@ -285,7 +294,6 @@ async function refreshStaleUsageDirect(reg, maxAgeSec=30) {
   const registryPath = path.join(codexHome, 'accounts', 'registry.json');
   const src = readJson(registryPath, null);
   const records = Array.isArray(src?.accounts) ? src.accounts : (Array.isArray(src?.records) ? src.records : []);
-  if (!records.length) return false;
   const nowSec = Math.floor(Date.now() / 1000);
   const byHash = new Map();
   for (const r of records) {
@@ -305,12 +313,16 @@ async function refreshStaleUsageDirect(reg, maxAgeSec=30) {
     } catch {}
     let srcRec = dst.identity_hash ? byHash.get(dst.identity_hash) : null;
     if (!srcRec) srcRec = records.find(r => r.chatgpt_user_id === dst.chatgpt_user_id && r.chatgpt_account_id === dst.chatgpt_account_id);
-    if (!srcRec) continue;
     try {
-      const snap = await fetchWhamUsage(srcRec, 30000);
-      srcRec.last_usage = snap;
-      srcRec.last_usage_at = nowSec;
-      if (snap.plan_type) srcRec.plan = snap.plan_type;
+      let token = srcRec ? authTokenForCodexAuthRecord(srcRec) : null;
+      if (!token) token = authTokenForSavedAccount(alias, dst);
+      const usageRec = srcRec || dst;
+      const snap = await fetchWhamUsageWithToken(usageRec, token, 30000);
+      if (srcRec) {
+        srcRec.last_usage = snap;
+        srcRec.last_usage_at = nowSec;
+        if (snap.plan_type) srcRec.plan = snap.plan_type;
+      }
       dst.last_usage = snap;
       dst.last_usage_at = nowSec;
       if (snap.plan_type) dst.plan = snap.plan_type;
@@ -322,7 +334,9 @@ async function refreshStaleUsageDirect(reg, maxAgeSec=30) {
     }
   }
   if (changed) {
-    try { writeJsonPrivate(registryPath, src); } catch {}
+    if (src && typeof src === 'object') {
+      try { writeJsonPrivate(registryPath, src); } catch {}
+    }
     reg.updated_at = new Date().toISOString();
     writeJsonPrivate(path.join(acHome, 'registry.json'), reg);
   }

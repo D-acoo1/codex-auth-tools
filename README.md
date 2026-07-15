@@ -128,7 +128,7 @@ ca keepalive --dry-run
 
 `ca` stores account snapshots under `~/.codex-ac` by default. Auth snapshots are private local files and must never be committed.
 
-`ca ll` identifies quota windows by their actual duration. When the service returns only a weekly window, the 5-hour column shows `∞` instead of copying the weekly percentage; a future restored 5-hour window is detected automatically.
+`ca ll` identifies quota windows by their actual duration. When the service returns only a weekly window, the 5-hour column shows `∞` instead of copying the weekly percentage; a future restored 5-hour window is detected automatically. Upgrades from older `ca` versions also refresh directly from saved account snapshots when no native `~/.codex/accounts` registry exists.
 
 Installation also creates `~/Library/LaunchAgents/com.codexlocaltools.codex-auth-keepalive.plist`. It checks accounts every 24 hours and uses the installed Codex `app-server` to renew only inactive ChatGPT snapshots with 72 hours or less remaining. The active account remains managed by Codex, API profiles are skipped, and a permanent refresh-token failure is reported for manual recovery with `ca r <alias>`.
 
@@ -319,7 +319,7 @@ ca keepalive --dry-run
 
 `ca` 默认把账号快照保存在 `~/.codex-ac`。这些登录快照是本机私有文件，绝不能提交到 Git 仓库。
 
-`ca ll` 会按额度窗口的真实周期识别 5 小时和周额度。接口只返回周额度时，5 小时列显示 `∞`，不再复用周额度百分比；以后恢复 5 小时窗口后会自动恢复显示。
+`ca ll` 会按额度窗口的真实周期识别 5 小时和周额度。接口只返回周额度时，5 小时列显示 `∞`，不再复用周额度百分比；以后恢复 5 小时窗口后会自动恢复显示。从旧版 `ca` 升级且没有原生 `~/.codex/accounts` 账号索引时，也会直接使用已保存账号快照刷新用量。
 
 安装脚本还会创建 `~/Library/LaunchAgents/com.codexlocaltools.codex-auth-keepalive.plist`：每 24 小时检查一次，只在非当前 ChatGPT 账号剩余有效期不超过 72 小时时，通过已安装的 Codex `app-server` 续期。当前账号继续由 Codex 自己维护，API 账号会跳过；刷新凭证永久失效时，需要执行 `ca r <alias>` 重新登录一次。
 
