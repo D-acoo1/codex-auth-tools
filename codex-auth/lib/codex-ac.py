@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import datetime as _dt
+import fcntl
 import getpass
 import hashlib
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import stat
@@ -24,11 +27,24 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 RESERVED = set()
+KEEPALIVE_THRESHOLD_SECONDS = 3 * 24 * 60 * 60
+KEEPALIVE_REFRESH_TIMEOUT_SECONDS = 45
+
+
+class AccountStoreBusy(RuntimeError):
+    pass
+
+
+class KeepaliveRefreshError(RuntimeError):
+    def __init__(self, code: str, *, permanent: bool = False):
+        super().__init__(code)
+        self.code = code
+        self.permanent = permanent
 
 
 def eprint(*args: Any) -> None:
@@ -50,6 +66,22 @@ def ensure_dirs(ac_home: Path = DEFAULT_AC_HOME) -> None:
             p.chmod(0o700)
         except OSError:
             pass
+
+
+@contextlib.contextmanager
+def account_store_lock(*, nonblocking: bool = False):
+    ensure_dirs()
+    lock_path = DEFAULT_AC_HOME / "account-store.lock"
+    with lock_path.open("a+") as lock_file:
+        try:
+            mode = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
+            fcntl.flock(lock_file.fileno(), mode)
+        except BlockingIOError as exc:
+            raise AccountStoreBusy("账号库正被另一个 ca 操作使用") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def registry_path(ac_home: Path = DEFAULT_AC_HOME) -> Path:
@@ -195,17 +227,49 @@ def mask_email(email: Optional[str]) -> str:
 def copy_private(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + f".tmp.{os.getpid()}")
-    with src.open("rb") as fsrc, tmp.open("wb") as fdst:
-        shutil.copyfileobj(fsrc, fdst)
     try:
-        tmp.chmod(0o600)
-    except OSError:
-        pass
-    os.replace(tmp, dst)
+        with src.open("rb") as fsrc, tmp.open("wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(tmp, dst)
+        try:
+            dst.chmod(0o600)
+        except OSError:
+            pass
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def write_private(data: bytes, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + f".tmp.{os.getpid()}")
     try:
-        dst.chmod(0o600)
-    except OSError:
-        pass
+        with tmp.open("wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(tmp, dst)
+        try:
+            dst.chmod(0o600)
+        except OSError:
+            pass
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def import_auth(alias: str, auth_path: Path, source: str, force: bool = False, ac_home: Path = DEFAULT_AC_HOME) -> str:
@@ -239,7 +303,17 @@ def import_auth(alias: str, auth_path: Path, source: str, force: bool = False, a
         "last_switched_at": old.get("last_switched_at"),
     }
     # 保留已有 usage 快照；迁移或 refresh 会再覆盖。
-    for k in ["last_usage", "last_usage_at", "last_usage_error", "last_local_rollout", "last_used_at"]:
+    for k in [
+        "last_usage",
+        "last_usage_at",
+        "last_usage_error",
+        "last_local_rollout",
+        "last_used_at",
+        "last_keepalive_check_at",
+        "last_keepalive_at",
+        "last_keepalive_status",
+        "last_keepalive_error",
+    ]:
         if k in old:
             rec[k] = old[k]
     reg["accounts"][alias] = rec
@@ -328,24 +402,40 @@ def fmt_last_activity(ts: Optional[int]) -> str:
     return f"{delta // 86400}d ago"
 
 
+def window_matches_minutes(win: Optional[Dict[str, Any]], expected_minutes: int) -> bool:
+    if not isinstance(win, dict):
+        return False
+    actual_minutes = _as_int(win.get("window_minutes"))
+    if actual_minutes is None:
+        return False
+    return abs(actual_minutes - expected_minutes) <= max(1, expected_minutes // 4)
+
+
 def window_for(snapshot: Optional[Dict[str, Any]], minutes: int, fallback_primary: bool) -> Optional[Dict[str, Any]]:
     if not isinstance(snapshot, dict):
         return None
     primary = snapshot.get("primary") if isinstance(snapshot.get("primary"), dict) else None
     secondary = snapshot.get("secondary") if isinstance(snapshot.get("secondary"), dict) else None
     for win in [primary, secondary]:
-        if isinstance(win, dict) and _as_int(win.get("window_minutes")) == minutes:
+        if window_matches_minutes(win, minutes):
             return win
-    if fallback_primary and isinstance(primary, dict):
-        return primary
-    if not fallback_primary and isinstance(secondary, dict):
-        return secondary
+    fallback = primary if fallback_primary else secondary
+    if isinstance(fallback, dict) and _as_int(fallback.get("window_minutes")) is None:
+        return fallback
     return None
+
+
+def five_hour_is_unlimited(snapshot: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(snapshot, dict) or window_for(snapshot, 300, True):
+        return False
+    return window_for(snapshot, 10080, False) is not None
 
 
 def fmt_usage(snapshot: Optional[Dict[str, Any]], minutes: int, fallback_primary: bool, err: Optional[str] = None) -> str:
     if err and not snapshot:
         return err
+    if minutes == 300 and five_hour_is_unlimited(snapshot):
+        return "∞"
     win = window_for(snapshot, minutes, fallback_primary)
     if not win:
         return "-"
@@ -1372,6 +1462,493 @@ def codex_auth_snapshot_path(record: Dict[str, Any]) -> Path:
     return base / f"{encoded}.auth.json"
 
 
+def auth_access_token_expiry(path: Path) -> Optional[int]:
+    try:
+        obj, _ = read_auth(path)
+    except (OSError, SystemExit):
+        return None
+    tokens = obj.get("tokens") if isinstance(obj.get("tokens"), dict) else {}
+    payload = decode_jwt_payload(tokens.get("access_token")) or {}
+    exp = payload.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return None
+    return int(exp)
+
+
+def auth_last_refresh_epoch(path: Path) -> Optional[int]:
+    try:
+        obj, _ = read_auth(path)
+    except (OSError, SystemExit):
+        return None
+    value = obj.get("last_refresh")
+    if not isinstance(value, str):
+        return None
+    parsed = parse_iso_timestamp_ms(value)
+    return parsed // 1000 if parsed is not None else None
+
+
+def auth_freshness(path: Path) -> Tuple[int, int, int]:
+    try:
+        mtime = int(path.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    return (
+        auth_access_token_expiry(path) or 0,
+        auth_last_refresh_epoch(path) or 0,
+        mtime,
+    )
+
+
+def update_account_auth_metadata(rec: Dict[str, Any], path: Path) -> None:
+    info = auth_info(path)
+    rec["auth_sha256"] = info.get("auth_sha256")
+    for key in [
+        "email",
+        "email_masked",
+        "name",
+        "plan",
+        "auth_mode",
+        "chatgpt_user_id",
+        "chatgpt_account_id",
+        "identity_hash",
+    ]:
+        if info.get(key) is not None:
+            rec[key] = info.get(key)
+    rec["updated_at"] = now_iso()
+
+
+def matching_codex_auth_snapshot_paths(rec: Dict[str, Any]) -> list[Path]:
+    registry = DEFAULT_CODEX_HOME / "accounts" / "registry.json"
+    if not registry.exists():
+        return []
+    try:
+        source = json.loads(registry.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    records = source.get("accounts") or source.get("records") or []
+    if not isinstance(records, list):
+        return []
+    identity_hash = rec.get("identity_hash")
+    paths: list[Path] = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        item_hash = codex_auth_record_identity_hash(item)
+        if not identity_hash or item_hash != identity_hash:
+            continue
+        try:
+            path = codex_auth_snapshot_path(item)
+        except SystemExit:
+            continue
+        if not path.exists():
+            continue
+        try:
+            if not auth_info_matches_account(auth_info(path), rec):
+                continue
+        except (OSError, SystemExit):
+            continue
+        paths.append(path)
+    return paths
+
+
+def freshest_account_auth_path(alias: str, reg: Dict[str, Any]) -> Path:
+    rec = reg.get("accounts", {}).get(alias, {})
+    saved = account_auth_file(alias, reg)
+    candidates = [saved, *matching_codex_auth_snapshot_paths(rec)]
+    current = DEFAULT_CODEX_HOME / "auth.json"
+    if current.exists():
+        candidates.append(current)
+    valid: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if auth_info_matches_account(auth_info(path), rec):
+                valid.append(path)
+        except (OSError, SystemExit):
+            continue
+    return max(valid or [saved], key=auth_freshness)
+
+
+def sync_auth_to_saved_and_native(alias: str, reg: Dict[str, Any], source: Path) -> Path:
+    rec = reg.get("accounts", {}).get(alias, {})
+    saved = account_auth_file(alias, reg)
+    source_rank = auth_freshness(source)
+    if source.resolve() != saved.resolve() and source_rank > auth_freshness(saved):
+        copy_private(source, saved)
+    update_account_auth_metadata(rec, saved)
+    for native in matching_codex_auth_snapshot_paths(rec):
+        if native.resolve() in {saved.resolve(), source.resolve()}:
+            continue
+        try:
+            if source_rank >= auth_freshness(native):
+                copy_private(source, native)
+        except OSError:
+            continue
+    return saved
+
+
+def should_renew_auth(path: Path, now_epoch: int, threshold_seconds: int) -> bool:
+    expires_at = auth_access_token_expiry(path)
+    if expires_at is not None:
+        return expires_at <= now_epoch + threshold_seconds
+    refreshed_at = auth_last_refresh_epoch(path)
+    if refreshed_at is None:
+        return True
+    fallback_age = max(24 * 60 * 60, 10 * 24 * 60 * 60 - threshold_seconds)
+    return refreshed_at <= now_epoch - fallback_age
+
+
+def classify_keepalive_refresh_failure(stderr: str) -> KeepaliveRefreshError:
+    text = stderr.lower()
+    if "refresh_token_expired" in text or "refresh token has expired" in text:
+        return KeepaliveRefreshError("refresh_token_expired", permanent=True)
+    if "refresh_token_reused" in text or "refresh token was already used" in text:
+        return KeepaliveRefreshError("refresh_token_reused", permanent=True)
+    if "refresh_token_invalidated" in text or "refresh token was revoked" in text:
+        return KeepaliveRefreshError("refresh_token_invalidated", permanent=True)
+    if "account mismatch" in text or "signed in to another account" in text:
+        return KeepaliveRefreshError("account_mismatch", permanent=True)
+    if "timed out" in text or "timeout" in text:
+        return KeepaliveRefreshError("refresh_timeout")
+    return KeepaliveRefreshError("refresh_failed")
+
+
+def prepare_auth_for_isolated_app_server(path: Path, now_epoch: int) -> None:
+    obj, _ = read_auth(path)
+    tokens = obj.get("tokens") if isinstance(obj.get("tokens"), dict) else {}
+    access_token = tokens.get("access_token")
+    expires_at = auth_access_token_expiry(path)
+    changed = False
+    # app-server can start several proactive refresh tasks for an already expired
+    # token. In the isolated copy only, move the JWT expiry outside that startup
+    # window; account/read then performs one explicit authoritative refresh.
+    if isinstance(access_token, str) and expires_at is not None and expires_at <= now_epoch + 5 * 60:
+        parts = access_token.split(".")
+        payload = decode_jwt_payload(access_token)
+        if len(parts) >= 3 and payload is not None:
+            payload["exp"] = now_epoch + 60 * 60
+            encoded = base64.urlsafe_b64encode(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).decode("ascii").rstrip("=")
+            tokens["access_token"] = ".".join([parts[0], encoded, *parts[2:]])
+            changed = True
+    elif expires_at is None:
+        obj["last_refresh"] = _dt.datetime.fromtimestamp(now_epoch, tz=_dt.timezone.utc).isoformat()
+        changed = True
+    if changed:
+        write_private((json.dumps(obj, ensure_ascii=False, indent=2) + "\n").encode("utf-8"), path)
+
+
+def read_jsonrpc_response(
+    proc: subprocess.Popen[bytes],
+    request_id: int,
+    timeout: int,
+    read_buffer: bytearray,
+) -> Dict[str, Any]:
+    assert proc.stdout is not None
+    deadline = time.monotonic() + timeout
+    while True:
+        newline = read_buffer.find(b"\n")
+        if newline >= 0:
+            raw = bytes(read_buffer[:newline])
+            del read_buffer[: newline + 1]
+            try:
+                message = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if message.get("id") == request_id:
+                return message
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise KeepaliveRefreshError("app_server_timeout")
+        ready, _, _ = select.select([proc.stdout.fileno()], [], [], remaining)
+        if not ready:
+            raise KeepaliveRefreshError("app_server_timeout")
+        chunk = os.read(proc.stdout.fileno(), 8192)
+        if not chunk:
+            raise KeepaliveRefreshError("app_server_closed")
+        read_buffer.extend(chunk)
+
+
+def refresh_auth_with_codex_app_server(
+    alias: str,
+    source: Path,
+    rec: Dict[str, Any],
+    *,
+    now_epoch: int,
+    timeout: int = KEEPALIVE_REFRESH_TIMEOUT_SECONDS,
+) -> bytes:
+    codex_bin = os.environ.get("CODEX_BIN") or shutil.which("codex")
+    if not codex_bin:
+        raise KeepaliveRefreshError("codex_not_found")
+    before_obj, _ = read_auth(source)
+    before_tokens = before_obj.get("tokens") if isinstance(before_obj.get("tokens"), dict) else {}
+    if not isinstance(before_tokens.get("refresh_token"), str) or not before_tokens.get("refresh_token"):
+        raise KeepaliveRefreshError("refresh_token_missing", permanent=True)
+    ensure_dirs()
+    with tempfile.TemporaryDirectory(prefix=f"keepalive-{alias}.", dir=str(DEFAULT_AC_HOME / "tmp")) as tmp:
+        temp_home = Path(tmp)
+        temp_auth = temp_home / "auth.json"
+        copy_private(source, temp_auth)
+        prepare_auth_for_isolated_app_server(temp_auth, now_epoch)
+        staged_obj, staged_data = read_auth(temp_auth)
+        staged_tokens = staged_obj.get("tokens") if isinstance(staged_obj.get("tokens"), dict) else {}
+        staged_access = staged_tokens.get("access_token")
+        staged_last_refresh = staged_obj.get("last_refresh")
+        (temp_home / "config.toml").write_text(
+            'cli_auth_credentials_store = "file"\n'
+            'chatgpt_base_url = "http://127.0.0.1:9/backend-api"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_home)
+        no_proxy = env.get("NO_PROXY") or env.get("no_proxy") or ""
+        no_proxy_parts = [part.strip() for part in no_proxy.split(",") if part.strip()]
+        for host in ["127.0.0.1", "localhost"]:
+            if host not in no_proxy_parts:
+                no_proxy_parts.append(host)
+        env["NO_PROXY"] = ",".join(no_proxy_parts)
+        env["no_proxy"] = env["NO_PROXY"]
+        for key in ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"]:
+            env.pop(key, None)
+        proc = subprocess.Popen(
+            [codex_bin, "app-server", "--stdio", "-c", 'cli_auth_credentials_store="file"'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            env=env,
+        )
+        stderr = ""
+        read_buffer = bytearray()
+        account_response: Optional[Dict[str, Any]] = None
+        protocol_error: Optional[KeepaliveRefreshError] = None
+        try:
+            assert proc.stdin is not None
+            initialize = {
+                "method": "initialize",
+                "id": 1,
+                "params": {
+                    "clientInfo": {
+                        "name": "codex_auth_tools",
+                        "title": "Codex Auth Tools",
+                        "version": VERSION,
+                    }
+                },
+            }
+            proc.stdin.write((json.dumps(initialize, separators=(",", ":")) + "\n").encode())
+            proc.stdin.flush()
+            init_response = read_jsonrpc_response(proc, 1, min(timeout, 15), read_buffer)
+            if init_response.get("error"):
+                raise KeepaliveRefreshError("app_server_initialize_failed")
+            proc.stdin.write((json.dumps({"method": "initialized", "params": {}}, separators=(",", ":")) + "\n").encode())
+            proc.stdin.write(
+                (
+                    json.dumps(
+                        {"method": "account/read", "id": 2, "params": {"refreshToken": True}},
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode()
+            )
+            proc.stdin.flush()
+            account_response = read_jsonrpc_response(proc, 2, timeout, read_buffer)
+        except KeepaliveRefreshError as exc:
+            protocol_error = exc
+        finally:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.close()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+            if proc.stderr:
+                stderr = proc.stderr.read().decode("utf-8", errors="replace")
+        if account_response and account_response.get("error"):
+            detail = json.dumps(account_response.get("error"), ensure_ascii=False) + "\n" + stderr
+            raise classify_keepalive_refresh_failure(detail)
+        if protocol_error is not None:
+            classified = classify_keepalive_refresh_failure(stderr)
+            if classified.code != "refresh_failed":
+                raise classified
+            raise protocol_error
+        after_obj, after_data = read_auth(temp_auth)
+        after_tokens = after_obj.get("tokens") if isinstance(after_obj.get("tokens"), dict) else {}
+        after_access = after_tokens.get("access_token")
+        if after_obj.get("last_refresh") == staged_last_refresh or after_access == staged_access:
+            raise classify_keepalive_refresh_failure(stderr)
+        try:
+            refreshed_info = auth_info(temp_auth)
+        except SystemExit as exc:
+            raise KeepaliveRefreshError("refreshed_auth_invalid") from exc
+        if not auth_info_matches_account(refreshed_info, rec):
+            raise KeepaliveRefreshError("refreshed_account_mismatch", permanent=True)
+        expires_at = auth_access_token_expiry(temp_auth)
+        if expires_at is None or expires_at <= now_epoch:
+            raise KeepaliveRefreshError("refreshed_access_token_invalid")
+        if not after_data or after_data == staged_data:
+            raise KeepaliveRefreshError("refresh_not_applied")
+        return after_data
+
+
+def keepalive_status_text(status: str) -> str:
+    return {
+        "active": "当前账号由 Codex 维护",
+        "fresh": "凭证仍有效",
+        "due": "需要续期",
+        "renewed": "续期成功",
+        "api": "API 账号无需续期",
+        "needs_login": "登录已失效，需要重新登录",
+        "error": "续期失败，稍后重试",
+    }.get(status, status)
+
+
+def cmd_keepalive(args: argparse.Namespace) -> int:
+    reg = load_registry()
+    accounts = reg.get("accounts", {})
+    selected = [validate_alias(v) for v in args.aliases] if args.aliases else list(accounts.keys())
+    missing = [alias for alias in selected if alias not in accounts]
+    if missing:
+        raise SystemExit("账号别名不存在：" + ", ".join(missing))
+    now_epoch = int(time.time())
+    threshold_seconds = max(1, int(args.threshold_hours)) * 60 * 60
+    active = detect_current_alias(reg, DEFAULT_CODEX_HOME) or reg.get("active_alias")
+    counts = {"renewed": 0, "fresh": 0, "active": 0, "api": 0, "failed": 0, "due": 0}
+    changed = False
+    for alias in selected:
+        rec = accounts[alias]
+        if rec.get("kind") == "api":
+            status = "api"
+            counts[status] += 1
+            if not args.dry_run:
+                rec["last_keepalive_check_at"] = now_iso()
+                rec["last_keepalive_status"] = status
+                rec.pop("last_keepalive_error", None)
+                changed = True
+            if not args.quiet:
+                print(f"{alias}: {keepalive_status_text(status)}")
+            continue
+        try:
+            saved = account_auth_file(alias, reg)
+            freshest = freshest_account_auth_path(alias, reg)
+            if not args.dry_run:
+                saved = sync_auth_to_saved_and_native(alias, reg, freshest)
+            else:
+                saved = freshest
+        except (OSError, SystemExit):
+            status = "error"
+            error_code = "auth_snapshot_invalid"
+            counts["failed"] += 1
+            if not args.dry_run:
+                rec["last_keepalive_check_at"] = now_iso()
+                rec["last_keepalive_status"] = status
+                rec["last_keepalive_error"] = error_code
+                changed = True
+            if not args.quiet:
+                print(f"{alias}: {keepalive_status_text(status)} ({error_code})")
+            continue
+        if alias == active:
+            status = "active"
+            counts[status] += 1
+            if not args.dry_run:
+                rec["last_keepalive_check_at"] = now_iso()
+                rec["last_keepalive_status"] = status
+                rec.pop("last_keepalive_error", None)
+                changed = True
+            if not args.quiet:
+                print(f"{alias}: {keepalive_status_text(status)}")
+            continue
+        due = bool(args.force) or should_renew_auth(saved, now_epoch, threshold_seconds)
+        if not due:
+            status = "fresh"
+            counts[status] += 1
+            if not args.dry_run:
+                rec["last_keepalive_check_at"] = now_iso()
+                rec["last_keepalive_status"] = status
+                rec.pop("last_keepalive_error", None)
+                changed = True
+            if not args.quiet:
+                expires_at = auth_access_token_expiry(saved)
+                remaining_days = max(0, (expires_at - now_epoch + 86399) // 86400) if expires_at else None
+                suffix = f"（约 {remaining_days} 天）" if remaining_days is not None else ""
+                print(f"{alias}: {keepalive_status_text(status)}{suffix}")
+            continue
+        if args.dry_run:
+            counts["due"] += 1
+            if not args.quiet:
+                print(f"{alias}: {keepalive_status_text('due')}")
+            continue
+        try:
+            before_sha = sha256_file(saved)
+            refreshed_data = refresh_auth_with_codex_app_server(
+                alias,
+                saved,
+                rec,
+                now_epoch=now_epoch,
+                timeout=max(10, int(args.timeout)),
+            )
+            if sha256_file(saved) != before_sha:
+                raise KeepaliveRefreshError("auth_changed_during_refresh")
+            try:
+                write_private(refreshed_data, saved)
+            except OSError as exc:
+                raise KeepaliveRefreshError("auth_write_failed") from exc
+            update_account_auth_metadata(rec, saved)
+            native_sync_failed = False
+            for native in matching_codex_auth_snapshot_paths(rec):
+                try:
+                    write_private(refreshed_data, native)
+                except OSError:
+                    native_sync_failed = True
+            status = "renewed"
+            counts[status] += 1
+            rec["last_keepalive_check_at"] = now_iso()
+            rec["last_keepalive_at"] = now_iso()
+            rec["last_keepalive_status"] = status
+            if native_sync_failed:
+                rec["last_keepalive_error"] = "native_sync_failed"
+            else:
+                rec.pop("last_keepalive_error", None)
+            rec.pop("last_usage_error", None)
+            changed = True
+            if not args.quiet:
+                print(f"{alias}: {keepalive_status_text(status)}")
+        except (KeepaliveRefreshError, OSError, SystemExit) as exc:
+            if isinstance(exc, KeepaliveRefreshError):
+                error_code = exc.code
+                permanent = exc.permanent
+            else:
+                error_code = "auth_io_failed"
+                permanent = False
+            status = "needs_login" if permanent else "error"
+            counts["failed"] += 1
+            rec["last_keepalive_check_at"] = now_iso()
+            rec["last_keepalive_status"] = status
+            rec["last_keepalive_error"] = error_code
+            changed = True
+            if not args.quiet:
+                print(f"{alias}: {keepalive_status_text(status)} ({error_code})")
+    if changed:
+        save_registry(reg)
+    if args.quiet:
+        print(
+            "keepalive: "
+            f"renewed={counts['renewed']} fresh={counts['fresh']} active={counts['active']} "
+            f"failed={counts['failed']}"
+        )
+    return 1 if counts["failed"] else 0
+
+
 def unique_alias(base: str, existing: set[str]) -> str:
     base = re.sub(r"[^A-Za-z0-9._-]+", "-", base.strip()) or "account"
     if not re.match(r"^[A-Za-z0-9]", base):
@@ -1616,12 +2193,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--refresh", action="store_true", help="等同 --api，兼容旧用法")
     sp.add_argument("--skip-api", action="store_true", help="通过 codex-auth --skip-api 路径刷新 active 本地用量")
     sp.add_argument("--cached", action="store_true", help="只读 codex-ac 缓存，不触发任何刷新；最快")
-    sp.set_defaults(func=cmd_list)
+    sp.set_defaults(func=cmd_list, account_lock=True)
 
     sp = sub.add_parser("refresh", help="刷新账号 5H/Weekly 用量；默认走 codex-auth API 路径")
     sp.add_argument("aliases", nargs="*")
     sp.add_argument("--skip-api", action="store_true", help="只走 codex-auth --skip-api 本地路径")
-    sp.set_defaults(func=cmd_refresh)
+    sp.set_defaults(func=cmd_refresh, account_lock=True)
+
+    sp = sub.add_parser("keepalive", help="检查已保存账号，并在登录凭证临近过期时自动续期")
+    sp.add_argument("aliases", nargs="*", help="只检查指定账号；默认检查全部")
+    sp.add_argument("--dry-run", action="store_true", help="只显示计划，不写文件、不发起续期")
+    sp.add_argument("--force", action="store_true", help="强制续期所有非当前 ChatGPT 账号")
+    sp.add_argument(
+        "--threshold-hours",
+        type=int,
+        default=KEEPALIVE_THRESHOLD_SECONDS // (60 * 60),
+        help="剩余多少小时内触发续期，默认 72",
+    )
+    sp.add_argument("--timeout", type=int, default=KEEPALIVE_REFRESH_TIMEOUT_SECONDS, help=argparse.SUPPRESS)
+    sp.add_argument("--quiet", action="store_true", help="只输出汇总，供定时任务使用")
+    sp.set_defaults(func=cmd_keepalive, account_lock=True, account_lock_nonblocking=True)
 
     sp = sub.add_parser("current", help="显示当前匹配账号别名")
     sp.set_defaults(func=cmd_current)
@@ -1631,7 +2222,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--device-auth", action="store_true", help="使用 codex login --device-auth")
     sp.add_argument("--force", action="store_true", help="覆盖同名账号")
     sp.add_argument("--keep-tmp", action="store_true", help="保留临时 CODEX_HOME，调试用")
-    sp.set_defaults(func=cmd_add)
+    sp.set_defaults(func=cmd_add, account_lock=True)
 
     sp = sub.add_parser("add-api", help="添加 API key / 中转域名账号，不写 key 到 config.toml")
     sp.add_argument("alias")
@@ -1645,22 +2236,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reuse-key", action="store_true", help="不提示输入 key，复用已有 Keychain/fallback")
     sp.add_argument("--key-service", help="--reuse-key 时指定 Keychain service")
     sp.add_argument("--key-account", help="--reuse-key 时指定 Keychain account")
-    sp.set_defaults(func=cmd_add_api)
+    sp.set_defaults(func=cmd_add_api, account_lock=True)
 
     sp = sub.add_parser("import", help="导入一个 auth.json，不切换当前账号")
     sp.add_argument("alias")
     sp.add_argument("path")
     sp.add_argument("--force", action="store_true")
-    sp.set_defaults(func=cmd_import)
+    sp.set_defaults(func=cmd_import, account_lock=True)
 
     sp = sub.add_parser("import-current", help="把当前 ~/.codex/auth.json 导入为指定别名")
     sp.add_argument("alias")
     sp.add_argument("--force", action="store_true")
-    sp.set_defaults(func=cmd_import_current)
+    sp.set_defaults(func=cmd_import_current, account_lock=True)
 
     sp = sub.add_parser("import-codex-auth", help="从现有 codex-auth 账号库迁移账号")
     sp.add_argument("--force", action="store_true", help="同名别名时覆盖；默认自动生成唯一别名")
-    sp.set_defaults(func=cmd_import_codex_auth)
+    sp.set_defaults(func=cmd_import_codex_auth, account_lock=True)
 
     sp = sub.add_parser("switch", aliases=["s"], help="切换当前 ~/.codex/auth.json 到指定账号")
     sp.add_argument("alias")
@@ -1671,13 +2262,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-auto-login", action="store_true", help="目标账号过期时不自动重新登录")
     sp.add_argument("--skip-expiry-check", action="store_true", help="跳过切换前过期检测")
     sp.add_argument("--keep-tmp", action="store_true", help="自动重登时保留临时 CODEX_HOME，调试用")
-    sp.set_defaults(func=cmd_switch)
+    sp.set_defaults(func=cmd_switch, account_lock=True)
 
     sp = sub.add_parser("rename", help="重命名账号别名")
     sp.add_argument("old_alias")
     sp.add_argument("new_alias")
     sp.add_argument("--force", action="store_true")
-    sp.set_defaults(func=cmd_rename)
+    sp.set_defaults(func=cmd_rename, account_lock=True)
 
     sp = sub.add_parser("relogin", aliases=["r"], help="重新登录并更新指定 ChatGPT 账号快照；默认不切换当前账号")
     sp.add_argument("alias")
@@ -1686,12 +2277,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--switch", action="store_true", help="重新登录后立即切换到该账号")
     sp.add_argument("--restart-app", action="store_true", help="配合 --switch，切换后重启 Codex App")
     sp.add_argument("--no-backup", action="store_true", help="配合 --switch，不备份当前 auth.json")
-    sp.set_defaults(func=cmd_relogin)
+    sp.set_defaults(func=cmd_relogin, account_lock=True)
 
     sp = sub.add_parser("remove", help="删除账号快照，不改当前 auth.json")
     sp.add_argument("alias")
     sp.add_argument("--yes", action="store_true")
-    sp.set_defaults(func=cmd_remove)
+    sp.set_defaults(func=cmd_remove, account_lock=True)
 
     sp = sub.add_parser("run", help="用指定账号隔离启动 codex CLI，不改全局 auth.json")
     sp.add_argument("alias")
@@ -1705,7 +2296,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     try:
+        if len(sys.argv) > 1 and sys.argv[1] == "__list-ui":
+            with account_store_lock():
+                ui = Path(__file__).with_name("list.mjs")
+                node = shutil.which("node")
+                if not node:
+                    raise SystemExit("未找到 node，无法显示账号列表。")
+                return subprocess.run([node, str(ui), *sys.argv[2:]], check=False).returncode
         args = build_parser().parse_args()
+        if getattr(args, "account_lock", False):
+            try:
+                with account_store_lock(nonblocking=bool(getattr(args, "account_lock_nonblocking", False))):
+                    return int(args.func(args) or 0)
+            except AccountStoreBusy:
+                if getattr(args, "cmd", None) == "keepalive":
+                    if not getattr(args, "quiet", False):
+                        print("keepalive: 已有账号操作正在进行，本次跳过")
+                    return 0
+                raise SystemExit("账号库正被另一个 ca 操作使用，请稍后重试。")
         return int(args.func(args) or 0)
     except KeyboardInterrupt:
         eprint("已取消。")

@@ -18,8 +18,34 @@ ca current            # print current alias
 ca import-current fox # save current auth as alias fox
 ca s fox              # switch active account
 ca r fox              # relogin/update one account snapshot
+ca keepalive --dry-run # show which snapshots are due without changing them
+ca keepalive           # run one keepalive check now
 ca doctor             # environment checks
 ```
+
+## Automatic keepalive
+
+The installer creates this LaunchAgent:
+
+```text
+~/Library/LaunchAgents/com.codexlocaltools.codex-auth-keepalive.plist
+```
+
+It runs once when loaded and then every 24 hours. Each run:
+
+- synchronizes the active account snapshot but leaves token renewal to Codex;
+- skips API and relay profiles;
+- skips inactive ChatGPT snapshots with more than 72 hours remaining;
+- renews due snapshots through the installed Codex `app-server` in an isolated temporary `CODEX_HOME`;
+- atomically updates the saved snapshot only after the returned account identity and expiry are validated.
+
+If Codex reports that a refresh token is expired, reused, or invalidated, the original snapshot is left untouched and the account is marked as requiring login. Recover it with:
+
+```bash
+ca r <alias>
+```
+
+Keepalive logs contain statuses only and are stored under `~/Library/Logs/CodexAuth`. To install without loading the scheduled job, use `./scripts/install-codex-auth.sh --no-start`.
 
 
 ## API / relay accounts
@@ -32,6 +58,8 @@ ca s relay
 ca current
 ca ll --cached --alias
 ```
+
+Quota windows are classified by their actual duration. If a usage response has a weekly window but no 5-hour window, `ca ll` shows `∞` for the 5-hour value instead of duplicating the weekly percentage; it automatically returns to percentage display when the 5-hour window reappears.
 
 For sub2api-compatible relays, Codex Balance automatically reads `GET <base-url>/usage`. If the relay uses a different endpoint, store it with the profile:
 

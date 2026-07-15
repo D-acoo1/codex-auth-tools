@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,7 +16,7 @@ LABEL="${CODEX_BALANCE_LAUNCHD_LABEL:-com.codexlocaltools.codex-balance}"
 ARCH="$(uname -m)"
 PLATFORM="macos-${ARCH}"
 PACKAGE_NAME="codex-auth-tools-${VERSION}-${PLATFORM}"
-DIST_DIR="$ROOT/dist/release"
+DIST_DIR="${DIST_DIR:-$ROOT/dist/release}"
 WORK_DIR="$DIST_DIR/work-$VERSION"
 PACKAGE_ROOT="$WORK_DIR/$PACKAGE_NAME"
 APP_BUNDLE="$PACKAGE_ROOT/CodexBalance.app"
@@ -73,7 +73,8 @@ cp LICENSE README.md SECURITY.md "$PACKAGE_ROOT/"
 cp -R assets "$PACKAGE_ROOT/assets"
 cp -R docs "$PACKAGE_ROOT/docs"
 cp scripts/uninstall-codex-balance.sh "$PACKAGE_ROOT/uninstall-codex-balance.sh"
-chmod +x "$PACKAGE_ROOT/uninstall-codex-balance.sh"
+cp scripts/uninstall-codex-auth.sh "$PACKAGE_ROOT/uninstall-codex-auth.sh"
+chmod +x "$PACKAGE_ROOT/uninstall-codex-balance.sh" "$PACKAGE_ROOT/uninstall-codex-auth.sh"
 
 git rev-parse HEAD > "$PACKAGE_ROOT/COMMIT"
 printf '%s\n' "$VERSION" > "$PACKAGE_ROOT/VERSION"
@@ -100,6 +101,7 @@ Default install locations:
 - CodexBalance LaunchAgent: ~/Library/LaunchAgents/$LABEL.plist
 - ca / codex-ac: ~/.local/bin
 - codex-ac support files: ~/.local/lib/codex-ac
+- codex-ac keepalive: ~/Library/LaunchAgents/com.codexlocaltools.codex-auth-keepalive.plist
 
 After install:
   ca --help
@@ -108,11 +110,12 @@ After install:
 Notes:
 - This package does not contain any account, token, cookie, or local auth snapshot.
 - CodexBalance reads the active local Codex auth from ~/.codex/auth.json.
+- Saved ChatGPT accounts are checked every 24 hours and renewed only near expiry.
 - The app is ad-hoc signed for local installation. It is not notarized.
 README
 
 cat > "$PACKAGE_ROOT/install.sh" <<'INSTALL'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -124,6 +127,9 @@ LEGACY_BIN="$APP_SUPPORT/CodexBalance"
 TRAIN_THEMES="$APP_SUPPORT/train-themes"
 LABEL="${CODEX_BALANCE_LAUNCHD_LABEL:-com.codexlocaltools.codex-balance}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+AUTH_KEEPALIVE_LABEL="${CODEX_AUTH_KEEPALIVE_LABEL:-com.codexlocaltools.codex-auth-keepalive}"
+AUTH_KEEPALIVE_PLIST="$HOME/Library/LaunchAgents/$AUTH_KEEPALIVE_LABEL.plist"
+AUTH_LOG_DIR="$HOME/Library/Logs/CodexAuth"
 INSTALL_AUTH=1
 INSTALL_BALANCE=1
 START_BALANCE=1
@@ -135,7 +141,7 @@ Usage: ./install.sh [--auth-only] [--balance-only] [--no-start]
 Options:
   --auth-only     Install only ca / codex-ac.
   --balance-only  Install only CodexBalance.app and LaunchAgent.
-  --no-start      Install CodexBalance.app but do not start/restart LaunchAgent.
+  --no-start      Install files but do not load or restart either LaunchAgent.
 USAGE
 }
 
@@ -153,12 +159,73 @@ done
 install_auth() {
   local lib_dir="$PREFIX/lib/codex-ac"
   local bin_dir="$PREFIX/bin"
+  local python_bin codex_bin node_bin path_value tmp_plist
   mkdir -p "$lib_dir" "$bin_dir"
   install -m 700 "$ROOT/lib/codex-ac/codex-ac.py" "$lib_dir/codex-ac.py"
   install -m 700 "$ROOT/lib/codex-ac/list.mjs" "$lib_dir/list.mjs"
   install -m 700 "$ROOT/bin/codex-ac" "$bin_dir/codex-ac"
   ln -sf "$bin_dir/codex-ac" "$bin_dir/ca"
+  python_bin="$(command -v python3 || true)"
+  if [[ -z "$python_bin" ]]; then
+    printf 'python3 is required by codex-ac.\n' >&2
+    exit 1
+  fi
+  codex_bin="${CODEX_BIN:-$(command -v codex || true)}"
+  node_bin="$(command -v node || true)"
+  path_value="$bin_dir:$(dirname "$python_bin")"
+  if [[ -n "$node_bin" ]]; then
+    path_value="$path_value:$(dirname "$node_bin")"
+  fi
+  path_value="$path_value:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  mkdir -p "$(dirname "$AUTH_KEEPALIVE_PLIST")" "$AUTH_LOG_DIR"
+  if [[ "$START_BALANCE" == "1" && "${CODEX_AUTH_KEEPALIVE_NO_START:-0}" != "1" ]]; then
+    local state attempt
+    state=""
+    for ((attempt = 0; attempt < 120; attempt++)); do
+      state="$(launchctl print "gui/$(id -u)/$AUTH_KEEPALIVE_LABEL" 2>/dev/null || true)"
+      [[ "$state" != *"state = running"* ]] && break
+      sleep 1
+    done
+    if [[ "$state" == *"state = running"* ]]; then
+      printf 'Keepalive is still running; installation stopped to avoid interrupting token renewal.\n' >&2
+      exit 1
+    fi
+    launchctl bootout "gui/$(id -u)/$AUTH_KEEPALIVE_LABEL" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)" "$AUTH_KEEPALIVE_PLIST" 2>/dev/null || true
+  fi
+  tmp_plist="$AUTH_KEEPALIVE_PLIST.tmp.$$"
+  "$python_bin" - "$tmp_plist" "$AUTH_KEEPALIVE_LABEL" "$bin_dir/codex-ac" "$AUTH_LOG_DIR" "$path_value" "$codex_bin" <<'PY'
+import os
+import plistlib
+import sys
+
+dst, label, executable, log_dir, path_value, codex_bin = sys.argv[1:]
+environment = {"PATH": path_value}
+if codex_bin:
+    environment["CODEX_BIN"] = codex_bin
+payload = {
+    "Label": label,
+    "ProgramArguments": [executable, "keepalive", "--quiet"],
+    "RunAtLoad": True,
+    "StartInterval": 86400,
+    "LimitLoadToSessionType": "Aqua",
+    "ProcessType": "Background",
+    "ThrottleInterval": 300,
+    "StandardOutPath": os.path.join(log_dir, "keepalive.stdout.log"),
+    "StandardErrorPath": os.path.join(log_dir, "keepalive.stderr.log"),
+    "EnvironmentVariables": environment,
+}
+with open(dst, "wb") as handle:
+    plistlib.dump(payload, handle, fmt=plistlib.FMT_XML, sort_keys=False)
+os.chmod(dst, 0o644)
+PY
+  plutil -lint "$tmp_plist" >/dev/null
+  mv "$tmp_plist" "$AUTH_KEEPALIVE_PLIST"
+  if [[ "$START_BALANCE" == "1" && "${CODEX_AUTH_KEEPALIVE_NO_START:-0}" != "1" ]]; then
+    launchctl bootstrap "gui/$(id -u)" "$AUTH_KEEPALIVE_PLIST"
+  fi
   printf 'Installed codex-auth to %s\n' "$PREFIX"
+  printf 'Keepalive LaunchAgent: %s (checks every 24 hours)\n' "$AUTH_KEEPALIVE_PLIST"
   printf 'Commands: %s/bin/ca --help, %s/bin/ca ll\n' "$PREFIX" "$PREFIX"
 }
 

@@ -106,6 +106,7 @@ Codex Auth is a local account manager for Codex auth snapshots. It can:
 - import the current `~/.codex/auth.json`
 - switch active accounts by replacing `~/.codex/auth.json`
 - list saved accounts and cached quota usage
+- keep inactive ChatGPT login snapshots renewed before they expire
 - add API-compatible providers
 - run Codex with an isolated account home
 
@@ -122,9 +123,14 @@ ca --help
 ca ll
 ca current
 ca s <alias>
+ca keepalive --dry-run
 ```
 
 `ca` stores account snapshots under `~/.codex-ac` by default. Auth snapshots are private local files and must never be committed.
+
+`ca ll` identifies quota windows by their actual duration. When the service returns only a weekly window, the 5-hour column shows `∞` instead of copying the weekly percentage; a future restored 5-hour window is detected automatically.
+
+Installation also creates `~/Library/LaunchAgents/com.codexlocaltools.codex-auth-keepalive.plist`. It checks accounts every 24 hours and uses the installed Codex `app-server` to renew only inactive ChatGPT snapshots with 72 hours or less remaining. The active account remains managed by Codex, API profiles are skipped, and a permanent refresh-token failure is reported for manual recovery with `ca r <alias>`.
 
 API and relay accounts are supported too:
 
@@ -175,7 +181,7 @@ If no proxy is set, it tries the direct request path.
 - Do not commit `~/.codex/auth.json`, `~/.codex/accounts/*.auth.json`, or `~/.codex-ac`.
 - Do not publish `last-status.json` if it contains personal account identifiers.
 - The repository `.gitignore` blocks common local auth and state files.
-- The tools operate only on local files and the current Codex usage endpoint.
+- Login renewal is delegated to the installed Codex `app-server`; the toolkit does not implement or log the OAuth exchange itself.
 
 ## License
 
@@ -291,6 +297,7 @@ Codex Auth 是一个本机 Codex 账号管理工具。它可以：
 - 导入当前 `~/.codex/auth.json`
 - 通过替换 `~/.codex/auth.json` 切换当前账号
 - 列出已保存账号和缓存额度
+- 在非当前 ChatGPT 账号的登录快照临近过期时自动续期
 - 添加兼容 OpenAI API 的服务商账号
 - 用隔离账号目录运行 Codex
 
@@ -307,9 +314,14 @@ ca --help
 ca ll
 ca current
 ca s <alias>
+ca keepalive --dry-run
 ```
 
 `ca` 默认把账号快照保存在 `~/.codex-ac`。这些登录快照是本机私有文件，绝不能提交到 Git 仓库。
+
+`ca ll` 会按额度窗口的真实周期识别 5 小时和周额度。接口只返回周额度时，5 小时列显示 `∞`，不再复用周额度百分比；以后恢复 5 小时窗口后会自动恢复显示。
+
+安装脚本还会创建 `~/Library/LaunchAgents/com.codexlocaltools.codex-auth-keepalive.plist`：每 24 小时检查一次，只在非当前 ChatGPT 账号剩余有效期不超过 72 小时时，通过已安装的 Codex `app-server` 续期。当前账号继续由 Codex 自己维护，API 账号会跳过；刷新凭证永久失效时，需要执行 `ca r <alias>` 重新登录一次。
 
 也支持 API key 和中转域名账号：
 
@@ -360,7 +372,7 @@ CODEX_AC_USAGE_PROXY=http://localhost:8080 ca ll
 - 不要提交 `~/.codex/auth.json`、`~/.codex/accounts/*.auth.json` 或 `~/.codex-ac`。
 - 如果 `last-status.json` 里包含个人账号标识，不要发布它。
 - 仓库的 `.gitignore` 已屏蔽常见本机登录文件和状态文件。
-- 工具只操作本机文件，并访问当前 Codex 用量接口。
+- 登录续期交给已安装的 Codex `app-server` 完成；本工具不自行实现或记录 OAuth 请求内容。
 
 ## 许可证
 

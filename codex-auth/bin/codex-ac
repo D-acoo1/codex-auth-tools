@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/bin/zsh
 set -euo pipefail
 LIB="${CODEX_AC_LIB:-${0:A:h}/../lib/codex-ac}"
 case "${1:-}" in
@@ -11,10 +11,10 @@ case "${1:-}" in
 esac
 if [[ "${1:-}" == "list" ]]; then
   shift
-  exec node "$LIB/list.mjs" "$@"
+  exec python3 "$LIB/codex-ac.py" __list-ui "$@"
 fi
 if [[ "${1:-}" == "--version" || "${1:-}" == "-V" ]]; then
-  echo "codex-ac 0.7.0"
+  echo "codex-ac 0.8.0"
   exit 0
 fi
 exec python3 "$LIB/codex-ac.py" "$@"
