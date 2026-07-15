@@ -59,7 +59,7 @@ ca current
 ca ll --cached --alias
 ```
 
-Quota windows are classified by their actual duration. If a usage response has a weekly window but no 5-hour window, `ca ll` shows `∞` for the 5-hour value instead of duplicating the weekly percentage; it automatically returns to percentage display when the 5-hour window reappears.
+Quota windows are classified by their actual duration. If a usage response has a weekly window but no 5-hour window, `ca ll` shows `∞` for the 5-hour value instead of duplicating the weekly percentage; it automatically returns to percentage display when the 5-hour window reappears. Older installations without a native `~/.codex/accounts` registry refresh from the saved `~/.codex-ac` snapshots directly.
 
 For sub2api-compatible relays, Codex Balance automatically reads `GET <base-url>/usage`. If the relay uses a different endpoint, store it with the profile:
 

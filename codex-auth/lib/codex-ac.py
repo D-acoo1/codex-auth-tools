@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

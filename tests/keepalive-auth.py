@@ -475,7 +475,7 @@ def test_installer(codex_bin: str, root: Path) -> None:
         check=False,
     )
     assert version.returncode == 0, (version.stdout, version.stderr)
-    assert version.stdout.strip() == "codex-ac 0.8.0"
+    assert version.stdout.strip() == "codex-ac 0.8.1"
 
     removed = subprocess.run(
         ["/bin/bash", str(UNINSTALLER)],
