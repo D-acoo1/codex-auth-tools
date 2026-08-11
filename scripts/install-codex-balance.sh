@@ -8,6 +8,9 @@ BUNDLE_ID="${CODEX_BALANCE_BUNDLE_ID:-net.nexita.codeapi-balance}"
 APP_BUNDLE="$APP_SUPPORT/CodexBalance.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 BIN="$APP_CONTENTS/MacOS/CodexBalance"
+STAGED_APP="$APP_SUPPORT/.CodexBalance.app.install.$$"
+STAGED_CONTENTS="$STAGED_APP/Contents"
+STAGED_BIN="$STAGED_CONTENTS/MacOS/CodexBalance"
 LEGACY_BIN="$APP_SUPPORT/CodexBalance"
 LABEL="${CODEX_BALANCE_LAUNCHD_LABEL:-com.codexlocaltools.codex-balance}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -39,17 +42,17 @@ else
   BUILT_BIN="$MANUAL_BUILD_DIR/CodexBalance"
 fi
 
+if [[ "$(uname -s)" != "Darwin" || ! -x /usr/bin/codesign ]]; then
+  printf 'A macOS system with /usr/bin/codesign is required.\n' >&2
+  exit 1
+fi
+
 mkdir -p "$APP_SUPPORT" "$LOG_DIR" "$HOME/Library/LaunchAgents"
-INSTALL_TS="$(date +%Y%m%d-%H%M%S)"
-if [[ -x "$LEGACY_BIN" ]]; then
-  cp "$LEGACY_BIN" "$LEGACY_BIN.bak.$INSTALL_TS"
-fi
-if [[ -d "$APP_BUNDLE" ]]; then
-  mv "$APP_BUNDLE" "$APP_BUNDLE.bak.$INSTALL_TS"
-fi
-mkdir -p "$APP_CONTENTS/MacOS" "$APP_CONTENTS/Resources"
-install -m 755 "$BUILT_BIN" "$BIN"
-cat > "$APP_CONTENTS/Info.plist" <<PLIST
+rm -rf "$STAGED_APP"
+trap 'rm -rf "$STAGED_APP"' EXIT
+mkdir -p "$STAGED_CONTENTS/MacOS" "$STAGED_CONTENTS/Resources"
+install -m 755 "$BUILT_BIN" "$STAGED_BIN"
+cat > "$STAGED_CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -75,13 +78,32 @@ cat > "$APP_CONTENTS/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+/usr/bin/codesign --force --deep --sign - "$STAGED_APP" >/dev/null
+/usr/bin/codesign --verify --deep --strict "$STAGED_APP" >/dev/null
+
+INSTALL_TS="$(date +%Y%m%d-%H%M%S)"
+BACKUP_APP=""
+if [[ -x "$LEGACY_BIN" ]]; then
+  cp "$LEGACY_BIN" "$LEGACY_BIN.bak.$INSTALL_TS"
+fi
+if [[ -d "$APP_BUNDLE" ]]; then
+  BACKUP_APP="$APP_BUNDLE.bak.$INSTALL_TS"
+  mv "$APP_BUNDLE" "$BACKUP_APP"
+fi
+mv "$STAGED_APP" "$APP_BUNDLE"
+trap - EXIT
+if ! /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE" >/dev/null 2>&1; then
+  rm -rf "$APP_BUNDLE"
+  if [[ -n "$BACKUP_APP" && -d "$BACKUP_APP" ]]; then
+    mv "$BACKUP_APP" "$APP_BUNDLE"
+  fi
+  printf 'Installed CodexBalance.app failed signature verification; the previous installation was restored.\n' >&2
+  exit 1
+fi
 if [[ -d "$ROOT/codex-balance/Assets/train-themes" ]]; then
   rm -rf "$APP_SUPPORT/train-themes"
   mkdir -p "$APP_SUPPORT/train-themes"
   cp -R "$ROOT/codex-balance/Assets/train-themes/." "$APP_SUPPORT/train-themes/"
-fi
-if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null 2>&1 || true
 fi
 
 cat > "$PLIST" <<PLIST

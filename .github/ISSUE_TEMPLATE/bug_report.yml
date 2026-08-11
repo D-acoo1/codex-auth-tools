@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a reproducible Codex Auth or Codex Balance problem using sanitized data.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include auth snapshots, tokens, cookies, API keys, private relay URLs, account identifiers, or unredacted logs. For a security-sensitive report, stop here and use [Private Vulnerability Reporting](https://github.com/D-acoo1/codex-auth-tools/security/advisories/new).
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Codex Auth (ca / codex-ac)
+        - Codex Balance
+        - Installer or uninstaller
+        - Release package
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v2026.07.15.1 or a commit SHA
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and architecture
+      placeholder: macOS 15.x, Apple silicon
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Observed behavior
+      description: Describe what happened without posting private account data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Minimal sanitized reproduction
+      description: Use fake aliases, example.com endpoints, and synthetic quota values.
+      placeholder: |
+        1. Run ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Paste only reviewed/redacted output or attach a screenshot made with synthetic data.
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I verified that this report contains no real credential, auth snapshot, cookie, API key, private endpoint, account identifier, or unredacted local log.
+          required: true
+        - label: This is not a security-sensitive report requiring private disclosure.
+          required: true

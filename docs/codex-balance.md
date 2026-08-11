@@ -4,7 +4,7 @@ Codex Balance is a macOS menu bar widget implemented in Swift/AppKit.
 
 ## Data flow
 
-For ChatGPT subscription accounts:
+For ChatGPT subscription accounts, Codex Balance reads only the active account:
 
 1. Read the active auth from `~/.codex/auth.json`.
 2. Use `tokens.access_token` as a bearer token.
@@ -26,6 +26,17 @@ For sub2api-compatible relays, `https://relay.example.com/v1` maps to:
 ```text
 GET https://relay.example.com/v1/usage
 ```
+
+The relay key-helper command is executed through `/bin/sh -c` with a 5-second timeout. Only helpers generated locally by `ca` or commands that have been independently reviewed should be used. The configured usage service receives the key in both `Authorization: Bearer` and `x-api-key` headers.
+
+For ChatGPT subscription accounts, the only authenticated service destinations in the current source are:
+
+```text
+https://chatgpt.com/backend-api/wham/usage
+https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
+```
+
+These `backend-api/wham` URLs are current implementation details without a stable public API contract and may change. The app does not send credentials to a project-operated analytics or account server. Custom relay configuration remains a separate user-selected trust boundary, and `URLSession` can use macOS network/proxy settings. The CLI-specific `CODEX_AC_USAGE_PROXY` setting is documented separately because Codex Balance does not read it directly.
 
 ## UI rules
 
@@ -50,3 +61,10 @@ GET https://relay.example.com/v1/usage
 - Opening the popover triggers an immediate refresh.
 - Clicking refresh triggers an immediate refresh.
 - Because each refresh rereads `~/.codex/auth.json` and `~/.codex/config.toml`, switching accounts with `ca` is reflected automatically.
+
+## Security boundary
+
+- `last-status.json` can contain account identifiers and quota data; do not attach it publicly without review and redaction.
+- A manually edited relay helper is executable local configuration, not passive text.
+- The app is distributed ad-hoc signed and is not currently Apple-notarized. The packaged installer recalculates the exact internal file manifest, rejects unlisted files and symbolic links, and verifies the app before and after staging, but the ad-hoc signature does not identify a developer; verify the GitHub release checksum/tag or build from source.
+- Network destinations, auth headers, state files, LaunchAgents, packaging, and vulnerability reporting are documented in [Security Policy](../SECURITY.md).

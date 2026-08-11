@@ -497,8 +497,14 @@ def main() -> int:
     if not codex_bin:
         print("codex is required for keepalive integration tests", file=sys.stderr)
         return 2
-    scratch_parent = Path("/Volumes/E82/CodexTempScratch")
-    temp_parent = scratch_parent if scratch_parent.is_dir() else None
+    temp_parent_value = os.environ.get("CODEX_AUTH_TEST_TMPDIR")
+    temp_parent = Path(temp_parent_value).expanduser() if temp_parent_value else None
+    if temp_parent is not None and not temp_parent.is_dir():
+        print(
+            f"CODEX_AUTH_TEST_TMPDIR is not an existing directory: {temp_parent}",
+            file=sys.stderr,
+        )
+        return 2
     with tempfile.TemporaryDirectory(prefix="codex-auth-keepalive-test.", dir=temp_parent) as tmp:
         root = Path(tmp)
         test_keepalive(codex_bin, root)

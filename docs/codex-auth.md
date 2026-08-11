@@ -14,6 +14,7 @@ Codex Auth is a local Codex account manager. It stores private auth snapshots ou
 
 ```bash
 ca ll                 # list accounts and usage
+ca ll --cached        # list cached usage without refreshing saved accounts
 ca current            # print current alias
 ca import-current fox # save current auth as alias fox
 ca s fox              # switch active account
@@ -22,6 +23,10 @@ ca keepalive --dry-run # show which snapshots are due without changing them
 ca keepalive           # run one keepalive check now
 ca doctor             # environment checks
 ```
+
+`ca ll` and `ca refresh` can use each saved ChatGPT snapshot's access token to refresh stale quota rows. `ca ll --cached` does not perform that network refresh. These requests currently target `https://chatgpt.com/backend-api/wham/usage`, an implementation-detail endpoint without a stable public API contract. The endpoint may change and must be re-reviewed if the source changes.
+
+CLI refresh uses `CODEX_AC_USAGE_PROXY`, then `HTTPS_PROXY`, then `https_proxy` when set. Python's networking layer can also honor platform proxy configuration. Check both environment variables and macOS proxy settings when investigating unexpected traffic.
 
 ## Automatic keepalive
 
@@ -91,8 +96,17 @@ ca s fox --skip-expiry-check
 
 Codex Balance detects this API or relay mode and shows it as an API account instead of trying to read ChatGPT subscription quota.
 
+The `auth.command` value is executable configuration. Codex Balance invokes the matched helper through `/bin/sh -c` with a 5-second timeout to read the key, so a provider block or registry entry from an untrusted source is equivalent to running an untrusted command as the current user. `ca add-api` generates a narrow helper that reads only the matching Keychain item or private fallback file; review any manually edited helper before activating that profile.
+
+The profile's `usage_url` is also a trust boundary. Codex Balance sends the profile key in both `Authorization: Bearer` and `x-api-key` headers for relay compatibility. Use only a TLS endpoint operated by a party that is allowed to receive that key, and recheck environment and macOS proxy settings before diagnosing unexpected traffic.
+
 ## Privacy model
 
-- Auth snapshots remain under `~/.codex-ac`.
+- Auth snapshots are persisted under `~/.codex-ac`; access tokens are sent to the selected ChatGPT service only for authenticated refresh or renewal operations.
+- API keys are persisted in macOS Keychain or a mode-`0600` fallback file under `~/.codex-ac/secrets`; the active key is sent to its configured relay when Codex or Codex Balance makes an authenticated request.
 - The repository contains only source code and install scripts.
 - Registry/cache/status files should not be committed.
+- Keepalive status logs must not contain OAuth payloads or complete token values.
+- The CLI wrapper and runtime trust `python3`, `codex`, `codex-auth`, `node`, `curl`, `osascript`, and `open` resolved from `PATH`, plus documented fixed macOS tools. Review executable lookup as part of the local trust boundary.
+
+See [Security Policy](../SECURITY.md) for the complete sensitive-file inventory, network destinations, command-execution boundary, and vulnerability reporting path.

@@ -1,0 +1,51 @@
+name: Feature or improvement request
+description: Propose a focused improvement using sanitized examples only.
+title: "[Request] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include auth snapshots, tokens, cookies, API keys, private relay URLs, account identifiers, or unredacted logs. Security-sensitive proposals belong in [Private Vulnerability Reporting](https://github.com/D-acoo1/codex-auth-tools/security/advisories/new).
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Codex Auth (ca / codex-ac)
+        - Codex Balance
+        - Installer or uninstaller
+        - Release package
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the workflow or limitation without private account data.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Explain the smallest user-visible result that would solve the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround or alternatives
+      description: Optional; describe what you use today and why it is insufficient.
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I verified that this request contains no real credential, auth snapshot, cookie, API key, private endpoint, account identifier, or unredacted local log.
+          required: true
+        - label: This is not a security-sensitive report requiring private disclosure.
+          required: true

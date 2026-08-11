@@ -3201,6 +3201,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         button.attributedTitle = summary.isAPIAccount ? apiStatusAttributedTitle(summary) : statusAttributedTitle(from: summary.title)
     }
 
+    fileprivate func readmeSampleStatusTitle(for summary: CodexUsageSummary) -> NSAttributedString {
+        summary.isAPIAccount ? apiStatusAttributedTitle(summary) : statusAttributedTitle(from: summary.title)
+    }
+
+    fileprivate func removeReadmeSampleStatusItem() {
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
+
     private func statusAttributedTitle(from title: String) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let bodyFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
@@ -3772,6 +3780,223 @@ func printJSON(_ object: [String: Any]) {
     if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
        let text = String(data: data, encoding: .utf8) {
         print(text)
+    }
+}
+
+private enum ReadmeSampleRenderError: LocalizedError {
+    case invalidLanguage(String)
+    case invalidDate(String)
+    case windowCapture
+    case pngEncoding
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidLanguage(let code):
+            return "README sample rendering requires en or zh-Hans, got: \(code)"
+        case .invalidDate(let value):
+            return "Invalid fixed README sample date: \(value)"
+        case .windowCapture:
+            return "Could not capture the production README sample window"
+        case .pngEncoding:
+            return "Could not encode the README sample as PNG"
+        }
+    }
+}
+
+@MainActor
+private final class ReadmeSampleActionTarget: NSObject {
+    @objc func ignore(_ sender: Any?) {}
+}
+
+@MainActor
+private func warmReadmeSampleGlyphs() {
+    let l = L10n.shared
+    let text = [
+        l.t("title"), l.t("credits"), l.t("fiveHours"), l.t("weeklyQuota"),
+        l.t("resetCredits"), l.t("available"), l.t("plan"), l.t("unlimited"),
+        "PRO 5h 7d 85% ∞ 6d 16h 8/18 08:01 15:04:26"
+    ].joined(separator: " ")
+    let image = NSImage(size: NSSize(width: 900, height: 80))
+    image.lockFocus()
+    (text as NSString).draw(
+        in: NSRect(x: 0, y: 0, width: 900, height: 80),
+        withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)]
+    )
+    image.unlockFocus()
+}
+
+@MainActor
+private func readmeSampleSummary() throws -> CodexUsageSummary {
+    let formatter = ISO8601DateFormatter()
+    func fixedDate(_ value: String) throws -> Date {
+        guard let date = formatter.date(from: value) else {
+            throw ReadmeSampleRenderError.invalidDate(value)
+        }
+        return date
+    }
+
+    return CodexUsageSummary(
+        title: "5h ∞ / 7d 85%",
+        email: "user@example.com",
+        alias: "demo",
+        accountID: "sample-account",
+        plan: "pro",
+        allowed: true,
+        limitReached: false,
+        primaryUnlimited: true,
+        primaryUsed: nil,
+        primaryWindowSeconds: nil,
+        primaryResetAfterSeconds: nil,
+        primaryResetAt: nil,
+        secondaryUsed: 15,
+        secondaryWindowSeconds: 604_800,
+        secondaryResetAfterSeconds: 576_000,
+        secondaryResetAt: try fixedDate("2026-08-18T08:01:00Z").timeIntervalSince1970,
+        creditsBalance: "0",
+        creditsUnlimited: false,
+        resetCreditsAvailable: 2,
+        resetCredits: [
+            ResetCredit(
+                title: "Sample 1",
+                status: "available",
+                grantedAt: try fixedDate("2026-06-18T00:00:00Z"),
+                expiresAt: try fixedDate("2026-07-18T00:00:00Z")
+            ),
+            ResetCredit(
+                title: "Sample 2",
+                status: "available",
+                grantedAt: try fixedDate("2026-07-18T00:00:00Z"),
+                expiresAt: try fixedDate("2026-08-18T00:00:00Z")
+            )
+        ],
+        sparkPrimaryUnlimited: true,
+        sparkPrimaryUsed: nil,
+        sparkSecondaryUsed: 0,
+        fetchedAt: try fixedDate("2026-08-11T15:04:26Z")
+    )
+}
+
+@MainActor
+private func writeReadmeSamplePNG(
+    view: NSView,
+    to outputURL: URL
+) throws {
+    let size = view.bounds.size
+    let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: size),
+        styleMask: .borderless,
+        backing: .buffered,
+        defer: false
+    )
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.hasShadow = false
+    window.ignoresMouseEvents = true
+    window.level = .floating
+    window.appearance = NSAppearance(named: .darkAqua)
+    window.contentView = view
+    if let screen = NSScreen.screens.max(by: { $0.backingScaleFactor < $1.backingScaleFactor }) {
+        window.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX + 24, y: screen.visibleFrame.minY + 24))
+    }
+    view.frame = NSRect(origin: .zero, size: size)
+    view.appearance = NSAppearance(named: .darkAqua)
+    window.orderFrontRegardless()
+    view.layoutSubtreeIfNeeded()
+    view.displayIfNeeded()
+    CATransaction.flush()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.8))
+    view.layoutSubtreeIfNeeded()
+    view.displayIfNeeded()
+    window.displayIfNeeded()
+    CATransaction.flush()
+
+    guard let image = CGWindowListCreateImage(
+        .null,
+        .optionIncludingWindow,
+        CGWindowID(window.windowNumber),
+        [.boundsIgnoreFraming, .bestResolution]
+    ) else {
+        window.orderOut(nil)
+        throw ReadmeSampleRenderError.windowCapture
+    }
+    window.orderOut(nil)
+    let bitmap = NSBitmapImageRep(cgImage: image)
+    guard let data = bitmap.representation(using: .png, properties: [:]) else {
+        throw ReadmeSampleRenderError.pngEncoding
+    }
+    try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try data.write(to: outputURL, options: .atomic)
+}
+
+@MainActor
+private func renderReadmeSample(popoverURL: URL, statusBarURL: URL?) throws {
+    let code = L10n.shared.effectiveCode
+    guard code == "en" || code == "zh-Hans" else {
+        throw ReadmeSampleRenderError.invalidLanguage(code)
+    }
+
+    _ = NSApplication.shared
+    NSApp.setActivationPolicy(.prohibited)
+    warmReadmeSampleGlyphs()
+    let summary = try readmeSampleSummary()
+    let target = ReadmeSampleActionTarget()
+    let action = #selector(ReadmeSampleActionTarget.ignore(_:))
+    let controller = CodexPanelViewController(
+        summary: summary,
+        errorText: nil,
+        target: target,
+        refreshAction: action,
+        openAction: action,
+        quitAction: action,
+        languageAction: action,
+        themeAction: action,
+        resetCreditsAction: action,
+        trainStyleIndex: 0,
+        trainStartTime: 0,
+        themeMode: .system,
+        trainSegmentMask: 0,
+        showResetCreditsDetail: false,
+        dismissResetCredits: {},
+        trainClickAction: {},
+        animationSettingsAction: { _, _ in }
+    )
+    let panel = controller.view
+    panel.frame = NSRect(x: 0, y: 0, width: 410, height: 404)
+    try writeReadmeSamplePNG(view: panel, to: popoverURL)
+
+    if let statusBarURL {
+        let delegate = AppDelegate()
+        defer { delegate.removeReadmeSampleStatusItem() }
+        let statusTitle = delegate.readmeSampleStatusTitle(for: summary)
+        let statusWidth = ceil(statusTitle.size().width) + 14
+        let button = NSButton(frame: NSRect(x: 0, y: 0, width: statusWidth, height: 24))
+        button.isBordered = false
+        button.imagePosition = .noImage
+        button.appearance = NSAppearance(named: .darkAqua)
+        button.attributedTitle = statusTitle
+        try writeReadmeSamplePNG(view: button, to: statusBarURL)
+    }
+}
+
+if let renderIndex = CommandLine.arguments.firstIndex(of: "--render-readme-sample") {
+    let popoverIndex = CommandLine.arguments.index(after: renderIndex)
+    guard popoverIndex < CommandLine.arguments.endIndex else {
+        fputs("Usage: CodexBalance --render-readme-sample <popover.png> [status-bar.png]\n", stderr)
+        exit(2)
+    }
+    let statusIndex = CommandLine.arguments.index(after: popoverIndex)
+    let statusURL = statusIndex < CommandLine.arguments.endIndex
+        ? URL(fileURLWithPath: CommandLine.arguments[statusIndex])
+        : nil
+    do {
+        try renderReadmeSample(
+            popoverURL: URL(fileURLWithPath: CommandLine.arguments[popoverIndex]),
+            statusBarURL: statusURL
+        )
+        exit(0)
+    } catch {
+        fputs("README sample rendering failed: \(error.localizedDescription)\n", stderr)
+        exit(1)
     }
 }
 
