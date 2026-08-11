@@ -2156,10 +2156,34 @@ final class ThemePanelView: NSView {
 }
 
 final class ResetCreditsBubbleView: NSView {
+    private struct LineParts {
+        let expirationDate: String
+        let expirationTime: String?
+    }
+
+    private static let minimumWidth: CGFloat = 104
+    private static let maximumWidth: CGFloat = 160
+    private static let horizontalTextPadding: CGFloat = 24
+
     private let summary: CodexUsageSummary
     private let panelLight: Bool
     private let arrowTipX: CGFloat
     private let arrowHeight: CGFloat = 7
+
+    fileprivate static func preferredWidth(for summary: CodexUsageSummary) -> CGFloat {
+        let dateFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let timeFont = NSFont.systemFont(ofSize: 10.5, weight: .regular)
+        let widestLine = lineParts(for: summary)
+            .map { line in
+                let dateWidth = (line.expirationDate as NSString).size(withAttributes: [.font: dateFont]).width
+                let timeWidth = line.expirationTime.map {
+                    (("  " + $0) as NSString).size(withAttributes: [.font: timeFont]).width
+                } ?? 0
+                return ceil(dateWidth + timeWidth)
+            }
+            .max() ?? 0
+        return min(maximumWidth, max(minimumWidth, widestLine + horizontalTextPadding))
+    }
 
     init(frame frameRect: NSRect, summary: CodexUsageSummary, panelLight: Bool, arrowTipX: CGFloat) {
         self.summary = summary
@@ -2228,35 +2252,79 @@ final class ResetCreditsBubbleView: NSView {
     }
 
     private func addDateLines() {
-        let credits = summary.resetCredits.isEmpty ? [] : Array(summary.resetCredits.prefix(5))
-        let textColor = panelLight ? NSColor(calibratedWhite: 0.16, alpha: 0.82) : NSColor.white.withAlphaComponent(0.88)
-        let lines = credits.isEmpty ? [L10n.shared.t("unknown")] : credits.map { "\(dateText($0.grantedAt)) - \(dateText($0.expiresAt))" }
+        let lines = Self.lineParts(for: summary)
         let lineHeight: CGFloat = 15
         let lineGap: CGFloat = 2
         let bodyHeight = bounds.height - arrowHeight
         let totalLineHeight = CGFloat(lines.count) * lineHeight + CGFloat(max(0, lines.count - 1)) * lineGap
         let firstLineY = arrowHeight + max(0, (bodyHeight - totalLineHeight) / 2)
         for (index, line) in lines.enumerated() {
-            let field = NSTextField(labelWithString: line)
+            let field = NSTextField(labelWithString: "")
             field.frame = NSRect(
                 x: 10,
                 y: firstLineY + CGFloat(lines.count - 1 - index) * (lineHeight + lineGap),
                 width: bounds.width - 20,
                 height: lineHeight
             )
-            field.font = .systemFont(ofSize: 11, weight: .semibold)
-            field.textColor = textColor
+            field.attributedStringValue = Self.attributedLine(line, panelLight: panelLight)
             field.alignment = .center
             field.lineBreakMode = .byTruncatingTail
             addSubview(field)
         }
     }
 
-    private func dateText(_ date: Date?) -> String {
+    private static func lineParts(for summary: CodexUsageSummary) -> [LineParts] {
+        let credits = summary.resetCredits.isEmpty ? [] : Array(summary.resetCredits.prefix(5))
+        guard !credits.isEmpty else {
+            return [LineParts(expirationDate: L10n.shared.t("unknown"), expirationTime: nil)]
+        }
+        return credits.map {
+            LineParts(
+                expirationDate: dateText($0.expiresAt),
+                expirationTime: timeText($0.expiresAt)
+            )
+        }
+    }
+
+    private static func attributedLine(_ line: LineParts, panelLight: Bool) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let dateColor = panelLight
+            ? NSColor(calibratedWhite: 0.16, alpha: 0.84)
+            : NSColor.white.withAlphaComponent(0.90)
+        let timeColor = panelLight
+            ? NSColor(calibratedWhite: 0.16, alpha: 0.54)
+            : NSColor.white.withAlphaComponent(0.58)
+        let result = NSMutableAttributedString(string: line.expirationDate, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: dateColor,
+            .paragraphStyle: paragraph
+        ])
+        if let expirationTime = line.expirationTime {
+            result.append(NSAttributedString(string: "  " + expirationTime, attributes: [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .regular),
+                .foregroundColor: timeColor,
+                .paragraphStyle: paragraph
+            ]))
+        }
+        return result
+    }
+
+    private static func dateText(_ date: Date?) -> String {
+        formatted(date, format: "M.d")
+    }
+
+    private static func timeText(_ date: Date?) -> String? {
+        guard let date else { return nil }
+        return formatted(date, format: "HH:mm")
+    }
+
+    private static func formatted(_ date: Date?, format: String) -> String {
         guard let date else { return L10n.shared.t("unknown") }
         let formatter = DateFormatter()
         formatter.locale = L10n.shared.locale
-        formatter.dateFormat = "M.d"
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = format
         return formatter.string(from: date)
     }
 }
@@ -2644,13 +2712,13 @@ final class CodexPanelViewController: NSViewController {
     }
 
     private func resetCreditsHint() -> String {
-        L10n.shared.effectiveCode.hasPrefix("zh") ? "查看每张重置券的授权日和截止日期" : "Show each reset credit grant and expiration date"
+        L10n.shared.effectiveCode.hasPrefix("zh") ? "查看每张重置券的到期日期和时间" : "Show each reset credit expiration date and time"
     }
 
     private func addResetCreditsBubble(_ root: NSView, summary: CodexUsageSummary, panelLight: Bool, dismiss: @escaping () -> Void) {
         let lineCount = max(1, min(5, summary.resetCredits.count))
         let triggerFrame = NSRect(x: 232, y: 94, width: 156, height: 20)
-        let bubbleWidth: CGFloat = 122
+        let bubbleWidth = ResetCreditsBubbleView.preferredWidth(for: summary)
         let bubbleHeight = 15 + CGFloat(lineCount * 17)
         let bubbleFrame = NSRect(
             x: triggerFrame.maxX - bubbleWidth,
@@ -3860,13 +3928,13 @@ private func readmeSampleSummary() throws -> CodexUsageSummary {
                 title: "Sample 1",
                 status: "available",
                 grantedAt: try fixedDate("2026-06-18T00:00:00Z"),
-                expiresAt: try fixedDate("2026-07-18T00:00:00Z")
+                expiresAt: try fixedDate("2026-07-18T09:30:00Z")
             ),
             ResetCredit(
                 title: "Sample 2",
                 status: "available",
                 grantedAt: try fixedDate("2026-07-18T00:00:00Z"),
-                expiresAt: try fixedDate("2026-08-18T00:00:00Z")
+                expiresAt: try fixedDate("2026-08-18T18:45:00Z")
             )
         ],
         sparkPrimaryUnlimited: true,
@@ -3955,7 +4023,7 @@ private func renderReadmeSample(popoverURL: URL, statusBarURL: URL?) throws {
         trainStartTime: 0,
         themeMode: .system,
         trainSegmentMask: 0,
-        showResetCreditsDetail: false,
+        showResetCreditsDetail: true,
         dismissResetCredits: {},
         trainClickAction: {},
         animationSettingsAction: { _, _ in }

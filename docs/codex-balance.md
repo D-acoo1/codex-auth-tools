@@ -43,6 +43,7 @@ These `backend-api/wham` URLs are current implementation details without a stabl
 - The menu bar title shows only the 5-hour quota icon and weekly quota icon. A missing 5-hour limit is shown as unlimited instead of reusing the weekly percentage.
 - Quota windows are classified by `limit_window_seconds`, so a weekly-only response remains weekly and a future 5-hour window is restored automatically.
 - For ChatGPT accounts, the popover shows account alias/email, plan, status, 5-hour quota, weekly quota, Credits, Spark remaining quota, reset countdown, and reset time.
+- Clicking the reset-credit count opens a centered bubble with up to five rows. Each row shows only the expiration in the Mac's current time zone as `M.d HH:mm`; clicking elsewhere dismisses the bubble.
 - For API or relay accounts, the popover shows remaining balance or quota, today's cost, total cost, today's tokens, total tokens, and provider/base URL.
 - Refresh and usage-page buttons do not close the popover.
 - Clicking outside the popover closes it.

@@ -85,9 +85,9 @@ Status bar, using the same synthetic quota values as the panel below:
 
 Current English popover layout:
 
-<img src="assets/popover-sample-en.png" alt="Current Codex Balance English popover rendered from the production AppKit view with synthetic data and two reset credits" width="410">
+<img src="assets/popover-sample-en.png" alt="Current Codex Balance English popover rendered from the production AppKit view with a two-row reset-credit expiration bubble" width="410">
 
-These images are rendered directly from the production AppKit views with synthetic account data. They show the current animation-off layout, including an unlimited 5-hour window, weekly quota, two reset credits, theme and language controls, and the three action buttons; they contain no real account information.
+These images are rendered directly from the production AppKit views with synthetic account data. They show the current animation-off layout, including an unlimited 5-hour window, weekly quota, two reset credits with local expiration dates and times, theme and language controls, and the three action buttons; they contain no real account information.
 
 ## Install from a release package
 
@@ -331,9 +331,9 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 当前简体中文面板布局：
 
-<img src="assets/popover-sample-zh-Hans.png" alt="由生产 AppKit 界面直接渲染的 Codex Balance 简体中文面板，使用脱敏示例数据并显示两张重置券" width="410">
+<img src="assets/popover-sample-zh-Hans.png" alt="由生产 AppKit 界面直接渲染的 Codex Balance 简体中文面板，显示两行重置券到期日期与时间气泡" width="410">
 
-这些图片由生产 AppKit 界面直接使用伪造账号数据渲染，展示当前默认关闭动画时的真实布局，包括无限 5 小时窗口、周额度、两张重置券、主题与语言控件和三个操作按钮；不包含真实账号信息。
+这些图片由生产 AppKit 界面直接使用伪造账号数据渲染，展示当前默认关闭动画时的真实布局，包括无限 5 小时窗口、周额度、两张重置券及其本机到期日期和时间、主题与语言控件和三个操作按钮；不包含真实账号信息。
 
 ## 安装
 
