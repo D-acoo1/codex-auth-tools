@@ -56,6 +56,28 @@ These `backend-api/wham` URLs are current implementation details without a stabl
 - Segment buttons are not shown in the main popover. Right-clicking the quota card opens animation settings with the visibility switch, style picker, and segment selectors 1–5.
 - Animation settings stay open during multi-selection and close when clicking outside. Re-enabling animation restores the last non-empty segment selection.
 
+## Task traffic lights
+
+The three-lamp indicator appended to the menu-bar title is an attention model for local Codex tasks. It is independent of quota state:
+
+| State | Automatic rule |
+| --- | --- |
+| Red / unread | A user-visible, non-archived thread is present in Codex's unread set and its database `updated_at` is no more than 24 hours old. Subagent threads and rows with agent metadata are excluded from this unread signal. |
+| Yellow / running | A non-archived thread has a rollout file modified within the last 75 seconds, and the last 96 KiB still describes an open turn rather than `task_complete` or an assistant/agent final answer. |
+| Green / idle | Neither unread nor running is true. |
+
+Red and yellow are separate booleans and may be active together; green is active only when both are false. The app recalculates the lights every two seconds, independently of the 30-second quota refresh.
+
+Automatic detection reads local Codex state only:
+
+- unread thread IDs from `$CODEX_HOME/.codex-global-state.json`;
+- up to the 250 most recently updated non-archived rows from `$CODEX_HOME/state_5.sqlite`, queried with `/usr/bin/sqlite3 -readonly`;
+- the tail of each recent rollout file when deciding whether a turn is still open.
+
+The default `CODEX_HOME` is `~/.codex`. Reading the lights does not modify Codex's database, rollout files, unread set, or task state, and it does not make a network request.
+
+For deterministic integration checks, `~/Library/Application Support/CodexBalance/task-status.json` can override automatic detection with JSON such as `{"state":"unread+running","override":true}`. Accepted state words include `idle`/`green`, `unread`/`red`, and `running`/`yellow`. `CODEX_BALANCE_STATE_DIR` relocates that file, `CODEX_BALANCE_TASK_LIGHT_MODE=manual` also accepts a plain-text state, and `CodexBalance --task-light-once` prints the resolved state without opening the UI.
+
 ## Refresh behavior
 
 - Automatic refresh interval: 30 seconds.

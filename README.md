@@ -29,7 +29,7 @@ The badges above always link to live GitHub data. This dated snapshot makes the 
 | Stars | 3 | [Repository API](https://api.github.com/repos/D-acoo1/codex-auth-tools) |
 | Forks | 0 | [Forks](https://github.com/D-acoo1/codex-auth-tools/forks) |
 | Contributors | 2 | [Contributors](https://github.com/D-acoo1/codex-auth-tools/graphs/contributors) |
-| Latest release | `v2026.07.15.1` | [Releases](https://github.com/D-acoo1/codex-auth-tools/releases) |
+| Latest release | `v2026.08.11` | [Releases](https://github.com/D-acoo1/codex-auth-tools/releases) |
 
 ## Who it is for
 
@@ -61,10 +61,23 @@ It is **not** a team credential vault, a cloud account-sync service, or a replac
 - shows a missing 5-hour limit as unlimited without copying the weekly value;
 - displays 5-hour, weekly, Credits, Spark, reset time, plan, account, and availability data;
 - displays balance, cost, token usage, and request totals for supported relay endpoints;
+- appends a red/yellow/green task-attention indicator to the menu-bar quota summary;
 - refreshes every 30 seconds and immediately when opened or manually refreshed;
 - follows account switches made by `ca` on the next refresh;
 - supports Automatic/System plus 40 selectable UI languages;
 - keeps animation off by default for new installations and exposes optional styles/segments through the quota-card context menu.
+
+#### Task traffic lights
+
+The three lamps after the menu-bar quota summary describe **Codex task attention**, not quota health:
+
+| Lamp | Meaning |
+| --- | --- |
+| Red | At least one user-visible Codex task updated within the last 24 hours is still unread. Subagent/background-agent threads do not raise the red light. |
+| Yellow | At least one unarchived task appears to be running: its rollout changed within the last 75 seconds and still contains an open turn without a completion or final answer. |
+| Green | No unread task needs attention and no task appears to be running. |
+
+Red and yellow are independent, so both can be lit when one result is waiting while another task is still running. Green is lit only when neither condition exists. Codex Balance checks this local state every two seconds, separately from quota refreshes, and does not mark a task as read or send task state over the network. This makes the status bar answer three different questions at a glance: **Does anything need me? Is anything still working? Is everything clear?**
 
 ### Codex Auth (`ca`)
 
@@ -82,6 +95,8 @@ It is **not** a team credential vault, a cloud account-sync service, or a replac
 Status bar, using the same synthetic quota values as the panel below:
 
 ![Codex Balance status bar](assets/status-bar.png)
+
+The sample has the green task light active because its synthetic state contains no unread or running task.
 
 Current English popover layout:
 
@@ -275,7 +290,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 ## GitHub 公开指标
 
-页面顶部的徽章会链接到 GitHub 实时数据。2026-08-11 的公开快照是：**3 Stars、0 Forks、2 Contributors**，最新 Release 为 [`v2026.07.15.1`](https://github.com/D-acoo1/codex-auth-tools/releases/tag/v2026.07.15.1)。该日期之后请以 [GitHub 仓库](https://github.com/D-acoo1/codex-auth-tools)实时数据为准。
+页面顶部的徽章会链接到 GitHub 实时数据。2026-08-11 的公开快照是：**3 Stars、0 Forks、2 Contributors**，最新 Release 为 [`v2026.08.11`](https://github.com/D-acoo1/codex-auth-tools/releases/tag/v2026.08.11)。该日期之后请以 [GitHub 仓库](https://github.com/D-acoo1/codex-auth-tools)实时数据为准。
 
 ## 面向哪些用户
 
@@ -307,10 +322,23 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 - 5 小时限制暂时消失时显示“无限”，不会错误复制周额度；
 - 展示 5 小时、周额度、Credits、Spark、重置时间、套餐、账号和可用状态；
 - 对支持的中转接口展示余额、费用、token 用量和请求数；
+- 在状态栏额度后显示红、黄、绿三盏任务提示灯；
 - 每 30 秒刷新，打开面板或点击刷新时立即更新；
 - `ca` 切换账号后，下一次刷新自动跟随；
 - 支持“自动/系统”和 40 种手动界面语言；
 - 新安装默认关闭动画，通过额度卡片右键菜单选择动画样式和展示段。
+
+#### 任务红绿灯
+
+状态栏额度后面的三盏灯表示的是 **Codex 任务是否需要注意**，不是额度是否健康：
+
+| 灯 | 含义 |
+| --- | --- |
+| 红灯 | 最近 24 小时内至少有一个用户可见的 Codex 任务仍未阅读；subagent 和后台 agent 线程不会点亮红灯。 |
+| 黄灯 | 至少有一个未归档任务看起来仍在执行：对应 rollout 在最近 75 秒内更新，而且结尾仍是一个没有完成结果或最终答复的开放 turn。 |
+| 绿灯 | 没有需要查看的未读任务，也没有看起来仍在运行的任务。 |
+
+红灯和黄灯彼此独立，所以“一个结果等着查看，同时另一个任务仍在执行”时两盏灯可以一起亮；只有两种情况都不存在时才亮绿灯。Codex Balance 每 2 秒只读检查一次本机任务状态，这套检查与额度刷新相互独立，不会替用户把任务标成已读，也不会把任务状态发送到网络。这样看一眼状态栏就能同时知道：**有没有结果需要我看、有没有任务还在做、现在是不是全部清空。**
 
 ### Codex Auth (`ca`)
 
@@ -328,6 +356,8 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 状态栏（与下方面板使用同一组示例额度）：
 
 ![Codex Balance 状态栏](assets/status-bar.png)
+
+示例数据没有未读或运行中的任务，因此图中点亮的是绿灯。
 
 当前简体中文面板布局：
 
