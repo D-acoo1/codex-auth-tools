@@ -428,6 +428,114 @@ def test_keepalive(codex_bin: str, root: Path) -> None:
     assert registry["accounts"]["mismatch"]["last_keepalive_status"] == "needs_login"
 
 
+def test_switch_preserves_active_auth(root: Path) -> None:
+    now = int(time.time())
+    codex_home = root / "switch-codex-home"
+    ac_home = root / "switch-codex-ac"
+    sources = root / "switch-sources"
+    codex_home.mkdir(parents=True)
+    ac_home.mkdir(parents=True)
+    module = load_ca_module(codex_home, ac_home)
+
+    outgoing_saved = make_auth(
+        "user-outgoing",
+        "account-outgoing",
+        "outgoing@example.test",
+        expires_at=now + 86400,
+        refresh_token="outgoing-saved-refresh",
+        access_label="outgoing-saved-access",
+    )
+    outgoing_live = make_auth(
+        "user-outgoing",
+        "account-outgoing",
+        "outgoing@example.test",
+        expires_at=now + 10 * 86400,
+        refresh_token="outgoing-live-refresh",
+        access_label="outgoing-live-access",
+    )
+    target_saved = make_auth(
+        "user-target",
+        "account-target",
+        "target@example.test",
+        expires_at=now + 9 * 86400,
+        refresh_token="target-saved-refresh",
+        access_label="target-saved-access",
+    )
+    target_stale_live = make_auth(
+        "user-target",
+        "account-target",
+        "target@example.test",
+        expires_at=now + 3600,
+        refresh_token="target-stale-refresh",
+        access_label="target-stale-access",
+    )
+
+    write_json(codex_home / "auth.json", outgoing_live)
+    outgoing_source = sources / "outgoing.json"
+    target_source = sources / "target.json"
+    write_json(outgoing_source, outgoing_saved)
+    write_json(target_source, target_saved)
+    module.import_auth("outgoing", outgoing_source, "codex-auth", force=True)
+    module.import_auth("target", target_source, "codex-auth", force=True)
+
+    native_records = []
+    native_paths: dict[str, Path] = {}
+    for alias, auth in {"outgoing": outgoing_saved, "target": target_saved}.items():
+        token_payload = auth["tokens"]["id_token"].split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(token_payload + "=" * (-len(token_payload) % 4)))
+        namespace = claims["https://api.openai.com/auth"]
+        account_key = f"{namespace['chatgpt_user_id']}::{namespace['chatgpt_account_id']}"
+        path = native_path(codex_home, account_key)
+        write_json(path, auth)
+        native_paths[alias] = path
+        native_records.append(
+            {
+                "account_key": account_key,
+                "chatgpt_user_id": namespace["chatgpt_user_id"],
+                "chatgpt_account_id": namespace["chatgpt_account_id"],
+                "alias": alias,
+                "auth_mode": "chatgpt",
+            }
+        )
+    write_json(
+        codex_home / "accounts" / "registry.json",
+        {"schema_version": 1, "active_account_key": native_records[0]["account_key"], "accounts": native_records},
+    )
+
+    registry = module.load_registry()
+    registry["active_alias"] = "outgoing"
+    module.save_registry(registry)
+    env = os.environ.copy()
+    env.update(
+        {
+            "CODEX_HOME": str(codex_home),
+            "CODEX_AC_HOME": str(ac_home),
+            "CODEX_AC_LIB": str(ROOT / "codex-auth" / "lib"),
+        }
+    )
+
+    switched = run_ca(env, "s", "target", "--skip-expiry-check")
+    assert switched.returncode == 0, (switched.stdout, switched.stderr)
+    assert "已保存当前账号最新登录凭据：outgoing" in switched.stdout
+    for secret in ["outgoing-live-refresh", "target-saved-refresh"]:
+        assert secret not in switched.stdout + switched.stderr
+    assert read_json(ac_home / "accounts" / "outgoing.auth.json") == outgoing_live
+    assert read_json(native_paths["outgoing"]) == outgoing_live
+    assert read_json(codex_home / "auth.json") == target_saved
+    backups = list((ac_home / "backups").glob("auth.json.bak.*.switch"))
+    assert len(backups) == 1, backups
+    assert read_json(backups[0]) == outgoing_live
+    registry = read_json(ac_home / "registry.json")
+    assert registry["active_alias"] == "target"
+
+    write_json(codex_home / "auth.json", target_stale_live)
+    switched_back = run_ca(env, "s", "outgoing", "--skip-expiry-check", "--no-backup")
+    assert switched_back.returncode == 0, (switched_back.stdout, switched_back.stderr)
+    assert "已保存当前账号最新登录凭据：target" not in switched_back.stdout
+    assert read_json(ac_home / "accounts" / "target.auth.json") == target_saved
+    assert read_json(codex_home / "auth.json") == outgoing_live
+
+
 def test_installer(codex_bin: str, root: Path) -> None:
     home = root / "install-home"
     prefix = home / ".local"
@@ -475,7 +583,7 @@ def test_installer(codex_bin: str, root: Path) -> None:
         check=False,
     )
     assert version.returncode == 0, (version.stdout, version.stderr)
-    assert version.stdout.strip() == "codex-ac 0.8.1"
+    assert version.stdout.strip() == "codex-ac 0.8.2"
 
     removed = subprocess.run(
         ["/bin/bash", str(UNINSTALLER)],
@@ -508,6 +616,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="codex-auth-keepalive-test.", dir=temp_parent) as tmp:
         root = Path(tmp)
         test_keepalive(codex_bin, root)
+        test_switch_preserves_active_auth(root)
         test_installer(codex_bin, root)
     print("keepalive auth integration test passed")
     return 0

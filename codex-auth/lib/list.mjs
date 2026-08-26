@@ -208,7 +208,7 @@ function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
     `output = "${q(bodyTmp)}"`,
     `header = "Authorization: Bearer ${q(token)}"`,
     'header = "Accept: application/json"',
-    'header = "User-Agent: codex-ac-list/0.8.1"',
+    'header = "User-Agent: codex-ac-list/0.8.2"',
     'header = "OpenAI-Beta: codex_cli_beta"',
     `header = "chatgpt-account-id: ${q(rec?.chatgpt_account_id || '')}"`,
     'write-out = "%{http_code}"',
@@ -245,7 +245,7 @@ async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json',
-          'User-Agent': 'codex-ac-list/0.8.1',
+          'User-Agent': 'codex-ac-list/0.8.2',
           'OpenAI-Beta': 'codex_cli_beta',
           'chatgpt-account-id': rec?.chatgpt_account_id || '',
         },

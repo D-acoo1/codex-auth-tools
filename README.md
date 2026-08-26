@@ -24,12 +24,12 @@ The project has no hosted account service and no project-operated analytics back
 
 The badges above always link to live GitHub data. This dated snapshot makes the public project state explicit without pretending it will remain current forever:
 
-| Metric | Snapshot on 2026-08-11 | Live source |
+| Metric | Snapshot on 2026-08-26 | Live source |
 | --- | ---: | --- |
-| Stars | 3 | [Repository API](https://api.github.com/repos/D-acoo1/codex-auth-tools) |
-| Forks | 0 | [Forks](https://github.com/D-acoo1/codex-auth-tools/forks) |
-| Contributors | 2 | [Contributors](https://github.com/D-acoo1/codex-auth-tools/graphs/contributors) |
-| Latest release | `v2026.08.11` | [Releases](https://github.com/D-acoo1/codex-auth-tools/releases) |
+| Stars | 103 | [Repository API](https://api.github.com/repos/D-acoo1/codex-auth-tools) |
+| Forks | 4 | [Forks](https://github.com/D-acoo1/codex-auth-tools/forks) |
+| Contributors | 3 | [Contributors](https://github.com/D-acoo1/codex-auth-tools/graphs/contributors) |
+| Latest release | `v2026.08.26` | [Releases](https://github.com/D-acoo1/codex-auth-tools/releases) |
 
 ## Who it is for
 
@@ -38,7 +38,7 @@ The badges above always link to live GitHub data. This dated snapshot makes the 
 - maintainers and testers who need quick quota visibility and reproducible account-state checks;
 - users who prefer transparent local files and scripts over a hosted credential manager.
 
-It is **not** a team credential vault, a cloud account-sync service, or a replacement for Codex authentication. The source target is macOS 13 or later; the install and keepalive flows use macOS Keychain and LaunchAgents. As of 2026-08-11, the latest prebuilt GitHub release is Apple silicon (`arm64`) only. Intel Mac users must build from source because no Intel prebuilt package is currently published.
+It is **not** a team credential vault, a cloud account-sync service, or a replacement for Codex authentication. The source target is macOS 13 or later; the install and keepalive flows use macOS Keychain and LaunchAgents. As of 2026-08-26, the latest prebuilt GitHub release is Apple silicon (`arm64`) only. Intel Mac users must build from source because no Intel prebuilt package is currently published.
 
 ## Project classification
 
@@ -82,6 +82,7 @@ Red and yellow are independent, so both can be lit when one result is waiting wh
 ### Codex Auth (`ca`)
 
 - imports the current `~/.codex/auth.json` under a local alias;
+- preserves a newer live ChatGPT credential in the saved account before switching away;
 - atomically switches the active Codex auth snapshot;
 - lists saved accounts and cached quota usage;
 - distinguishes a missing 5-hour window from the weekly quota;
@@ -290,7 +291,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 ## GitHub 公开指标
 
-页面顶部的徽章会链接到 GitHub 实时数据。2026-08-11 的公开快照是：**3 Stars、0 Forks、2 Contributors**，最新 Release 为 [`v2026.08.11`](https://github.com/D-acoo1/codex-auth-tools/releases/tag/v2026.08.11)。该日期之后请以 [GitHub 仓库](https://github.com/D-acoo1/codex-auth-tools)实时数据为准。
+页面顶部的徽章会链接到 GitHub 实时数据。2026-08-26 的公开快照是：**103 Stars、4 Forks、3 Contributors**，最新 Release 为 [`v2026.08.26`](https://github.com/D-acoo1/codex-auth-tools/releases/tag/v2026.08.26)。该日期之后请以 [GitHub 仓库](https://github.com/D-acoo1/codex-auth-tools)实时数据为准。
 
 ## 面向哪些用户
 
@@ -299,7 +300,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 - 需要快速查看额度、复现账号状态的维护者和测试人员；
 - 更愿意使用透明本机文件和脚本，而不是把凭据交给额外云服务的用户。
 
-它**不是**团队密码库、云端账号同步服务，也不会替代 Codex 自己的认证流程。源码目标是 macOS 13 及以上版本；安装和自动续期会使用 macOS Keychain 与 LaunchAgents。截至 2026-08-11，GitHub 最新预编译包只支持 Apple silicon（`arm64`）；Intel Mac 暂无预编译包，需要从源码构建。
+它**不是**团队密码库、云端账号同步服务，也不会替代 Codex 自己的认证流程。源码目标是 macOS 13 及以上版本；安装和自动续期会使用 macOS Keychain 与 LaunchAgents。截至 2026-08-26，GitHub 最新预编译包只支持 Apple silicon（`arm64`）；Intel Mac 暂无预编译包，需要从源码构建。
 
 ## 项目类型
 
@@ -343,6 +344,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 ### Codex Auth (`ca`)
 
 - 把当前 `~/.codex/auth.json` 导入为本机别名；
+- 切走当前账号前，先把 Codex 已更新的较新 ChatGPT 登录凭据保存回该账号快照；
 - 原子切换当前 Codex 登录快照；
 - 查看已保存账号和缓存额度；
 - 正确区分“没有 5 小时窗口”和“周额度”；
