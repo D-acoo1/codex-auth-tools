@@ -26,6 +26,8 @@ ca doctor             # environment checks
 
 `ca ll` and `ca refresh` can use each saved ChatGPT snapshot's access token to refresh stale quota rows. `ca ll --cached` does not perform that network refresh. These requests currently target `https://chatgpt.com/backend-api/wham/usage`, an implementation-detail endpoint without a stable public API contract. The endpoint may change and must be re-reviewed if the source changes.
 
+Before `ca s <alias>` replaces the active ChatGPT account, it identity-checks `~/.codex/auth.json` and saves it back to the outgoing account when Codex has rotated that login to a newer credential. A stale live file never overwrites a fresher saved snapshot, and the switch stops instead of discarding a newer credential if that save cannot be completed.
+
 CLI refresh uses `CODEX_AC_USAGE_PROXY`, then `HTTPS_PROXY`, then `https_proxy` when set. Python's networking layer can also honor platform proxy configuration. Check both environment variables and macOS proxy settings when investigating unexpected traffic.
 
 ## Automatic keepalive

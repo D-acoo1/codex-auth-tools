@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -1297,6 +1297,32 @@ def ensure_chatgpt_auth_fresh_for_switch(alias: str, reg: Dict[str, Any], args: 
     return reg
 
 
+def sync_current_chatgpt_auth_before_switch(reg: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist a newer live ChatGPT credential before replacing the active account."""
+    current_auth = DEFAULT_CODEX_HOME / "auth.json"
+    if not current_auth.exists():
+        return reg
+    current_alias = detect_current_alias(reg, DEFAULT_CODEX_HOME)
+    if not current_alias:
+        return reg
+    rec = reg.get("accounts", {}).get(current_alias, {})
+    if not rec or rec.get("kind") == "api":
+        return reg
+    info = auth_info(current_auth)
+    if not auth_info_matches_account(info, rec):
+        return reg
+    saved = account_auth_file(current_alias, reg)
+    if auth_freshness(current_auth) <= auth_freshness(saved):
+        return reg
+    try:
+        sync_auth_to_saved_and_native(current_alias, reg, current_auth)
+        save_registry(reg)
+    except OSError as exc:
+        raise SystemExit(f"切换前保存当前账号 {current_alias} 的最新登录凭据失败：{exc}") from exc
+    print(f"已保存当前账号最新登录凭据：{current_alias}")
+    return reg
+
+
 def cmd_switch(args: argparse.Namespace) -> int:
     alias = validate_alias(args.alias)
     reg = load_registry()
@@ -1305,6 +1331,8 @@ def cmd_switch(args: argparse.Namespace) -> int:
         raise SystemExit(f"账号别名不存在：{alias}")
 
     if rec.get("kind") == "api":
+        reg = sync_current_chatgpt_auth_before_switch(reg)
+        rec = reg.get("accounts", {}).get(alias, rec)
         bak = apply_api_profile(alias, rec, reg, no_backup=args.no_backup)
         reg["active_alias"] = alias
         reg["last_switch"] = {"alias": alias, "kind": "api", "at": now_iso(), "backup": str(bak) if bak else None}
@@ -1319,6 +1347,7 @@ def cmd_switch(args: argparse.Namespace) -> int:
         return 0
 
     reg = ensure_chatgpt_auth_fresh_for_switch(alias, reg, args)
+    reg = sync_current_chatgpt_auth_before_switch(reg)
     rec = reg.get("accounts", {}).get(alias)
     if not rec or rec.get("kind") == "api":
         raise SystemExit(f"账号 {alias} 重新登录后记录异常，请检查 registry。")
