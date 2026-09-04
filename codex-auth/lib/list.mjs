@@ -221,7 +221,7 @@ async function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
     `url = "${q(whamUsageUrl)}"`,
     `header = "Authorization: Bearer ${q(token)}"`,
     'header = "Accept: application/json"',
-    'header = "User-Agent: codex-ac-list/0.8.3"',
+    'header = "User-Agent: codex-ac-list/0.8.4"',
     'header = "OpenAI-Beta: codex_cli_beta"',
     `header = "chatgpt-account-id: ${q(rec?.chatgpt_account_id || '')}"`,
     `write-out = "\\n${statusMarker}%{http_code}"`,
@@ -293,7 +293,7 @@ async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json',
-          'User-Agent': 'codex-ac-list/0.8.3',
+          'User-Agent': 'codex-ac-list/0.8.4',
           'OpenAI-Beta': 'codex_cli_beta',
           'chatgpt-account-id': rec?.chatgpt_account_id || '',
         },
@@ -521,13 +521,19 @@ function normalizeUsageError(err) {
 }
 function usageCell(rec, usage, minutes, fallbackPrimary) {
   const label = normalizeUsageError(rec?.last_usage_error);
-  if (label) return label;
+  if (label && (!usage || typeof usage !== 'object')) return label;
   return fmtUsage(usage, minutes, fallbackPrimary);
 }
 function resetCreditsCell(rec) {
-  if (!cached && rec?.last_reset_credits_error) return '?';
   const value = nonNegativeInt(rec?.last_usage?.reset_credits_available);
-  return value === null ? '?' : String(value);
+  if (value !== null) return String(value);
+  return '?';
+}
+function refreshError(rec) {
+  return rec?.last_usage_error || rec?.last_reset_credits_error || null;
+}
+function hasCachedUsage(rec) {
+  return Boolean(rec?.last_usage && typeof rec.last_usage === 'object' && rec?.last_usage_at);
 }
 function fmtLast(ts) {
   if (!ts || ts <= 0) return '-';
@@ -575,7 +581,9 @@ const rows = sorted.map(([alias,rec], i) => {
     h5: isApi ? '-' : usageCell(rec, usage,300,true),
     weekly: isApi ? '-' : usageCell(rec, usage,10080,false),
     resetCredits: isApi ? '-' : resetCreditsCell(rec),
-    updated: isApi ? (rec.last_switched_at ? 'switched' : '-') : fmtLast(rec.last_usage_at),
+    updated: isApi
+      ? (rec.last_switched_at ? 'switched' : '-')
+      : `${fmtLast(rec.last_usage_at)}${!cached && refreshError(rec) && hasCachedUsage(rec) ? '!' : ''}`,
     active: alias===active,
   };
 });
@@ -601,19 +609,30 @@ for (const r of rows) {
   if (showAlias) line += `  ${pad(r.alias, aliasWidth)}`;
   console.log(color(line, r.active ? 'green' : 'dim'));
 }
-const staleRefreshFailures = sorted
-  .filter(([, rec]) => rec.kind !== 'api' && rec.last_usage_error && rec.last_usage_at)
+const refreshFailures = sorted
+  .filter(([, rec]) => rec.kind !== 'api' && refreshError(rec))
   .map(([alias, rec]) => {
     const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - Number(rec.last_usage_at || 0));
-    return { alias, ageSec, err: String(rec.last_usage_error).replace(/\s+/g, ' ').slice(0, 180) };
-  })
-  .filter(x => Number.isFinite(x.ageSec) && x.ageSec >= 300);
-if (staleRefreshFailures.length && !cached) {
-  const summary = staleRefreshFailures.map(x => {
+    return {
+      alias,
+      ageSec,
+      cached: hasCachedUsage(rec),
+      err: String(refreshError(rec)).replace(/\s+/g, ' ').slice(0, 180),
+    };
+  });
+if (refreshFailures.length && !cached) {
+  const summary = refreshFailures.map(x => {
     const reason = normalizeUsageError(x.err);
-    return `${x.alias} ${reason || '刷新失败'}(${fmtLast(Math.floor(Date.now() / 1000) - x.ageSec)})`;
+    const age = x.cached && Number.isFinite(x.ageSec)
+      ? `，上次成功 ${fmtLast(Math.floor(Date.now() / 1000) - x.ageSec)}`
+      : '';
+    return `${x.alias} ${reason || '刷新失败'}${age}`;
   }).join(', ');
-  const loginExpired = staleRefreshFailures.some(x => normalizeUsageError(x.err) === '登录过期');
-  const action = loginExpired ? '需要重新登录对应账号，例如 ca r fox；要重登后立刻切换，用 ca r fox --switch。' : '可运行 ca ll --cached 查看缓存，或 ca ll --alias 看别名。';
-  console.error(`warning: usage refresh failed: ${summary}. ${action}`);
+  const loginExpired = refreshFailures.some(x => normalizeUsageError(x.err) === '登录过期');
+  const showingCache = refreshFailures.some(x => x.cached);
+  const cacheNote = showingCache ? '已继续显示上次成功数据；UPDATED 后的 ! 表示本次刷新失败。' : '';
+  const action = loginExpired
+    ? '需要重新登录对应账号，例如 ca r fox；要重登后立刻切换，用 ca r fox --switch。'
+    : '可稍后重试 ca ll，或用 ca ll --cached 仅查看缓存。';
+  console.error(`warning: usage refresh failed: ${summary}。${cacheNote}${action}`);
 }

@@ -572,8 +572,8 @@ run_ca ll --cached --alias --no-color > "$TMP/list-reset-unknown.txt"
 assert_matches "$TMP/list-reset-unknown.txt" 'other@example.com +Pro +∞ +51% .* +\? +Now'
 assert_matches "$TMP/list-reset-unknown.txt" 'api:127\.0\.0\.1:.* +API +- +- +- +switched'
 
-# A reset-count-only refresh failure must show ? without hiding valid cached
-# 5-hour and weekly quota cells. Cached mode still exposes the last known count.
+# A reset-count-only refresh failure must keep all valid cached values visible,
+# mark UPDATED, and explain the degraded state. Cached mode stays unmarked.
 "$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
 import json, sys, time
 path = sys.argv[1]
@@ -588,10 +588,38 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="${USAGE_BASE_URL%/v1}/missing" PATH="$SAFE_PATH" \
-  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-reset-refresh-failed.txt"
-assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +\? +Now'
+  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-reset-refresh-failed.txt" 2> "$TMP/list-reset-refresh-failed.err"
+assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now!'
+assert_contains "$TMP/list-reset-refresh-failed.err" '已继续显示上次成功数据'
+assert_contains "$TMP/list-reset-refresh-failed.err" 'UPDATED 后的 ! 表示本次刷新失败'
 run_ca ll --cached --alias --no-color > "$TMP/list-reset-cached.txt"
 assert_matches "$TMP/list-reset-cached.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
+assert_not_contains "$TMP/list-reset-cached.txt" 'Now!'
+
+# A full usage refresh failure follows the same fallback: cached quota and
+# reset credits remain useful instead of being replaced by "刷新失败".
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+obj = json.load(open(path))
+rec = obj["accounts"]["fox"]
+rec["last_usage_at"] = int(time.time()) - 180
+rec["last_reset_credits_at"] = 0
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PY
+env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
+  NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="${USAGE_BASE_URL%/v1}/missing" PATH="$SAFE_PATH" \
+  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-usage-refresh-failed.txt" 2> "$TMP/list-usage-refresh-failed.err"
+assert_matches "$TMP/list-usage-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +2 +[34]m ago!'
+assert_not_contains "$TMP/list-usage-refresh-failed.txt" '刷新失败'
+assert_contains "$TMP/list-usage-refresh-failed.err" 'usage refresh failed'
+assert_matches "$TMP/list-usage-refresh-failed.err" '上次成功 [34]m ago'
+run_ca_no_security list --skip-api > "$TMP/list-usage-refresh-failed-python.txt" 2> "$TMP/list-usage-refresh-failed-python.err"
+assert_matches "$TMP/list-usage-refresh-failed-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +2 +[34]m ago!'
+assert_not_contains "$TMP/list-usage-refresh-failed-python.txt" '刷新失败'
+assert_contains "$TMP/list-usage-refresh-failed-python.err" '已继续显示上次成功数据'
 
 # A weekly-only response means the temporary 5-hour limit is absent. Both the
 # Node UI and the Python fallback must show infinity rather than copy 7d usage.
