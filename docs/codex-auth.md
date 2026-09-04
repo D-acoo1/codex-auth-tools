@@ -24,7 +24,7 @@ ca keepalive           # run one keepalive check now
 ca doctor             # environment checks
 ```
 
-`ca ll` and `ca refresh` can use each saved ChatGPT snapshot's access token to refresh stale quota rows. `ca ll --cached` does not perform that network refresh. These requests currently target `https://chatgpt.com/backend-api/wham/usage`, an implementation-detail endpoint without a stable public API contract. The endpoint may change and must be re-reviewed if the source changes.
+`ca ll` and `ca refresh` can use each saved ChatGPT snapshot's access token to refresh stale quota rows. `ca ll` includes a `RESET` column for the available reset-credit count: an integer (including `0`) means the value was read successfully, `?` means it is unavailable, and `-` means the row is an API/relay profile where it does not apply. The `UPDATED` column is the age of the usage snapshot. `ca ll --cached` does not perform a network refresh and shows the last known reset count. These requests currently target `https://chatgpt.com/backend-api/wham/usage`, an implementation-detail endpoint without a stable public API contract. The endpoint may change and must be re-reviewed if the source changes.
 
 Before `ca s <alias>` replaces the active ChatGPT account, it identity-checks `~/.codex/auth.json` and saves it back to the outgoing account when Codex has rotated that login to a newer credential. A stale live file never overwrites a fresher saved snapshot, and the switch stops instead of discarding a newer credential if that save cannot be completed.
 

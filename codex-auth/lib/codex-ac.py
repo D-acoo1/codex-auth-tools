@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.2"
+VERSION = "0.8.3"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -463,7 +463,18 @@ def parse_usage_api_response(body: bytes) -> Optional[Dict[str, Any]]:
     root = json.loads(body.decode("utf-8"))
     if not isinstance(root, dict):
         return None
-    snap: Dict[str, Any] = {"primary": None, "secondary": None, "credits": None, "plan_type": root.get("plan_type")}
+    snap: Dict[str, Any] = {
+        "primary": None,
+        "secondary": None,
+        "credits": None,
+        "plan_type": root.get("plan_type"),
+        "reset_credits_available": None,
+    }
+    reset_credits = root.get("rate_limit_reset_credits")
+    if isinstance(reset_credits, dict):
+        available = _as_int(reset_credits.get("available_count"))
+        if available is not None and available >= 0:
+            snap["reset_credits_available"] = available
     credits = root.get("credits")
     if isinstance(credits, dict):
         snap["credits"] = {
@@ -541,7 +552,9 @@ def refresh_aliases(reg: Dict[str, Any], aliases: list[str], *, verbose: bool = 
         if snap:
             rec["last_usage"] = snap
             rec["last_usage_at"] = int(time.time())
+            rec["last_reset_credits_at"] = rec["last_usage_at"]
             rec.pop("last_usage_error", None)
+            rec.pop("last_reset_credits_error", None)
             if snap.get("plan_type"):
                 rec["plan"] = snap.get("plan_type")
             changed = True
@@ -549,6 +562,7 @@ def refresh_aliases(reg: Dict[str, Any], aliases: list[str], *, verbose: bool = 
                 print(f"✓ {alias}: refreshed")
         else:
             rec["last_usage_error"] = status
+            rec["last_reset_credits_error"] = status
             rec["last_usage_at"] = int(time.time())
             changed = True
             if verbose:
@@ -597,6 +611,15 @@ def snapshot_from_local_rate_limits(rate_limits: Any) -> Optional[Dict[str, Any]
     }
 
 
+def merge_usage_snapshots(current: Any, incoming: Any) -> Any:
+    if not isinstance(incoming, dict):
+        return current
+    merged = dict(incoming)
+    if "reset_credits_available" not in incoming and isinstance(current, dict) and "reset_credits_available" in current:
+        merged["reset_credits_available"] = current.get("reset_credits_available")
+    return merged
+
+
 def newest_local_usage_event() -> Optional[Tuple[Path, int, Dict[str, Any]]]:
     path = newest_rollout_file()
     if not path:
@@ -638,7 +661,7 @@ def refresh_active_from_local_rollout(reg: Dict[str, Any]) -> bool:
     last = rec.get("last_local_rollout") if isinstance(rec.get("last_local_rollout"), dict) else {}
     if last.get("path") == str(path) and _as_int(last.get("event_timestamp_ms")) == event_ms:
         return False
-    rec["last_usage"] = snapshot
+    rec["last_usage"] = merge_usage_snapshots(rec.get("last_usage"), snapshot)
     rec["last_usage_at"] = event_ms // 1000
     rec["last_local_rollout"] = {"path": str(path), "event_timestamp_ms": event_ms}
     rec.pop("last_usage_error", None)
@@ -703,14 +726,47 @@ def sync_usage_from_codex_auth_registry(reg: Dict[str, Any]) -> bool:
                     break
         if not src_rec:
             continue
-        for k in ["last_usage", "last_usage_at", "last_local_rollout", "last_used_at"]:
+        src_usage_at = _as_int(src_rec.get("last_usage_at")) or 0
+        dst_usage_at = _as_int(dst.get("last_usage_at")) or 0
+        accept_source_usage = src_rec.get("last_usage") is not None and (
+            not isinstance(dst.get("last_usage"), dict) or src_usage_at >= dst_usage_at
+        )
+        if accept_source_usage:
+            merged_usage = merge_usage_snapshots(dst.get("last_usage"), src_rec.get("last_usage"))
+            if dst.get("last_usage") != merged_usage:
+                dst["last_usage"] = merged_usage
+                changed = True
+            if (
+                isinstance(src_rec.get("last_usage"), dict)
+                and "reset_credits_available" in src_rec["last_usage"]
+                and src_rec.get("last_reset_credits_at") is None
+                and src_rec.get("last_usage_at") is not None
+                and dst.get("last_reset_credits_at") != src_rec.get("last_usage_at")
+            ):
+                dst["last_reset_credits_at"] = src_rec.get("last_usage_at")
+                changed = True
+            if src_rec.get("last_usage_at") is not None and dst.get("last_usage_at") != src_rec.get("last_usage_at"):
+                dst["last_usage_at"] = src_rec.get("last_usage_at")
+                changed = True
+        src_reset_at = _as_int(src_rec.get("last_reset_credits_at"))
+        dst_reset_at = _as_int(dst.get("last_reset_credits_at")) or 0
+        if (
+            isinstance(src_rec.get("last_usage"), dict)
+            and "reset_credits_available" in src_rec["last_usage"]
+            and src_reset_at is not None
+            and src_reset_at >= dst_reset_at
+            and dst.get("last_reset_credits_at") != src_reset_at
+        ):
+            dst["last_reset_credits_at"] = src_reset_at
+            changed = True
+        for k in ["last_local_rollout", "last_used_at"]:
             if src_rec.get(k) is not None and dst.get(k) != src_rec.get(k):
                 dst[k] = src_rec.get(k)
                 changed = True
         if src_rec.get("plan") and dst.get("plan") != src_rec.get("plan"):
             dst["plan"] = src_rec.get("plan")
             changed = True
-        if dst.pop("last_usage_error", None) is not None:
+        if accept_source_usage and dst.pop("last_usage_error", None) is not None:
             changed = True
     return changed
 
@@ -761,23 +817,33 @@ def cmd_list(args: argparse.Namespace) -> int:
         plan = (rec.get("plan") or "-").capitalize() if isinstance(rec.get("plan"), str) else "-"
         usage = rec.get("last_usage") if isinstance(rec.get("last_usage"), dict) else None
         err = rec.get("last_usage_error")
-        h5 = fmt_usage(usage, 300, True, err)
-        weekly = fmt_usage(usage, 10080, False, err)
-        last = fmt_last_activity(_as_int(rec.get("last_usage_at")))
-        rows.append((marker, alias, email, plan, h5, weekly, last))
-    headers = ("ALIAS", "ACCOUNT", "PLAN", "5H USAGE", "WEEKLY USAGE", "LAST ACTIVITY")
+        is_api = rec.get("kind") == "api"
+        h5 = "-" if is_api else fmt_usage(usage, 300, True, err)
+        weekly = "-" if is_api else fmt_usage(usage, 10080, False, err)
+        raw_reset = usage.get("reset_credits_available") if usage else None
+        if is_api:
+            reset_credits = "-"
+        elif not bool(getattr(args, "cached", False)) and rec.get("last_reset_credits_error"):
+            reset_credits = "?"
+        else:
+            reset_value = _as_int(raw_reset)
+            reset_credits = str(reset_value) if reset_value is not None and reset_value >= 0 else "?"
+        updated = fmt_last_activity(_as_int(rec.get("last_usage_at")))
+        rows.append((marker, alias, email, plan, h5, weekly, reset_credits, updated))
+    headers = ("ALIAS", "ACCOUNT", "PLAN", "5H USAGE", "WEEKLY USAGE", "RESET", "UPDATED")
     widths = [
-        max(len(r[1]) for r in rows + [("", headers[0], "", "", "", "", "")]),
-        max(len(r[2]) for r in rows + [("", "", headers[1], "", "", "", "")]),
-        max(len(r[3]) for r in rows + [("", "", "", headers[2], "", "", "")]),
-        max(len(r[4]) for r in rows + [("", "", "", "", headers[3], "", "")]),
-        max(len(r[5]) for r in rows + [("", "", "", "", "", headers[4], "")]),
-        max(len(r[6]) for r in rows + [("", "", "", "", "", "", headers[5])]),
+        max(len(r[1]) for r in rows + [("", headers[0], "", "", "", "", "", "")]),
+        max(len(r[2]) for r in rows + [("", "", headers[1], "", "", "", "", "")]),
+        max(len(r[3]) for r in rows + [("", "", "", headers[2], "", "", "", "")]),
+        max(len(r[4]) for r in rows + [("", "", "", "", headers[3], "", "", "")]),
+        max(len(r[5]) for r in rows + [("", "", "", "", "", headers[4], "", "")]),
+        max(len(r[6]) for r in rows + [("", "", "", "", "", "", headers[5], "")]),
+        max(len(r[7]) for r in rows + [("", "", "", "", "", "", "", headers[6])]),
     ]
-    print(f"  {headers[0].ljust(widths[0])}  {headers[1].ljust(widths[1])}  {headers[2].ljust(widths[2])}  {headers[3].ljust(widths[3])}  {headers[4].ljust(widths[4])}  {headers[5].ljust(widths[5])}")
-    print("-" * (sum(widths) + 13))
-    for marker, alias, email, plan, h5, weekly, last in rows:
-        print(f"{marker} {alias.ljust(widths[0])}  {email.ljust(widths[1])}  {plan.ljust(widths[2])}  {h5.ljust(widths[3])}  {weekly.ljust(widths[4])}  {last.ljust(widths[5])}")
+    print(f"  {headers[0].ljust(widths[0])}  {headers[1].ljust(widths[1])}  {headers[2].ljust(widths[2])}  {headers[3].ljust(widths[3])}  {headers[4].ljust(widths[4])}  {headers[5].ljust(widths[5])}  {headers[6].ljust(widths[6])}")
+    print("-" * (sum(widths) + 15))
+    for marker, alias, email, plan, h5, weekly, reset_credits, updated in rows:
+        print(f"{marker} {alias.ljust(widths[0])}  {email.ljust(widths[1])}  {plan.ljust(widths[2])}  {h5.ljust(widths[3])}  {weekly.ljust(widths[4])}  {reset_credits.ljust(widths[5])}  {updated.ljust(widths[6])}")
     if current and current != reg.get("active_alias"):
         reg["active_alias"] = current
         save_registry(reg)
@@ -1220,13 +1286,16 @@ def refresh_usage_for_alias_in_registry(reg: Dict[str, Any], alias: str, *, time
     if snap:
         rec["last_usage"] = snap
         rec["last_usage_at"] = int(time.time())
+        rec["last_reset_credits_at"] = rec["last_usage_at"]
         rec.pop("last_usage_error", None)
+        rec.pop("last_reset_credits_error", None)
         if snap.get("plan_type"):
             rec["plan"] = snap.get("plan_type")
         save_registry(reg)
         return True, status
     if status in AUTH_EXPIRED_STATUSES:
         rec["last_usage_error"] = "登录过期"
+        rec["last_reset_credits_error"] = "登录过期"
         save_registry(reg)
     return False, status
 
@@ -1264,7 +1333,9 @@ def try_sync_current_auth_for_alias(alias: str, reg: Dict[str, Any], *, timeout:
     dst = reg.get("accounts", {}).get(alias, {})
     dst["last_usage"] = snap
     dst["last_usage_at"] = int(time.time())
+    dst["last_reset_credits_at"] = dst["last_usage_at"]
     dst.pop("last_usage_error", None)
+    dst.pop("last_reset_credits_error", None)
     if snap.get("plan_type"):
         dst["plan"] = snap.get("plan_type")
     save_registry(reg)
@@ -2217,7 +2288,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"codex-ac {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("list", aliases=["ll", "ls", "la"], help="列出账号和用量快照")
+    sp = sub.add_parser("list", aliases=["ll", "ls", "la"], help="列出账号、用量和可用重置券数量")
     sp.add_argument("--api", action="store_true", help="通过 codex-auth 原生 API 路径刷新所有账号")
     sp.add_argument("--refresh", action="store_true", help="等同 --api，兼容旧用法")
     sp.add_argument("--skip-api", action="store_true", help="通过 codex-auth --skip-api 路径刷新 active 本地用量")

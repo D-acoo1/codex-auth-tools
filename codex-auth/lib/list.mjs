@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 const home = os.homedir();
 const acHome = process.env.CODEX_AC_HOME || path.join(home, '.codex-ac');
@@ -17,7 +17,7 @@ const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`usage: codex-ac list [--api] [--refresh] [--skip-api] [--cached] [--alias] [--mask] [--no-color]
 
-列出账号和用量快照；默认 UI 对齐 codex-auth list。
+列出账号、用量和可用重置券数量；默认 UI 对齐 codex-auth list。
 
 options:
   --api       默认行为；通过 codex-auth 原生 API 路径刷新所有账号
@@ -139,6 +139,9 @@ function usageWindowFromApi(w) {
     resets_at: Math.trunc(reset),
   };
 }
+function nonNegativeInt(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : null;
+}
 function usageSnapshotFromWham(data) {
   const rl = data?.rate_limit;
   if (!rl || typeof rl !== 'object') return null;
@@ -150,12 +153,25 @@ function usageSnapshotFromWham(data) {
     unlimited: Boolean(data.credits.unlimited),
     balance: data.credits.balance ?? null,
   } : undefined;
+  const resetCredits = nonNegativeInt(data?.rate_limit_reset_credits?.available_count);
   return {
     primary,
     secondary,
     credits,
     plan_type: typeof data?.plan_type === 'string' ? data.plan_type : undefined,
+    reset_credits_available: resetCredits,
   };
+}
+
+function mergeUsageSnapshots(current, incoming) {
+  if (!incoming || typeof incoming !== 'object') return current;
+  const merged = { ...incoming };
+  if (!Object.prototype.hasOwnProperty.call(incoming, 'reset_credits_available')
+      && current && typeof current === 'object'
+      && Object.prototype.hasOwnProperty.call(current, 'reset_credits_available')) {
+    merged.reset_credits_available = current.reset_credits_available;
+  }
+  return merged;
 }
 function authTokenForCodexAuthRecord(rec) {
   const dir = path.join(codexHome, 'accounts');
@@ -189,13 +205,11 @@ function authTokenForSavedAccount(alias, rec) {
   return obj?.tokens?.access_token || null;
 }
 
-function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
-  const curl = spawnSync('curl', ['--version'], { encoding: 'utf8', timeout: 2000 });
-  if (curl.status !== 0) throw new Error('curl not found');
+async function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
   const tmpDir = path.join(acHome, 'tmp');
   const tmp = path.join(tmpDir, `wham-curl-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.conf`);
-  const bodyTmp = path.join(tmpDir, `wham-body-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   const q = (v) => String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const statusMarker = '__CODEX_HTTP_STATUS__:';
   fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
   const lines = [
     'silent',
@@ -205,21 +219,56 @@ function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
     `max-time = ${Math.max(5, Math.ceil(timeoutMs / 1000))}`,
     ...(usageProxy ? [`proxy = "${q(usageProxy)}"`] : []),
     `url = "${q(whamUsageUrl)}"`,
-    `output = "${q(bodyTmp)}"`,
     `header = "Authorization: Bearer ${q(token)}"`,
     'header = "Accept: application/json"',
-    'header = "User-Agent: codex-ac-list/0.8.2"',
+    'header = "User-Agent: codex-ac-list/0.8.3"',
     'header = "OpenAI-Beta: codex_cli_beta"',
     `header = "chatgpt-account-id: ${q(rec?.chatgpt_account_id || '')}"`,
-    'write-out = "%{http_code}"',
+    `write-out = "\\n${statusMarker}%{http_code}"`,
   ];
   try {
     fs.writeFileSync(tmp, lines.join('\n') + '\n', { mode: 0o600 });
-    const res = spawnSync('curl', ['--config', tmp], { encoding: 'utf8', timeout: timeoutMs + 5000, maxBuffer: 2 * 1024 * 1024 });
-    if (res.error) throw res.error;
-    const body = fs.existsSync(bodyTmp) ? fs.readFileSync(bodyTmp, 'utf8') : '';
-    const status = Number(String(res.stdout || '').trim());
+    const res = await new Promise((resolve, reject) => {
+      const child = spawn('curl', ['--config', tmp], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      let tooLarge = false;
+      let timedOut = false;
+      const maxBuffer = 2 * 1024 * 1024;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGKILL');
+      }, timeoutMs + 5000);
+      child.stdout.on('data', chunk => {
+        stdout += chunk.toString('utf8');
+        if (Buffer.byteLength(stdout) > maxBuffer) {
+          tooLarge = true;
+          child.kill('SIGKILL');
+        }
+      });
+      child.stderr.on('data', chunk => {
+        stderr += chunk.toString('utf8');
+        if (Buffer.byteLength(stderr) > maxBuffer) {
+          tooLarge = true;
+          child.kill('SIGKILL');
+        }
+      });
+      child.once('error', err => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.once('close', code => {
+        clearTimeout(timer);
+        if (timedOut) return reject(new Error('curl timeout'));
+        if (tooLarge) return reject(new Error('curl response too large'));
+        resolve({ status: code, stdout, stderr });
+      });
+    });
     if (res.status !== 0) throw new Error((res.stderr || `curl exit ${res.status}`).trim().slice(0, 240));
+    const markerAt = res.stdout.lastIndexOf(`\n${statusMarker}`);
+    if (markerAt < 0) throw new Error('curl response missing HTTP status');
+    const body = res.stdout.slice(0, markerAt);
+    const status = Number(res.stdout.slice(markerAt + statusMarker.length + 1).trim());
     if (!Number.isFinite(status) || status < 200 || status >= 300) throw new Error(`HTTP ${status || 'unknown'}: ${body.slice(0, 160)}`);
     const data = JSON.parse(body);
     const snap = usageSnapshotFromWham(data);
@@ -227,14 +276,13 @@ function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
     return snap;
   } finally {
     try { fs.unlinkSync(tmp); } catch {}
-    try { fs.unlinkSync(bodyTmp); } catch {}
   }
 }
 
 async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
   if (!token) throw new Error('missing auth token');
   try {
-    return fetchWhamUsageViaCurl(rec, token, timeoutMs);
+    return await fetchWhamUsageViaCurl(rec, token, timeoutMs);
   } catch (curlError) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -245,7 +293,7 @@ async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json',
-          'User-Agent': 'codex-ac-list/0.8.2',
+          'User-Agent': 'codex-ac-list/0.8.3',
           'OpenAI-Beta': 'codex_cli_beta',
           'chatgpt-account-id': rec?.chatgpt_account_id || '',
         },
@@ -261,6 +309,32 @@ async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
       clearTimeout(timer);
     }
   }
+}
+
+function runCodexAuthRefresh(cmdArgs, timeoutMs=20000) {
+  return new Promise(resolve => {
+    let settled = false;
+    let timer = null;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    let child;
+    try {
+      child = spawn('codex-auth', cmdArgs, { stdio: 'ignore' });
+    } catch {
+      finish(false);
+      return;
+    }
+    timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(false);
+    }, timeoutMs);
+    child.once('error', () => finish(false));
+    child.once('close', code => finish(code === 0));
+  });
 }
 
 async function syncCurrentAuthForAlias(alias, dst, nowSec) {
@@ -286,8 +360,10 @@ async function syncCurrentAuthForAlias(alias, dst, nowSec) {
   dst.updated_at = new Date().toISOString();
   dst.last_usage = snap;
   dst.last_usage_at = nowSec;
+  dst.last_reset_credits_at = nowSec;
   if (snap.plan_type) dst.plan = snap.plan_type;
   delete dst.last_usage_error;
+  delete dst.last_reset_credits_error;
   return true;
 }
 async function refreshStaleUsageDirect(reg, maxAgeSec=30) {
@@ -301,42 +377,46 @@ async function refreshStaleUsageDirect(reg, maxAgeSec=30) {
     if (h) byHash.set(h, r);
   }
   let changed = false;
+  const jobs = [];
   for (const [alias, dst] of Object.entries(reg.accounts || {})) {
     if (dst.kind === 'api') continue;
-    const age = nowSec - Number(dst.last_usage_at || 0);
-    if (Number.isFinite(age) && age >= 0 && age < maxAgeSec) continue;
-    try {
-      if (await syncCurrentAuthForAlias(alias, dst, nowSec)) {
+    const usageAge = nowSec - Number(dst.last_usage_at || 0);
+    const resetAge = nowSec - Number(dst.last_reset_credits_at || 0);
+    const hasResetObservation = Boolean(dst.last_usage && typeof dst.last_usage === 'object'
+      && Object.prototype.hasOwnProperty.call(dst.last_usage, 'reset_credits_available'));
+    const needsUsage = !Number.isFinite(usageAge) || usageAge < 0 || usageAge >= maxAgeSec;
+    const needsReset = !hasResetObservation || !Number.isFinite(resetAge) || resetAge < 0 || resetAge >= maxAgeSec;
+    if (!needsUsage && !needsReset) continue;
+    jobs.push((async () => {
+      try {
+        if (await syncCurrentAuthForAlias(alias, dst, nowSec)) {
+          changed = true;
+          return;
+        }
+      } catch {}
+      let srcRec = dst.identity_hash ? byHash.get(dst.identity_hash) : null;
+      if (!srcRec) srcRec = records.find(r => r.chatgpt_user_id === dst.chatgpt_user_id && r.chatgpt_account_id === dst.chatgpt_account_id);
+      try {
+        let token = srcRec ? authTokenForCodexAuthRecord(srcRec) : null;
+        if (!token) token = authTokenForSavedAccount(alias, dst);
+        const usageRec = srcRec || dst;
+        const snap = await fetchWhamUsageWithToken(usageRec, token, 30000);
+        dst.last_usage = snap;
+        dst.last_usage_at = nowSec;
+        dst.last_reset_credits_at = nowSec;
+        if (snap.plan_type) dst.plan = snap.plan_type;
+        delete dst.last_usage_error;
+        delete dst.last_reset_credits_error;
         changed = true;
-        continue;
+      } catch (e) {
+        const msg = String(e?.message || e || 'refresh failed');
+        if (needsUsage && dst.last_usage_error !== msg) { dst.last_usage_error = msg; changed = true; }
+        if (needsReset && dst.last_reset_credits_error !== msg) { dst.last_reset_credits_error = msg; changed = true; }
       }
-    } catch {}
-    let srcRec = dst.identity_hash ? byHash.get(dst.identity_hash) : null;
-    if (!srcRec) srcRec = records.find(r => r.chatgpt_user_id === dst.chatgpt_user_id && r.chatgpt_account_id === dst.chatgpt_account_id);
-    try {
-      let token = srcRec ? authTokenForCodexAuthRecord(srcRec) : null;
-      if (!token) token = authTokenForSavedAccount(alias, dst);
-      const usageRec = srcRec || dst;
-      const snap = await fetchWhamUsageWithToken(usageRec, token, 30000);
-      if (srcRec) {
-        srcRec.last_usage = snap;
-        srcRec.last_usage_at = nowSec;
-        if (snap.plan_type) srcRec.plan = snap.plan_type;
-      }
-      dst.last_usage = snap;
-      dst.last_usage_at = nowSec;
-      if (snap.plan_type) dst.plan = snap.plan_type;
-      delete dst.last_usage_error;
-      changed = true;
-    } catch (e) {
-      const msg = String(e?.message || e || 'refresh failed');
-      if (dst.last_usage_error !== msg) { dst.last_usage_error = msg; changed = true; }
-    }
+    })());
   }
+  await Promise.all(jobs);
   if (changed) {
-    if (src && typeof src === 'object') {
-      try { writeJsonPrivate(registryPath, src); } catch {}
-    }
     reg.updated_at = new Date().toISOString();
     writeJsonPrivate(path.join(acHome, 'registry.json'), reg);
   }
@@ -359,11 +439,36 @@ function syncFromCodexAuth(reg) {
       srcRec = records.find(r => r.chatgpt_user_id === dst.chatgpt_user_id && r.chatgpt_account_id === dst.chatgpt_account_id);
     }
     if (!srcRec) continue;
-    for (const k of ['last_usage','last_usage_at','last_local_rollout','last_used_at']) {
+    const srcUsageAt = Number.isFinite(Number(srcRec.last_usage_at)) ? Number(srcRec.last_usage_at) : 0;
+    const dstUsageAt = Number.isFinite(Number(dst.last_usage_at)) ? Number(dst.last_usage_at) : 0;
+    const acceptSourceUsage = srcRec.last_usage !== undefined
+      && (!dst.last_usage || srcUsageAt >= dstUsageAt);
+    if (acceptSourceUsage) {
+      const mergedUsage = mergeUsageSnapshots(dst.last_usage, srcRec.last_usage);
+      if (JSON.stringify(dst.last_usage) !== JSON.stringify(mergedUsage)) { dst.last_usage = mergedUsage; changed = true; }
+      if (Object.prototype.hasOwnProperty.call(srcRec.last_usage || {}, 'reset_credits_available')
+          && srcRec.last_reset_credits_at === undefined && srcRec.last_usage_at !== undefined
+          && dst.last_reset_credits_at !== srcRec.last_usage_at) {
+        dst.last_reset_credits_at = srcRec.last_usage_at;
+        changed = true;
+      }
+      if (srcRec.last_usage_at !== undefined && dst.last_usage_at !== srcRec.last_usage_at) {
+        dst.last_usage_at = srcRec.last_usage_at;
+        changed = true;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(srcRec.last_usage || {}, 'reset_credits_available')
+        && srcRec.last_reset_credits_at !== undefined
+        && Number(srcRec.last_reset_credits_at) >= Number(dst.last_reset_credits_at || 0)
+        && dst.last_reset_credits_at !== srcRec.last_reset_credits_at) {
+      dst.last_reset_credits_at = srcRec.last_reset_credits_at;
+      changed = true;
+    }
+    for (const k of ['last_local_rollout','last_used_at']) {
       if (srcRec[k] !== undefined && JSON.stringify(dst[k]) !== JSON.stringify(srcRec[k])) { dst[k] = srcRec[k]; changed = true; }
     }
     if (srcRec.plan && dst.plan !== srcRec.plan) { dst.plan = srcRec.plan; changed = true; }
-    if (dst.last_usage_error !== undefined) { delete dst.last_usage_error; changed = true; }
+    if (acceptSourceUsage && dst.last_usage_error !== undefined) { delete dst.last_usage_error; changed = true; }
   }
   if (changed) { reg.updated_at = new Date().toISOString(); writeJsonPrivate(path.join(acHome, 'registry.json'), reg); }
   return changed;
@@ -419,6 +524,11 @@ function usageCell(rec, usage, minutes, fallbackPrimary) {
   if (label) return label;
   return fmtUsage(usage, minutes, fallbackPrimary);
 }
+function resetCreditsCell(rec) {
+  if (!cached && rec?.last_reset_credits_error) return '?';
+  const value = nonNegativeInt(rec?.last_usage?.reset_credits_available);
+  return value === null ? '?' : String(value);
+}
 function fmtLast(ts) {
   if (!ts || ts <= 0) return '-';
   let d = Math.floor(Date.now()/1000) - ts; if (d < 0) d = 0;
@@ -434,14 +544,15 @@ if (!cached) {
   const ttlSec = api && !skipApi ? 0 : 5;
   const lastSync = Number.isFinite(reg[syncKey]) ? reg[syncKey] : 0;
   const shouldRunNative = ttlSec === 0 || !lastSync || nowSec - lastSync >= ttlSec;
+  let nativeRefresh = Promise.resolve(false);
   if (shouldRunNative) {
     const cmdArgs = api && !skipApi ? ['list'] : ['list','--skip-api'];
-    spawnSync('codex-auth', cmdArgs, { stdio: 'ignore', timeout: 20000 });
+    nativeRefresh = runCodexAuthRefresh(cmdArgs);
     reg[syncKey] = nowSec;
     writeJsonPrivate(regPath, reg);
   }
+  await Promise.all([nativeRefresh, refreshStaleUsageDirect(reg)]);
   syncFromCodexAuth(reg);
-  await refreshStaleUsageDirect(reg);
   reg = readJson(regPath, reg);
 }
 const accounts = reg.accounts || {};
@@ -463,7 +574,8 @@ const rows = sorted.map(([alias,rec], i) => {
     plan: isApi ? 'API' : (rec.plan ? String(rec.plan)[0].toUpperCase()+String(rec.plan).slice(1) : '-'),
     h5: isApi ? '-' : usageCell(rec, usage,300,true),
     weekly: isApi ? '-' : usageCell(rec, usage,10080,false),
-    last: isApi ? (rec.last_switched_at ? 'switched' : '-') : fmtLast(rec.last_usage_at),
+    resetCredits: isApi ? '-' : resetCreditsCell(rec),
+    updated: isApi ? (rec.last_switched_at ? 'switched' : '-') : fmtLast(rec.last_usage_at),
     active: alias===active,
   };
 });
@@ -471,20 +583,21 @@ const accountWidth = Math.max('ACCOUNT'.length, ...rows.map(r => r.account.lengt
 const planWidth = Math.max('PLAN'.length, ...rows.map(r => r.plan.length));
 const h5Width = Math.max('5H USAGE'.length, ...rows.map(r => r.h5.length));
 const weeklyWidth = Math.max('WEEKLY USAGE'.length, ...rows.map(r => r.weekly.length));
-const lastWidth = Math.max('LAST ACTIVITY'.length, ...rows.map(r => r.last.length));
+const resetCreditsWidth = Math.max('RESET'.length, ...rows.map(r => r.resetCredits.length));
+const updatedWidth = Math.max('UPDATED'.length, ...rows.map(r => r.updated.length));
 const aliasWidth = showAlias ? Math.max('ALIAS'.length, ...rows.map(r => r.alias.length)) : 0;
 const c = { reset: '\x1b[0m', green: '\x1b[32m', dim: '\x1b[90m' };
 function color(text, kind) {
   if (!useColor) return text;
   return `${c[kind]}${text}${c.reset}`;
 }
-let header = `${' '.repeat(3 + idxWidth)}${pad('ACCOUNT', accountWidth)}  ${pad('PLAN', planWidth)}  ${pad('5H USAGE', h5Width)}  ${pad('WEEKLY USAGE', weeklyWidth)}  ${pad('LAST ACTIVITY', lastWidth)}`;
+let header = `${' '.repeat(3 + idxWidth)}${pad('ACCOUNT', accountWidth)}  ${pad('PLAN', planWidth)}  ${pad('5H USAGE', h5Width)}  ${pad('WEEKLY USAGE', weeklyWidth)}  ${pad('RESET', resetCreditsWidth)}  ${pad('UPDATED', updatedWidth)}`;
 if (showAlias) header += `  ${pad('ALIAS', aliasWidth)}`;
 const sep = '-'.repeat(header.length);
 console.log(color(header, 'dim'));
 console.log(color(sep, 'dim'));
 for (const r of rows) {
-  let line = `${r.marker} ${r.num} ${pad(r.account, accountWidth)}  ${pad(r.plan, planWidth)}  ${pad(r.h5, h5Width)}  ${pad(r.weekly, weeklyWidth)}  ${pad(r.last, lastWidth)}`;
+  let line = `${r.marker} ${r.num} ${pad(r.account, accountWidth)}  ${pad(r.plan, planWidth)}  ${pad(r.h5, h5Width)}  ${pad(r.weekly, weeklyWidth)}  ${pad(r.resetCredits, resetCreditsWidth)}  ${pad(r.updated, updatedWidth)}`;
   if (showAlias) line += `  ${pad(r.alias, aliasWidth)}`;
   console.log(color(line, r.active ? 'green' : 'dim'));
 }
