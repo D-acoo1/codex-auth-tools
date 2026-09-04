@@ -133,6 +133,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             body = {
                 "plan_type": "pro",
+                "rate_limit_reset_credits": {
+                    "available_count": 2 if account_id == "acct-demo" else 0,
+                },
                 "rate_limit": {
                     "primary_window": {
                         "used_percent": 49,
@@ -207,6 +210,31 @@ done
 [[ -s "$USAGE_PORT_FILE" ]]
 USAGE_BASE_URL="http://127.0.0.1:$(cat "$USAGE_PORT_FILE")/v1"
 
+"$PYTHON_BIN" - "$CA_PY" <<'PY'
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("codex_ac_under_test", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+snapshot = module.parse_usage_api_response(json.dumps({
+    "plan_type": "pro",
+    "rate_limit_reset_credits": {"available_count": 2},
+    "rate_limit": {
+        "primary_window": {
+            "used_percent": 49,
+            "limit_window_seconds": 7 * 24 * 60 * 60,
+            "reset_at": 2_000_000_000,
+        },
+        "secondary_window": None,
+    },
+}).encode())
+assert snapshot is not None, snapshot
+assert snapshot.get("reset_credits_available") == 2, snapshot
+PY
+
 printf 'sandbox-fake-key\n' | run_ca_no_security add-api relay --base-url "$USAGE_BASE_URL" --provider relay --model gpt-5-codex --wire-api responses --force >/dev/null
 
 run_ca s relay --no-backup >/dev/null
@@ -230,6 +258,9 @@ run_ca ll --cached --alias --no-color > "$TMP/list-api.txt"
 assert_contains "$TMP/list-api.txt" '* 01 api:127.0.0.1:'
 assert_contains "$TMP/list-api.txt" 'API'
 assert_contains "$TMP/list-api.txt" 'relay'
+assert_contains "$TMP/list-api.txt" 'RESET'
+assert_contains "$TMP/list-api.txt" 'UPDATED'
+assert_not_contains "$TMP/list-api.txt" 'LAST ACTIVITY'
 
 swift build -c release --package-path "$ROOT/codex-balance" >/dev/null
 BALANCE_BIN="$(swift build -c release --show-bin-path --package-path "$ROOT/codex-balance")/CodexBalance"
@@ -444,6 +475,11 @@ env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
   "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-no-native-registry.txt"
 [[ "$(grep -Ec 'Pro +∞ +51%' "$TMP/list-no-native-registry.txt")" == "2" ]]
+assert_matches "$TMP/list-no-native-registry.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-no-native-registry.txt" 'other@example.com +Pro +∞ +51% .* +0 +Now'
+assert_contains "$TMP/list-no-native-registry.txt" 'RESET'
+assert_contains "$TMP/list-no-native-registry.txt" 'UPDATED'
+assert_not_contains "$TMP/list-no-native-registry.txt" 'LAST ACTIVITY'
 assert_not_contains "$TMP/list-no-native-registry.txt" 'fake-access-token'
 assert_not_contains "$TMP/list-no-native-registry.txt" 'fake-other-token'
 [[ ! -e "$CODEX_HOME/accounts/registry.json" ]]
@@ -453,8 +489,109 @@ obj = json.load(open(sys.argv[1]))
 for alias in ["fox", "other"]:
     rec = obj["accounts"][alias]
     assert rec.get("last_usage_at", 0) > 0, (alias, rec)
+    assert rec.get("last_reset_credits_at", 0) > 0, (alias, rec)
     assert rec.get("last_usage_error") is None, (alias, rec)
+assert obj["accounts"]["fox"]["last_usage"].get("reset_credits_available") == 2, obj
+assert obj["accounts"]["other"]["last_usage"].get("reset_credits_available") == 0, obj
 PY
+run_ca_no_security list --cached > "$TMP/list-reset-python.txt"
+assert_contains "$TMP/list-reset-python.txt" 'RESET'
+assert_contains "$TMP/list-reset-python.txt" 'UPDATED'
+assert_not_contains "$TMP/list-reset-python.txt" 'LAST ACTIVITY'
+assert_matches "$TMP/list-reset-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-reset-python.txt" 'other +o\*\*\*r@example.com +Pro +∞ +51% .* +0 +Now'
+
+# Syncing a newer native usage snapshot that does not know about reset credits
+# must not erase the count already captured from the raw usage response.
+mkdir -p "$CODEX_HOME/accounts"
+"$PYTHON_BIN" - "$CODEX_HOME/accounts/registry.json" <<'PY'
+import json, sys, time
+payload = {
+    "accounts": [
+        {
+            "chatgpt_user_id": "user-demo",
+            "chatgpt_account_id": "acct-demo",
+            "plan": "pro",
+            "last_usage": {
+                "primary": {"used_percent": 49, "window_minutes": 10080, "resets_at": int(time.time()) + 604800},
+                "secondary": None,
+            },
+            "last_usage_at": int(time.time()),
+        }
+    ]
+}
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=2)
+    f.write("\n")
+PY
+env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
+  NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
+  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-native-merge.txt"
+assert_matches "$TMP/list-native-merge.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys
+obj = json.load(open(sys.argv[1]))
+assert obj["accounts"]["fox"]["last_usage"].get("reset_credits_available") == 2, obj
+PY
+
+# A stale native snapshot must not replace a newer direct response. This is
+# especially important now that both refresh paths run concurrently.
+"$PYTHON_BIN" - "$CODEX_HOME/accounts/registry.json" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+obj = json.load(open(path))
+rec = obj["accounts"][0]
+rec["last_usage"]["primary"]["used_percent"] = 10
+rec["last_usage_at"] = int(time.time()) - 600
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PY
+env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
+  NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
+  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-stale-native-merge.txt"
+assert_matches "$TMP/list-stale-native-merge.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
+assert_not_contains "$TMP/list-stale-native-merge.txt" '90%'
+run_ca_no_security list --skip-api > "$TMP/list-stale-native-merge-python.txt"
+assert_matches "$TMP/list-stale-native-merge-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +2 +Now'
+assert_not_contains "$TMP/list-stale-native-merge-python.txt" '90%'
+
+# Unknown data remains explicit, while API profiles use a dash because reset
+# credits do not apply to them.
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+obj = json.load(open(path))
+obj["accounts"]["other"]["last_usage"].pop("reset_credits_available", None)
+obj["accounts"]["other"]["last_reset_credits_at"] = int(time.time())
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PY
+run_ca ll --cached --alias --no-color > "$TMP/list-reset-unknown.txt"
+assert_matches "$TMP/list-reset-unknown.txt" 'other@example.com +Pro +∞ +51% .* +\? +Now'
+assert_matches "$TMP/list-reset-unknown.txt" 'api:127\.0\.0\.1:.* +API +- +- +- +switched'
+
+# A reset-count-only refresh failure must show ? without hiding valid cached
+# 5-hour and weekly quota cells. Cached mode still exposes the last known count.
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+obj = json.load(open(path))
+rec = obj["accounts"]["fox"]
+rec["last_usage"]["reset_credits_available"] = 2
+rec["last_reset_credits_at"] = 0
+rec["last_usage_at"] = int(time.time())
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PY
+env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
+  NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="${USAGE_BASE_URL%/v1}/missing" PATH="$SAFE_PATH" \
+  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-reset-refresh-failed.txt"
+assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +\? +Now'
+run_ca ll --cached --alias --no-color > "$TMP/list-reset-cached.txt"
+assert_matches "$TMP/list-reset-cached.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
 
 # A weekly-only response means the temporary 5-hour limit is absent. Both the
 # Node UI and the Python fallback must show infinity rather than copy 7d usage.

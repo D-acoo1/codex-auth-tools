@@ -84,7 +84,7 @@ Red and yellow are independent, so both can be lit when one result is waiting wh
 - imports the current `~/.codex/auth.json` under a local alias;
 - preserves a newer live ChatGPT credential in the saved account before switching away;
 - atomically switches the active Codex auth snapshot;
-- lists saved accounts and cached quota usage;
+- lists saved accounts, quota windows, and each ChatGPT account's available reset-credit count;
 - distinguishes a missing 5-hour window from the weekly quota;
 - supports API-compatible provider and relay profiles;
 - stores API keys in macOS Keychain or a mode-`0600` local fallback file;
@@ -167,7 +167,7 @@ API keys are kept in Keychain or `~/.codex-ac/secrets`, not embedded in `config.
 
 ## Data and network boundaries
 
-For ChatGPT subscription accounts, Codex Balance uses only the active local Codex access token. A normal `ca ll` or `ca refresh` can also use each saved ChatGPT account's token to refresh stale quota rows; `ca ll --cached` reads cached rows without performing that refresh. Scheduled keepalive is different again: it delegates due login renewal to the installed Codex `app-server` in a temporary account home.
+For ChatGPT subscription accounts, Codex Balance uses only the active local Codex access token. A normal `ca ll` or `ca refresh` can also use each saved ChatGPT account's token to refresh stale quota rows. The `RESET` column in `ca ll` shows the available reset-credit count (`?` when unavailable and `-` for API/relay profiles); `ca ll --cached` reads the last known values without performing that refresh. Scheduled keepalive is different again: it delegates due login renewal to the installed Codex `app-server` in a temporary account home.
 
 The current implementation requests these ChatGPT endpoints:
 
@@ -346,7 +346,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 - 把当前 `~/.codex/auth.json` 导入为本机别名；
 - 切走当前账号前，先把 Codex 已更新的较新 ChatGPT 登录凭据保存回该账号快照；
 - 原子切换当前 Codex 登录快照；
-- 查看已保存账号和缓存额度；
+- 查看已保存账号、额度窗口和每个 ChatGPT 账号可用的重置券数量；
 - 正确区分“没有 5 小时窗口”和“周额度”；
 - 管理 OpenAI-compatible API 与中转配置；
 - 优先把 API key 存入 macOS Keychain，失败时存入权限为 `0600` 的本机文件；
@@ -429,7 +429,7 @@ API key 会保存在 Keychain 或 `~/.codex-ac/secrets`，不会直接写入 `co
 
 ## 数据和网络边界
 
-ChatGPT 订阅账号下，Codex Balance 只使用当前本机 Codex access token。普通 `ca ll` 或 `ca refresh` 还可能使用每个已保存 ChatGPT 账号的 token 刷新过期额度；`ca ll --cached` 只读缓存，不执行这次网络刷新。定时自动续期走另一条路径：它会在临时账号目录中调用已安装 Codex 的 `app-server` 续期临近过期的登录。
+ChatGPT 订阅账号下，Codex Balance 只使用当前本机 Codex access token。普通 `ca ll` 或 `ca refresh` 还可能使用每个已保存 ChatGPT 账号的 token 刷新过期额度。`ca ll` 的 `RESET` 列显示可用重置券数量（无法获取时为 `?`，API/中转配置为 `-`）；`ca ll --cached` 只读上次缓存值，不执行这次网络刷新。定时自动续期走另一条路径：它会在临时账号目录中调用已安装 Codex 的 `app-server` 续期临近过期的登录。
 
 当前实现会请求以下 ChatGPT 地址：
 
