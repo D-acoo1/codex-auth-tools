@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.3"
+VERSION = "0.8.4"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -823,12 +823,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         raw_reset = usage.get("reset_credits_available") if usage else None
         if is_api:
             reset_credits = "-"
-        elif not bool(getattr(args, "cached", False)) and rec.get("last_reset_credits_error"):
-            reset_credits = "?"
         else:
             reset_value = _as_int(raw_reset)
             reset_credits = str(reset_value) if reset_value is not None and reset_value >= 0 else "?"
-        updated = fmt_last_activity(_as_int(rec.get("last_usage_at")))
+        updated_at = _as_int(rec.get("last_usage_at"))
+        updated = fmt_last_activity(updated_at)
+        refresh_failed = bool(rec.get("last_usage_error") or rec.get("last_reset_credits_error"))
+        if not bool(getattr(args, "cached", False)) and usage and updated_at and refresh_failed:
+            updated += "!"
         rows.append((marker, alias, email, plan, h5, weekly, reset_credits, updated))
     headers = ("ALIAS", "ACCOUNT", "PLAN", "5H USAGE", "WEEKLY USAGE", "RESET", "UPDATED")
     widths = [
@@ -844,6 +846,20 @@ def cmd_list(args: argparse.Namespace) -> int:
     print("-" * (sum(widths) + 15))
     for marker, alias, email, plan, h5, weekly, reset_credits, updated in rows:
         print(f"{marker} {alias.ljust(widths[0])}  {email.ljust(widths[1])}  {plan.ljust(widths[2])}  {h5.ljust(widths[3])}  {weekly.ljust(widths[4])}  {reset_credits.ljust(widths[5])}  {updated.ljust(widths[6])}")
+    if not bool(getattr(args, "cached", False)):
+        failed = [
+            alias
+            for alias, rec in accounts.items()
+            if rec.get("kind") != "api" and (rec.get("last_usage_error") or rec.get("last_reset_credits_error"))
+        ]
+        if failed:
+            cached_failed = [
+                alias
+                for alias in failed
+                if isinstance(accounts[alias].get("last_usage"), dict) and _as_int(accounts[alias].get("last_usage_at"))
+            ]
+            cache_note = "；已继续显示上次成功数据，UPDATED 后的 ! 表示本次刷新失败" if cached_failed else ""
+            eprint(f"warning: usage refresh failed: {', '.join(failed)}{cache_note}。可稍后重试 ca ll，或用 ca ll --cached 仅查看缓存。")
     if current and current != reg.get("active_alias"):
         reg["active_alias"] = current
         save_registry(reg)
