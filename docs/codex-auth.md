@@ -18,6 +18,9 @@ ca ll --cached        # list cached usage without refreshing saved accounts
 ca current            # print current alias
 ca import-current fox # save current auth as alias fox
 ca s fox              # switch active account
+ca resets             # list each account's reset-credit expiration times
+ca resets fox         # query one saved account without switching to it
+ca resets --cached    # read the last successful detail cache without networking
 ca r fox              # relogin/update one account snapshot
 ca keepalive --dry-run # show which snapshots are due without changing them
 ca keepalive           # run one keepalive check now
@@ -25,6 +28,8 @@ ca doctor             # environment checks
 ```
 
 `ca ll` and `ca refresh` can use each saved ChatGPT snapshot's access token to refresh stale quota rows. `ca ll` includes a `RESET` column for the available reset-credit count: an integer (including `0`) means the value was read successfully, `?` means it is unavailable, and `-` means the row is an API/relay profile where it does not apply. The `UPDATED` column is the age of the usage snapshot. If a live refresh fails while a previous snapshot is available, the table keeps showing that snapshot, appends `!` to `UPDATED`, and prints a warning instead of replacing useful values with an error label. `ca ll --cached` does not perform a network refresh and shows the last known reset count without the live-refresh marker. These requests currently target `https://chatgpt.com/backend-api/wham/usage`, an implementation-detail endpoint without a stable public API contract. The endpoint may change and must be re-reviewed if the source changes.
+
+`ca resets [aliases...]` queries the saved ChatGPT snapshots directly, without replacing `~/.codex/auth.json`, and prints every returned reset-credit expiration as local `M.D HH:mm`. With no aliases it includes every saved account; API/relay rows display `-`. Successful details are cached locally, so `ca resets --cached` is immediate and performs no network request. If a live detail request fails after a previous success, the command preserves the expiration rows, appends `!` to `UPDATED`, and prints a warning. These detail requests currently target `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`, which is also an implementation-detail endpoint without a stable public API contract.
 
 Before `ca s <alias>` replaces the active ChatGPT account, it identity-checks `~/.codex/auth.json` and saves it back to the outgoing account when Codex has rotated that login to a newer credential. A stale live file never overwrites a fresher saved snapshot, and the switch stops instead of discarding a newer credential if that save cannot be completed.
 

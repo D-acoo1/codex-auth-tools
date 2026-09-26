@@ -146,6 +146,33 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 "credits": {"has_credits": False, "unlimited": False, "balance": "0"},
             }
+        elif route == "/wham/rate-limit-reset-credits":
+            expected = {
+                "acct-demo": "Bearer fake-access-token",
+                "acct-other": "Bearer fake-other-token",
+            }
+            account_id = self.headers.get("chatgpt-account-id")
+            if expected.get(account_id) != self.headers.get("Authorization"):
+                self.send_response(401)
+                self.end_headers()
+                return
+            body = {
+                "available_count": 2 if account_id == "acct-demo" else 0,
+                "credits": [
+                    {
+                        "title": "Reset credit",
+                        "status": "available",
+                        "granted_at": "2030-09-01T00:00:00Z",
+                        "expires_at": "2030-09-28T21:09:00Z",
+                    },
+                    {
+                        "title": "Reset credit",
+                        "status": "available",
+                        "granted_at": "2030-09-02T00:00:00Z",
+                        "expires_at": "2030-10-01T18:00:00Z",
+                    },
+                ] if account_id == "acct-demo" else [],
+            }
         elif route != "/v1/usage":
             self.send_response(404)
             self.end_headers()
@@ -457,6 +484,69 @@ auth = {
 Path(sys.argv[1]).write_text(json.dumps(auth, indent=2) + "\n")
 PY
 run_ca import other "$TMP/other.auth.json" --force >/dev/null
+
+# Reset-credit details are fetched for every saved ChatGPT account without
+# switching the active account. Times are rendered in the local timezone, API
+# profiles are explicit non-applicable rows, and successful results are cached.
+RESET_TEST_URL="${USAGE_BASE_URL%/v1}/wham/rate-limit-reset-credits"
+env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
+  NODE_ENV=test CODEX_AC_TEST_RESET_CREDITS_URL="$RESET_TEST_URL" TZ=Asia/Shanghai \
+  "$PYTHON_EXE" "$CA_PY" resets > "$TMP/resets-live.txt"
+assert_contains "$TMP/resets-live.txt" 'ALIAS'
+assert_contains "$TMP/resets-live.txt" 'ACCOUNT'
+assert_contains "$TMP/resets-live.txt" 'RESET'
+assert_contains "$TMP/resets-live.txt" 'EXPIRES'
+assert_contains "$TMP/resets-live.txt" 'UPDATED'
+assert_matches "$TMP/resets-live.txt" '^\* fox +demo@example\.com +2 +9\.29 05:09 +Now'
+assert_matches "$TMP/resets-live.txt" '^ +10\.2 02:00'
+assert_matches "$TMP/resets-live.txt" '^ +other +other@example\.com +0 +- +Now'
+assert_matches "$TMP/resets-live.txt" '^ +relay +api:127\.0\.0\.1:.* +- +- +-'
+assert_not_contains "$TMP/resets-live.txt" 'fake-access-token'
+assert_not_contains "$TMP/resets-live.txt" 'fake-other-token'
+[[ "$(run_ca current)" == "fox" ]]
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
+import json, sys
+obj = json.load(open(sys.argv[1]))
+fox = obj["accounts"]["fox"]
+other = obj["accounts"]["other"]
+assert fox["last_usage"]["reset_credits_available"] == 2, fox
+assert len(fox["reset_credit_details"]) == 2, fox
+assert fox["reset_credit_details"][0]["expires_at"] == "2030-09-28T21:09:00Z", fox
+assert fox.get("last_reset_credit_details_at", 0) > 0, fox
+assert fox.get("last_reset_credit_details_error") is None, fox
+assert other["last_usage"]["reset_credits_available"] == 0, other
+assert other["reset_credit_details"] == [], other
+assert other.get("last_reset_credit_details_at", 0) > 0, other
+PY
+
+REGISTRY_BEFORE_CACHED="$(shasum -a 256 "$CODEX_AC_HOME/registry.json" | awk '{print $1}')"
+TZ=Asia/Shanghai run_ca resets --cached > "$TMP/resets-cached.txt"
+REGISTRY_AFTER_CACHED="$(shasum -a 256 "$CODEX_AC_HOME/registry.json" | awk '{print $1}')"
+[[ "$REGISTRY_BEFORE_CACHED" == "$REGISTRY_AFTER_CACHED" ]]
+assert_matches "$TMP/resets-cached.txt" '^\* fox +demo@example\.com +2 +9\.29 05:09 +Now'
+assert_matches "$TMP/resets-cached.txt" '^ +other +other@example\.com +0 +- +Now'
+TZ=Asia/Shanghai run_ca resets fox --cached > "$TMP/resets-one.txt"
+assert_contains "$TMP/resets-one.txt" 'fox'
+assert_not_contains "$TMP/resets-one.txt" 'other'
+assert_not_contains "$TMP/resets-one.txt" 'relay'
+if run_ca resets missing --cached > "$TMP/resets-missing.txt" 2> "$TMP/resets-missing.err"; then
+  echo 'expected unknown reset-credit alias to fail' >&2
+  exit 1
+fi
+assert_contains "$TMP/resets-missing.err" '账号别名不存在：missing'
+
+# A live detail refresh failure keeps the last successful expiration rows and
+# marks them stale instead of hiding the useful cache.
+env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
+  NODE_ENV=test CODEX_AC_TEST_RESET_CREDITS_URL="${USAGE_BASE_URL%/v1}/missing" TZ=Asia/Shanghai \
+  "$PYTHON_EXE" "$CA_PY" resets fox > "$TMP/resets-failed.txt" 2> "$TMP/resets-failed.err"
+assert_matches "$TMP/resets-failed.txt" '^\* fox +demo@example\.com +2 +9\.29 05:09 +Now!'
+assert_contains "$TMP/resets-failed.err" 'reset-credit refresh failed: fox (404)'
+assert_contains "$TMP/resets-failed.err" '已继续显示上次成功数据'
+assert_contains "$TMP/resets-failed.err" 'ca resets --cached'
+assert_not_contains "$TMP/resets-failed.err" 'fake-access-token'
+[[ "$(run_ca current)" == "fox" ]]
+
 rm -rf "$CODEX_HOME/accounts"
 "$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
 import json, sys

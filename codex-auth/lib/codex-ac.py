@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import contextlib
 import datetime as _dt
 import fcntl
@@ -27,9 +28,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.4"
+VERSION = "0.8.5"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 RESERVED = set()
 KEEPALIVE_THRESHOLD_SECONDS = 3 * 24 * 60 * 60
@@ -307,6 +309,11 @@ def import_auth(alias: str, auth_path: Path, source: str, force: bool = False, a
         "last_usage",
         "last_usage_at",
         "last_usage_error",
+        "last_reset_credits_at",
+        "last_reset_credits_error",
+        "reset_credit_details",
+        "last_reset_credit_details_at",
+        "last_reset_credit_details_error",
         "last_local_rollout",
         "last_used_at",
         "last_keepalive_check_at",
@@ -538,6 +545,157 @@ def fetch_usage_snapshot(auth_path: Path, timeout: int = 20) -> Tuple[Optional[D
     except Exception as exc:
         return None, exc.__class__.__name__
     return snap, str(status)
+
+
+def reset_credits_endpoint() -> str:
+    if os.environ.get("NODE_ENV") == "test":
+        test_url = os.environ.get("CODEX_AC_TEST_RESET_CREDITS_URL")
+        if test_url:
+            return test_url
+    return RESET_CREDITS_URL
+
+
+def parse_reset_credit_details_response(body: bytes) -> Optional[Dict[str, Any]]:
+    root = json.loads(body.decode("utf-8"))
+    if not isinstance(root, dict):
+        return None
+    raw_credits = root.get("credits")
+    available = _as_int(root.get("available_count"))
+    if available is not None and available < 0:
+        available = None
+    if available is None and not isinstance(raw_credits, list):
+        return None
+    credits = []
+    for raw in raw_credits if isinstance(raw_credits, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        credit = {
+            key: raw[key]
+            for key in ("title", "status", "granted_at", "expires_at")
+            if isinstance(raw.get(key), str) and raw.get(key)
+        }
+        credits.append(credit)
+    return {"available_count": available, "credits": credits}
+
+
+def _open_reset_credits_request(req: urllib.request.Request, timeout: int):
+    if os.environ.get("NODE_ENV") == "test":
+        return urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout)
+    proxy = os.environ.get("CODEX_AC_USAGE_PROXY")
+    if proxy:
+        handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        return urllib.request.build_opener(handler).open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def fetch_reset_credit_details(
+    auth_path: Path,
+    rec: Dict[str, Any],
+    timeout: int = 20,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    try:
+        obj, _ = read_auth(auth_path)
+        info = auth_info(auth_path)
+    except (OSError, SystemExit, ValueError, json.JSONDecodeError) as exc:
+        return None, exc.__class__.__name__
+    if rec.get("identity_hash") and info.get("identity_hash") != rec.get("identity_hash"):
+        return None, "IdentityMismatch"
+    tokens = obj.get("tokens") if isinstance(obj.get("tokens"), dict) else {}
+    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
+    account_id = first_str(info.get("chatgpt_account_id"), tokens.get("account_id") if isinstance(tokens, dict) else None)
+    if not access_token or not account_id:
+        return None, "MissingAuth"
+    if rec.get("chatgpt_account_id") and rec.get("chatgpt_account_id") != account_id:
+        return None, "IdentityMismatch"
+    req = urllib.request.Request(
+        reset_credits_endpoint(),
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "ChatGPT-Account-Id": account_id,
+            "User-Agent": f"codex-ac/{VERSION}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with _open_reset_credits_request(req, timeout) as resp:
+            body = resp.read(2 * 1024 * 1024 + 1)
+            status = getattr(resp, "status", 200)
+    except urllib.error.HTTPError as exc:
+        return None, str(exc.code)
+    except Exception as exc:
+        return None, exc.__class__.__name__
+    if len(body) > 2 * 1024 * 1024:
+        return None, "ResponseTooLarge"
+    if status < 200 or status >= 300:
+        return None, str(status)
+    try:
+        details = parse_reset_credit_details_response(body)
+    except Exception as exc:
+        return None, exc.__class__.__name__
+    if details is None:
+        return None, "BadResponse"
+    return details, str(status)
+
+
+def refresh_reset_credit_details(
+    reg: Dict[str, Any],
+    aliases: list[str],
+) -> Tuple[bool, Dict[str, str]]:
+    accounts = reg.get("accounts", {})
+    results: Dict[str, Tuple[Optional[Dict[str, Any]], str]] = {}
+
+    def fetch_one(alias: str) -> Tuple[Optional[Dict[str, Any]], str]:
+        rec = accounts[alias]
+        try:
+            auth_path = account_auth_file(alias, reg)
+        except SystemExit:
+            return None, "MissingAuth"
+        return fetch_reset_credit_details(auth_path, rec)
+
+    if aliases:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(aliases))) as pool:
+            jobs = {alias: pool.submit(fetch_one, alias) for alias in aliases}
+            for alias in aliases:
+                try:
+                    results[alias] = jobs[alias].result()
+                except Exception as exc:
+                    results[alias] = (None, exc.__class__.__name__)
+
+    changed = False
+    failures: Dict[str, str] = {}
+    refreshed_at = int(time.time())
+    for alias in aliases:
+        rec = accounts[alias]
+        details, status = results[alias]
+        if details is None:
+            if rec.get("last_reset_credit_details_error") != status:
+                rec["last_reset_credit_details_error"] = status
+                changed = True
+            failures[alias] = status
+            continue
+        credits = details.get("credits") if isinstance(details.get("credits"), list) else []
+        if rec.get("reset_credit_details") != credits:
+            rec["reset_credit_details"] = credits
+            changed = True
+        if rec.get("last_reset_credit_details_at") != refreshed_at:
+            rec["last_reset_credit_details_at"] = refreshed_at
+            changed = True
+        if rec.pop("last_reset_credit_details_error", None) is not None:
+            changed = True
+        available = _as_int(details.get("available_count"))
+        if available is not None and available >= 0:
+            usage = dict(rec.get("last_usage")) if isinstance(rec.get("last_usage"), dict) else {}
+            if usage.get("reset_credits_available") != available:
+                usage["reset_credits_available"] = available
+                rec["last_usage"] = usage
+                changed = True
+            if rec.get("last_reset_credits_at") != refreshed_at:
+                rec["last_reset_credits_at"] = refreshed_at
+                changed = True
+            if rec.pop("last_reset_credits_error", None) is not None:
+                changed = True
+    return changed, failures
 
 
 def refresh_aliases(reg: Dict[str, Any], aliases: list[str], *, verbose: bool = True) -> bool:
@@ -863,6 +1021,143 @@ def cmd_list(args: argparse.Namespace) -> int:
     if current and current != reg.get("active_alias"):
         reg["active_alias"] = current
         save_registry(reg)
+    return 0
+
+
+def _reset_credit_expiry_datetime(value: Any) -> Optional[_dt.datetime]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return _dt.datetime.fromtimestamp(float(value), tz=_dt.timezone.utc).astimezone()
+        except (OverflowError, OSError, ValueError):
+            return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = _dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+    return parsed.astimezone()
+
+
+def fmt_reset_credit_expiry(value: Any) -> str:
+    dt = _reset_credit_expiry_datetime(value)
+    if dt is None:
+        return "?"
+    return f"{dt.month}.{dt.day} {dt:%H:%M}"
+
+
+def reset_credit_sort_key(credit: Dict[str, Any]) -> Tuple[bool, _dt.datetime]:
+    expires_at = _reset_credit_expiry_datetime(credit.get("expires_at"))
+    return expires_at is None, expires_at or _dt.datetime.max.replace(tzinfo=_dt.timezone.utc)
+
+
+def reset_credit_error_label(status: str) -> str:
+    labels = {
+        "401": "登录过期",
+        "403": "登录过期",
+        "IdentityMismatch": "账号身份不匹配",
+        "MissingAuth": "登录快照不可用",
+        "TimeoutError": "请求超时",
+        "ResponseTooLarge": "返回数据过大",
+        "BadResponse": "返回格式异常",
+    }
+    return labels.get(status, status)
+
+
+def cmd_resets(args: argparse.Namespace) -> int:
+    reg = load_registry()
+    accounts = reg.get("accounts", {})
+    if not accounts:
+        print("暂无账号。先执行：codex-ac add <alias> 或 codex-ac import-codex-auth")
+        return 0
+
+    requested = []
+    for alias in args.aliases:
+        if alias not in accounts:
+            raise SystemExit(f"账号别名不存在：{alias}")
+        if alias not in requested:
+            requested.append(alias)
+    current = detect_current_alias(reg, DEFAULT_CODEX_HOME)
+    active = current or reg.get("active_alias")
+    aliases = requested or sorted(accounts, key=lambda alias: (0 if alias == active else 1, alias))
+
+    failures: Dict[str, str] = {}
+    if not args.cached:
+        live_aliases = [alias for alias in aliases if accounts[alias].get("kind") != "api"]
+        changed, failures = refresh_reset_credit_details(reg, live_aliases)
+        if changed:
+            save_registry(reg)
+
+    rows = []
+    for alias in aliases:
+        rec = accounts[alias]
+        marker = "*" if alias == active else " "
+        account = first_str(rec.get("email"), rec.get("email_masked")) or "<unknown>"
+        if rec.get("kind") == "api":
+            account = f"api:{str(rec.get('base_url') or rec.get('provider_id') or alias).removeprefix('https://').removeprefix('http://')}"
+            rows.append((marker, alias, account, "-", "-", "-"))
+            continue
+
+        usage = rec.get("last_usage") if isinstance(rec.get("last_usage"), dict) else {}
+        count = _as_int(usage.get("reset_credits_available"))
+        details = rec.get("reset_credit_details") if isinstance(rec.get("reset_credit_details"), list) else []
+        if count is None and details:
+            count = len(details)
+        count_text = str(count) if count is not None and count >= 0 else "?"
+
+        if count == 0:
+            expiries = ["-"]
+        else:
+            normalized = [credit for credit in details if isinstance(credit, dict)]
+            normalized.sort(key=reset_credit_sort_key)
+            expiries = [fmt_reset_credit_expiry(credit.get("expires_at")) for credit in normalized]
+            if count is not None and count > len(expiries):
+                expiries.extend(["?"] * (count - len(expiries)))
+            if not expiries:
+                expiries = ["?"]
+
+        details_at = _as_int(rec.get("last_reset_credit_details_at"))
+        updated = fmt_last_activity(details_at) if details_at else "-"
+        refresh_failed = bool(rec.get("last_reset_credit_details_error"))
+        if not args.cached and details_at and refresh_failed:
+            updated += "!"
+        for index, expiry in enumerate(expiries):
+            rows.append(
+                (
+                    marker if index == 0 else " ",
+                    alias if index == 0 else "",
+                    account if index == 0 else "",
+                    count_text if index == 0 else "",
+                    expiry,
+                    updated if index == 0 else "",
+                )
+            )
+
+    headers = ("ALIAS", "ACCOUNT", "RESET", "EXPIRES", "UPDATED")
+    widths = [
+        max(len(row[1]) for row in rows + [("", headers[0], "", "", "", "")]),
+        max(len(row[2]) for row in rows + [("", "", headers[1], "", "", "")]),
+        max(len(row[3]) for row in rows + [("", "", "", headers[2], "", "")]),
+        max(len(row[4]) for row in rows + [("", "", "", "", headers[3], "")]),
+        max(len(row[5]) for row in rows + [("", "", "", "", "", headers[4])]),
+    ]
+    print(f"  {headers[0].ljust(widths[0])}  {headers[1].ljust(widths[1])}  {headers[2].ljust(widths[2])}  {headers[3].ljust(widths[3])}  {headers[4].ljust(widths[4])}")
+    print("-" * (sum(widths) + 12))
+    for marker, alias, account, count, expiry, updated in rows:
+        print(f"{marker} {alias.ljust(widths[0])}  {account.ljust(widths[1])}  {count.ljust(widths[2])}  {expiry.ljust(widths[3])}  {updated.ljust(widths[4])}")
+
+    if failures:
+        summary = ", ".join(f"{alias} ({reset_credit_error_label(status)})" for alias, status in failures.items())
+        cached_failed = [
+            alias
+            for alias in failures
+            if isinstance(accounts[alias].get("reset_credit_details"), list)
+            and _as_int(accounts[alias].get("last_reset_credit_details_at"))
+        ]
+        cache_note = "；已继续显示上次成功数据，UPDATED 后的 ! 表示本次刷新失败" if cached_failed else ""
+        eprint(f"warning: reset-credit refresh failed: {summary}{cache_note}。可稍后重试 ca resets，或用 ca resets --cached 仅查看缓存。")
     return 0
 
 
@@ -2310,6 +2605,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--skip-api", action="store_true", help="通过 codex-auth --skip-api 路径刷新 active 本地用量")
     sp.add_argument("--cached", action="store_true", help="只读 codex-ac 缓存，不触发任何刷新；最快")
     sp.set_defaults(func=cmd_list, account_lock=True)
+
+    sp = sub.add_parser("resets", help="列出每个 ChatGPT 账号的重置券到期时间")
+    sp.add_argument("aliases", nargs="*", help="只查询指定账号；默认查询全部")
+    sp.add_argument("--cached", action="store_true", help="只读上次成功缓存，不发起网络请求")
+    sp.set_defaults(func=cmd_resets, account_lock=True)
 
     sp = sub.add_parser("refresh", help="刷新账号 5H/Weekly 用量；默认走 codex-auth API 路径")
     sp.add_argument("aliases", nargs="*")
