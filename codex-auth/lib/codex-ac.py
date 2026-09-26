@@ -28,7 +28,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.5"
+VERSION = "0.8.6"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
@@ -2112,8 +2112,7 @@ def refresh_auth_with_codex_app_server(
         staged_access = staged_tokens.get("access_token")
         staged_last_refresh = staged_obj.get("last_refresh")
         (temp_home / "config.toml").write_text(
-            'cli_auth_credentials_store = "file"\n'
-            'chatgpt_base_url = "http://127.0.0.1:9/backend-api"\n',
+            'cli_auth_credentials_store = "file"\n',
             encoding="utf-8",
         )
         env = os.environ.copy()
@@ -2134,6 +2133,7 @@ def refresh_auth_with_codex_app_server(
             stderr=subprocess.PIPE,
             bufsize=0,
             env=env,
+            cwd=str(temp_home),
         )
         stderr = ""
         read_buffer = bytearray()

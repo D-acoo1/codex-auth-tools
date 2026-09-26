@@ -233,6 +233,24 @@ def test_keepalive(codex_bin: str, root: Path) -> None:
     codex_home.mkdir(parents=True)
     ac_home.mkdir(parents=True)
     module = load_ca_module(codex_home, ac_home)
+    codex_wrapper = root / "codex-cwd-wrapper.py"
+    codex_wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"real_codex = {str(Path(codex_bin).resolve())!r}\n"
+        "codex_home = os.environ.get('CODEX_HOME')\n"
+        "if not codex_home or Path.cwd().resolve() != Path(codex_home).resolve():\n"
+        "    print('app-server did not start inside its isolated CODEX_HOME', file=sys.stderr)\n"
+        "    raise SystemExit(97)\n"
+        "if 'chatgpt_base_url' in (Path(codex_home) / 'config.toml').read_text(encoding='utf-8'):\n"
+        "    print('isolated app-server overrides the ChatGPT routing endpoint', file=sys.stderr)\n"
+        "    raise SystemExit(98)\n"
+        "os.execv(real_codex, [real_codex, *sys.argv[1:]])\n",
+        encoding="utf-8",
+    )
+    codex_wrapper.chmod(0o700)
 
     definitions = {
         "active": make_auth(
@@ -339,7 +357,7 @@ def test_keepalive(codex_bin: str, root: Path) -> None:
         {
             "CODEX_HOME": str(codex_home),
             "CODEX_AC_HOME": str(ac_home),
-            "CODEX_BIN": codex_bin,
+            "CODEX_BIN": str(codex_wrapper),
             "NO_PROXY": "127.0.0.1,localhost",
             "no_proxy": "127.0.0.1,localhost",
         }
@@ -583,7 +601,7 @@ def test_installer(codex_bin: str, root: Path) -> None:
         check=False,
     )
     assert version.returncode == 0, (version.stdout, version.stderr)
-    assert version.stdout.strip() == "codex-ac 0.8.5"
+    assert version.stdout.strip() == "codex-ac 0.8.6"
 
     removed = subprocess.run(
         ["/bin/bash", str(UNINSTALLER)],
