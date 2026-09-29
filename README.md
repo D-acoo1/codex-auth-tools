@@ -175,6 +175,8 @@ The current implementation requests these ChatGPT endpoints:
 ```text
 GET https://chatgpt.com/backend-api/wham/usage
 GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
+Authorization: Bearer <corresponding Codex access token>
+ChatGPT-Account-Id: <corresponding Codex account ID, when present>
 ```
 
 These `backend-api/wham` URLs are implementation details without a stable public API contract and may change. A future endpoint change must be reviewed against the current source and documented rather than silently redirected.
@@ -438,6 +440,8 @@ ChatGPT 订阅账号下，Codex Balance 只使用当前本机 Codex access token
 ```text
 GET https://chatgpt.com/backend-api/wham/usage
 GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
+Authorization: Bearer <对应 Codex access token>
+ChatGPT-Account-Id: <对应 Codex account ID，存在时发送>
 ```
 
 这些 `backend-api/wham` 地址属于当前实现细节，没有稳定的公开 API 合约，未来可能变化。地址变化时必须按当时源码重新审查并更新文档，不能静默转发到其他服务。
