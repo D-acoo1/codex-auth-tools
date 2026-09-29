@@ -7,7 +7,7 @@ Codex Balance is a macOS menu bar widget implemented in Swift/AppKit.
 For ChatGPT subscription accounts, Codex Balance reads only the active account:
 
 1. Read the active auth from `~/.codex/auth.json`.
-2. Use `tokens.access_token` as a bearer token.
+2. Use `tokens.access_token` as a bearer token and `tokens.account_id` as the `ChatGPT-Account-Id` request header when present. The account header selects the quota context used by the Codex app.
 3. Fetch `https://chatgpt.com/backend-api/wham/usage`.
 4. Render quota information in the status bar and popover.
 5. Write a local debug/status snapshot to `~/Library/Application Support/CodexBalance/last-status.json`.

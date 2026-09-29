@@ -56,6 +56,7 @@ The current implementation makes these authenticated requests:
 GET https://chatgpt.com/backend-api/wham/usage
 GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
 Authorization: Bearer <local Codex access token>
+ChatGPT-Account-Id: <corresponding Codex account ID, when present>
 ```
 
 The `backend-api/wham` endpoints are current implementation details without a stable public API contract and may change. Endpoint changes must be treated as network-boundary changes and reviewed against current source.

@@ -750,4 +750,5 @@ run_ca_no_security list --cached > "$TMP/list-reordered-python.txt"
 assert_matches "$TMP/list-reordered-node.txt" 'Pro +80% .* +40%'
 assert_matches "$TMP/list-reordered-python.txt" 'Pro +80% .* +40%'
 
+bash "$ROOT/tests/balance-account-context.sh"
 echo "blackbox ca/balance sandbox test passed"

@@ -240,6 +240,9 @@ final class CodexUsageFetcher: @unchecked Sendable {
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue("codex-balance-menubar/1.0", forHTTPHeaderField: "User-Agent")
+            if let accountID = auth.accountID, !accountID.isEmpty {
+                request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+            }
 
             URLSession.shared.dataTask(with: request) { data, response, error in
                 if let error = error {
