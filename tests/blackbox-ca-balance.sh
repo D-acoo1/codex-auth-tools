@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${CODEX_AUTH_TEST_TMPDIR:-${TMPDIR:-/tmp}}/ca-balance.XXXXXX")"
 USAGE_SERVER_PID=""
 cleanup() {
   if [[ -n "${USAGE_SERVER_PID:-}" ]]; then
@@ -144,7 +144,7 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     "secondary_window": None,
                 },
-                "credits": {"has_credits": False, "unlimited": False, "balance": "0"},
+                "credits": {"has_credits": account_id == "acct-demo", "unlimited": False, "balance": "12345.6789" if account_id == "acct-demo" else "0"},
             }
         elif route == "/wham/rate-limit-reset-credits":
             expected = {
@@ -568,6 +568,8 @@ env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX
 assert_matches "$TMP/list-no-native-registry.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
 assert_matches "$TMP/list-no-native-registry.txt" 'other@example.com +Pro +∞ +51% .* +0 +Now'
 assert_contains "$TMP/list-no-native-registry.txt" 'RESET'
+assert_contains "$TMP/list-no-native-registry.txt" 'CREDITS'
+assert_matches "$TMP/list-no-native-registry.txt" 'demo@example.com +Pro +∞ +51% .* +12,345\.68 +2 +Now'
 assert_contains "$TMP/list-no-native-registry.txt" 'UPDATED'
 assert_not_contains "$TMP/list-no-native-registry.txt" 'LAST ACTIVITY'
 assert_not_contains "$TMP/list-no-native-registry.txt" 'fake-access-token'
@@ -586,6 +588,8 @@ assert obj["accounts"]["other"]["last_usage"].get("reset_credits_available") == 
 PY
 run_ca_no_security list --cached > "$TMP/list-reset-python.txt"
 assert_contains "$TMP/list-reset-python.txt" 'RESET'
+assert_contains "$TMP/list-reset-python.txt" 'CREDITS'
+assert_matches "$TMP/list-reset-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +12,345\.68 +2 +Now'
 assert_contains "$TMP/list-reset-python.txt" 'UPDATED'
 assert_not_contains "$TMP/list-reset-python.txt" 'LAST ACTIVITY'
 assert_matches "$TMP/list-reset-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +2 +Now'
@@ -618,10 +622,12 @@ env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
   "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-native-merge.txt"
 assert_matches "$TMP/list-native-merge.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-native-merge.txt" 'demo@example.com +Pro +∞ +51% .* +12,345\.68 +2 +Now'
 "$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
 import json, sys
 obj = json.load(open(sys.argv[1]))
 assert obj["accounts"]["fox"]["last_usage"].get("reset_credits_available") == 2, obj
+assert obj["accounts"]["fox"]["last_usage"]["credits"]["balance"] == "12345.6789", obj
 PY
 
 # A stale native snapshot must not replace a newer direct response. This is
@@ -660,7 +666,7 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 run_ca ll --cached --alias --no-color > "$TMP/list-reset-unknown.txt"
 assert_matches "$TMP/list-reset-unknown.txt" 'other@example.com +Pro +∞ +51% .* +\? +Now'
-assert_matches "$TMP/list-reset-unknown.txt" 'api:127\.0\.0\.1:.* +API +- +- +- +switched'
+assert_matches "$TMP/list-reset-unknown.txt" 'api:127\.0\.0\.1:.* +API +- +- +- +- +switched'
 
 # A reset-count-only refresh failure must keep all valid cached values visible,
 # mark UPDATED, and explain the degraded state. Cached mode stays unmarked.
@@ -680,6 +686,7 @@ env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="${USAGE_BASE_URL%/v1}/missing" PATH="$SAFE_PATH" \
   "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-reset-refresh-failed.txt" 2> "$TMP/list-reset-refresh-failed.err"
 assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now!'
+assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +12,345\.68 +2 +Now!'
 assert_contains "$TMP/list-reset-refresh-failed.err" '已继续显示上次成功数据'
 assert_contains "$TMP/list-reset-refresh-failed.err" 'UPDATED 后的 ! 表示本次刷新失败'
 run_ca ll --cached --alias --no-color > "$TMP/list-reset-cached.txt"
@@ -751,4 +758,5 @@ assert_matches "$TMP/list-reordered-node.txt" 'Pro +80% .* +40%'
 assert_matches "$TMP/list-reordered-python.txt" 'Pro +80% .* +40%'
 
 bash "$ROOT/tests/balance-account-context.sh"
+CODEX_AUTH_TEST_TMPDIR="$TMP" "$NODE_EXE" "$ROOT/tests/list-credits.mjs"
 echo "blackbox ca/balance sandbox test passed"
