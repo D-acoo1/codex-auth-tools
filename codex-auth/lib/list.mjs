@@ -17,7 +17,7 @@ const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`usage: codex-ac list [--api] [--refresh] [--skip-api] [--cached] [--alias] [--mask] [--no-color]
 
-列出账号、用量和可用重置券数量；默认 UI 对齐 codex-auth list。
+列出账号、用量、Credits 余额和可用重置券数量。
 
 options:
   --api       默认行为；通过 codex-auth 原生 API 路径刷新所有账号
@@ -171,6 +171,9 @@ function mergeUsageSnapshots(current, incoming) {
       && Object.prototype.hasOwnProperty.call(current, 'reset_credits_available')) {
     merged.reset_credits_available = current.reset_credits_available;
   }
+  if (!Object.prototype.hasOwnProperty.call(incoming, 'credits') && current?.credits) {
+    merged.credits = current.credits;
+  }
   return merged;
 }
 function authTokenForCodexAuthRecord(rec) {
@@ -221,7 +224,7 @@ async function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
     `url = "${q(whamUsageUrl)}"`,
     `header = "Authorization: Bearer ${q(token)}"`,
     'header = "Accept: application/json"',
-    'header = "User-Agent: codex-ac-list/0.8.6"',
+    'header = "User-Agent: codex-ac-list/0.8.7"',
     'header = "OpenAI-Beta: codex_cli_beta"',
     `header = "chatgpt-account-id: ${q(rec?.chatgpt_account_id || '')}"`,
     `write-out = "\\n${statusMarker}%{http_code}"`,
@@ -293,7 +296,7 @@ async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json',
-          'User-Agent': 'codex-ac-list/0.8.6',
+          'User-Agent': 'codex-ac-list/0.8.7',
           'OpenAI-Beta': 'codex_cli_beta',
           'chatgpt-account-id': rec?.chatgpt_account_id || '',
         },
@@ -529,6 +532,16 @@ function resetCreditsCell(rec) {
   if (value !== null) return String(value);
   return '?';
 }
+function creditsCell(rec) {
+  const credits = rec?.last_usage?.credits;
+  if (credits?.unlimited === true) return '∞';
+  const raw = credits?.balance;
+  if (typeof raw !== 'number' && (typeof raw !== 'string' || !raw.trim())) return '?';
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return '?';
+  if (value > 0 && value < 0.01) return '<0.01';
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
 function refreshError(rec) {
   return rec?.last_usage_error || rec?.last_reset_credits_error || null;
 }
@@ -580,6 +593,7 @@ const rows = sorted.map(([alias,rec], i) => {
     plan: isApi ? 'API' : (rec.plan ? String(rec.plan)[0].toUpperCase()+String(rec.plan).slice(1) : '-'),
     h5: isApi ? '-' : usageCell(rec, usage,300,true),
     weekly: isApi ? '-' : usageCell(rec, usage,10080,false),
+    credits: isApi ? '-' : creditsCell(rec),
     resetCredits: isApi ? '-' : resetCreditsCell(rec),
     updated: isApi
       ? (rec.last_switched_at ? 'switched' : '-')
@@ -591,6 +605,7 @@ const accountWidth = Math.max('ACCOUNT'.length, ...rows.map(r => r.account.lengt
 const planWidth = Math.max('PLAN'.length, ...rows.map(r => r.plan.length));
 const h5Width = Math.max('5H USAGE'.length, ...rows.map(r => r.h5.length));
 const weeklyWidth = Math.max('WEEKLY USAGE'.length, ...rows.map(r => r.weekly.length));
+const creditsWidth = Math.max('CREDITS'.length, ...rows.map(r => r.credits.length));
 const resetCreditsWidth = Math.max('RESET'.length, ...rows.map(r => r.resetCredits.length));
 const updatedWidth = Math.max('UPDATED'.length, ...rows.map(r => r.updated.length));
 const aliasWidth = showAlias ? Math.max('ALIAS'.length, ...rows.map(r => r.alias.length)) : 0;
@@ -599,13 +614,13 @@ function color(text, kind) {
   if (!useColor) return text;
   return `${c[kind]}${text}${c.reset}`;
 }
-let header = `${' '.repeat(3 + idxWidth)}${pad('ACCOUNT', accountWidth)}  ${pad('PLAN', planWidth)}  ${pad('5H USAGE', h5Width)}  ${pad('WEEKLY USAGE', weeklyWidth)}  ${pad('RESET', resetCreditsWidth)}  ${pad('UPDATED', updatedWidth)}`;
+let header = `${' '.repeat(3 + idxWidth)}${pad('ACCOUNT', accountWidth)}  ${pad('PLAN', planWidth)}  ${pad('5H USAGE', h5Width)}  ${pad('WEEKLY USAGE', weeklyWidth)}  ${pad('CREDITS', creditsWidth)}  ${pad('RESET', resetCreditsWidth)}  ${pad('UPDATED', updatedWidth)}`;
 if (showAlias) header += `  ${pad('ALIAS', aliasWidth)}`;
 const sep = '-'.repeat(header.length);
 console.log(color(header, 'dim'));
 console.log(color(sep, 'dim'));
 for (const r of rows) {
-  let line = `${r.marker} ${r.num} ${pad(r.account, accountWidth)}  ${pad(r.plan, planWidth)}  ${pad(r.h5, h5Width)}  ${pad(r.weekly, weeklyWidth)}  ${pad(r.resetCredits, resetCreditsWidth)}  ${pad(r.updated, updatedWidth)}`;
+  let line = `${r.marker} ${r.num} ${pad(r.account, accountWidth)}  ${pad(r.plan, planWidth)}  ${pad(r.h5, h5Width)}  ${pad(r.weekly, weeklyWidth)}  ${pad(r.credits, creditsWidth)}  ${pad(r.resetCredits, resetCreditsWidth)}  ${pad(r.updated, updatedWidth)}`;
   if (showAlias) line += `  ${pad(r.alias, aliasWidth)}`;
   console.log(color(line, r.active ? 'green' : 'dim'));
 }

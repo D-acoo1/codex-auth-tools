@@ -25,10 +25,11 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.6"
+VERSION = "0.8.7"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
@@ -775,6 +776,8 @@ def merge_usage_snapshots(current: Any, incoming: Any) -> Any:
     merged = dict(incoming)
     if "reset_credits_available" not in incoming and isinstance(current, dict) and "reset_credits_available" in current:
         merged["reset_credits_available"] = current.get("reset_credits_available")
+    if "credits" not in incoming and isinstance(current, dict) and current.get("credits"):
+        merged["credits"] = current["credits"]
     return merged
 
 
@@ -953,6 +956,26 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     return 0
 
 
+def fmt_credits(usage: Any) -> str:
+    credits = usage.get("credits") if isinstance(usage, dict) else None
+    if not isinstance(credits, dict):
+        return "?"
+    if credits.get("unlimited") is True:
+        return "∞"
+    raw = credits.get("balance")
+    if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+        return "?"
+    try:
+        value = Decimal(str(raw))
+        if not value.is_finite() or value < 0:
+            return "?"
+        if 0 < value < Decimal("0.01"):
+            return "<0.01"
+        return format(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ",.2f").rstrip("0").rstrip(".")
+    except InvalidOperation:
+        return "?"
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     reg = load_registry()
     accounts = reg.get("accounts", {})
@@ -978,6 +1001,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         is_api = rec.get("kind") == "api"
         h5 = "-" if is_api else fmt_usage(usage, 300, True, err)
         weekly = "-" if is_api else fmt_usage(usage, 10080, False, err)
+        credits = "-" if is_api else fmt_credits(usage)
         raw_reset = usage.get("reset_credits_available") if usage else None
         if is_api:
             reset_credits = "-"
@@ -989,21 +1013,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         refresh_failed = bool(rec.get("last_usage_error") or rec.get("last_reset_credits_error"))
         if not bool(getattr(args, "cached", False)) and usage and updated_at and refresh_failed:
             updated += "!"
-        rows.append((marker, alias, email, plan, h5, weekly, reset_credits, updated))
-    headers = ("ALIAS", "ACCOUNT", "PLAN", "5H USAGE", "WEEKLY USAGE", "RESET", "UPDATED")
-    widths = [
-        max(len(r[1]) for r in rows + [("", headers[0], "", "", "", "", "", "")]),
-        max(len(r[2]) for r in rows + [("", "", headers[1], "", "", "", "", "")]),
-        max(len(r[3]) for r in rows + [("", "", "", headers[2], "", "", "", "")]),
-        max(len(r[4]) for r in rows + [("", "", "", "", headers[3], "", "", "")]),
-        max(len(r[5]) for r in rows + [("", "", "", "", "", headers[4], "", "")]),
-        max(len(r[6]) for r in rows + [("", "", "", "", "", "", headers[5], "")]),
-        max(len(r[7]) for r in rows + [("", "", "", "", "", "", "", headers[6])]),
-    ]
-    print(f"  {headers[0].ljust(widths[0])}  {headers[1].ljust(widths[1])}  {headers[2].ljust(widths[2])}  {headers[3].ljust(widths[3])}  {headers[4].ljust(widths[4])}  {headers[5].ljust(widths[5])}  {headers[6].ljust(widths[6])}")
-    print("-" * (sum(widths) + 15))
-    for marker, alias, email, plan, h5, weekly, reset_credits, updated in rows:
-        print(f"{marker} {alias.ljust(widths[0])}  {email.ljust(widths[1])}  {plan.ljust(widths[2])}  {h5.ljust(widths[3])}  {weekly.ljust(widths[4])}  {reset_credits.ljust(widths[5])}  {updated.ljust(widths[6])}")
+        rows.append((marker, alias, email, plan, h5, weekly, credits, reset_credits, updated))
+    headers = ("ALIAS", "ACCOUNT", "PLAN", "5H USAGE", "WEEKLY USAGE", "CREDITS", "RESET", "UPDATED")
+    widths = [max(len(header), *(len(row[i + 1]) for row in rows)) for i, header in enumerate(headers)]
+    header_line = "  " + "  ".join(header.ljust(width) for header, width in zip(headers, widths))
+    print(header_line)
+    print("-" * len(header_line))
+    for marker, *cells in rows:
+        print(marker + " " + "  ".join(cell.ljust(width) for cell, width in zip(cells, widths)))
     if not bool(getattr(args, "cached", False)):
         failed = [
             alias
