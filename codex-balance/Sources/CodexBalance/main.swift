@@ -3317,12 +3317,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     private func modelTPSReadout(_ value: Double?) -> String {
-        (value.map { String(format: "%.0f", $0) } ?? "—") + " tps"
+        (value.map { String(format: "%.0f", $0) } ?? "—") + " TPS"
     }
 
     private func appendModelTPS(to result: NSMutableAttributedString) {
         let readout = modelTPSReadout(modelActivity.overallTPS)
-        let digits = readout.count - " tps".count
+        let digits = readout.count - " TPS".count
         let padding = String(repeating: "\u{2007}", count: max(0, 3 - digits))
         result.append(NSAttributedString(string: "  " + padding + readout, attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
