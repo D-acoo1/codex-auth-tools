@@ -3323,11 +3323,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     private func appendModelTPS(to result: NSMutableAttributedString) {
         let readout = modelTPSReadout(modelActivity.overallTPS)
         let digits = readout.count - " TPS".count
-        let padding = String(repeating: "\u{2007}", count: max(0, 3 - digits))
-        result.append(NSAttributedString(string: "  " + padding + readout, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
-            .foregroundColor: NSColor.labelColor
+        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+        let numberColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(calibratedRed: 0.82, green: 0.67, blue: 1.0, alpha: 1)
+                : NSColor(calibratedRed: 0.50, green: 0.26, blue: 0.67, alpha: 1)
+        }
+        result.append(NSAttributedString(string: " " + readout, attributes: [
+            .font: numberFont,
+            .foregroundColor: modelActivity.overallTPS == nil ? NSColor.secondaryLabelColor : numberColor
         ]))
+        result.addAttributes([
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ], range: NSRange(location: result.length - 3, length: 3))
+        // Reserve width after the readout, not between the task lights and the number.
+        let padding = String(repeating: "\u{2007}", count: max(0, 3 - digits))
+        result.append(NSAttributedString(string: padding, attributes: [.font: numberFont]))
     }
 
     private static func defaultTaskStatusFile() -> URL {
