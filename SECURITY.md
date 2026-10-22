@@ -40,6 +40,7 @@ Treat all of the following as private local state:
 | macOS Keychain items named `codex-ac:*` | API or relay keys managed by `ca` |
 | `~/Library/Application Support/CodexBalance/last-status.json` | Cached account identifiers, quota, and error state |
 | `~/Library/Logs/CodexAuth/**` and `~/Library/Logs/CodexBalance/**` | Operational status and errors that may still identify an account or endpoint |
+| `$CODEX_HOME/state_5.sqlite`, `.codex-global-state.json`, and rollout files | Local task metadata and potentially sensitive conversation/tool content. The activity monitor reads metadata only and does not persist or transmit it. |
 | `Authorization`, `x-api-key`, access/refresh/ID tokens, cookies | Reusable credentials or authenticated request material |
 
 Never include those values in sample data, fixtures, screenshots, release archives, crash reports, issues, or pull requests.
@@ -95,9 +96,9 @@ The following behaviors are intentional and must remain visible in code and docu
 | Login switching | `ca` atomically replaces `~/.codex/auth.json` and updates only its managed API provider configuration. Back up active auth before testing changes to this path. |
 | Scheduled keepalive | `com.codexlocaltools.codex-auth-keepalive` runs at load and every 86,400 seconds. It skips API profiles and accounts not close to expiry. |
 | Balance app startup | `com.codexlocaltools.codex-balance` starts the menu bar app in the user's Aqua session. |
-| External executables | The CLI wrapper and runtime can resolve `python3`, `codex`, `codex-auth`, `node`, `curl`, `osascript`, and `open` from `PATH`. Fixed runtime/release tools include `/bin/zsh`, `/bin/sh`, `/usr/bin/security`, `/usr/bin/sqlite3`, `/usr/bin/codesign`, `/usr/bin/shasum`, and `/usr/bin/strip`. Source installation and release packaging additionally use standard commands from the current macOS developer environment, including Git, Swift, archive, launchd, property-list, and file utilities. Their identity and search path are part of the trust boundary. |
+| External executables | The CLI wrapper and runtime can resolve `python3`, `codex`, `codex-auth`, `node`, `curl`, `osascript`, and `open` from `PATH`. Fixed runtime/release tools include `/bin/zsh`, `/bin/sh`, `/usr/bin/security`, `/usr/bin/codesign`, `/usr/bin/shasum`, and `/usr/bin/strip`. Source installation and release packaging additionally use standard commands from the current macOS developer environment, including Git, Swift, archive, launchd, property-list, and file utilities. Their identity and search path are part of the trust boundary. |
 | Uninstall | Codex Auth uninstall removes its installed executable, support code, and LaunchAgent but preserves `~/.codex-ac`; Codex Balance uninstall unloads its LaunchAgent and preserves the installed app/data. |
-| SQLite inspection | Codex Balance uses the fixed `/usr/bin/sqlite3` executable in read-only mode for compatible local Codex account data. |
+| Activity inspection | Codex Balance shares one utility-priority, in-process system SQLite read-only collector between model activity and task lights. It discovers at most 250 non-archived threads, attaches to a bounded recent rollout tail, then reads appends through native file notifications. Metadata-only decoding skips conversation/tool fields, oversized lines are discarded, and activity is neither persisted nor sent. No telemetry helper, hook, socket subscription, or model request is started. |
 
 Do not broaden deletion patterns, persistence, helper execution, writable paths, or network destinations without a specific requirement and tests.
 

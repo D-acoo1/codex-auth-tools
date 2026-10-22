@@ -52,7 +52,7 @@ PY
 for file in "$EN_TMP" "$ZH_TMP"; do
   width="$(/usr/bin/sips -g pixelWidth "$file" | /usr/bin/awk '/pixelWidth/ {print $2}')"
   height="$(/usr/bin/sips -g pixelHeight "$file" | /usr/bin/awk '/pixelHeight/ {print $2}')"
-  [[ $((width % 410)) -eq 0 && $((height % 404)) -eq 0 && $((width / 410)) -eq $((height / 404)) ]] || {
+  [[ $((width % 410)) -eq 0 && $((height % 524)) -eq 0 && $((width / 410)) -eq $((height / 524)) ]] || {
     printf 'Unexpected popover sample size: %sx%s (%s)\n' "$width" "$height" "$file" >&2
     exit 1
   }

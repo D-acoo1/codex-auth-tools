@@ -62,7 +62,8 @@ It is **not** a team credential vault, a cloud account-sync service, or a replac
 - displays 5-hour, weekly, Credits, Spark, reset time, plan, account, and availability data;
 - displays balance, cost, token usage, and request totals for supported relay endpoints;
 - appends a red/yellow/green task-attention indicator to the menu-bar quota summary;
-- refreshes every 30 seconds and immediately when opened or manually refreshed;
+- refreshes quotas every 30 seconds and immediately when opened or manually refreshed;
+- groups active local Codex tasks by model, with input-token amounts and response-sampled output TPS;
 - follows account switches made by `ca` on the next refresh;
 - supports Automatic/System plus 40 selectable UI languages;
 - keeps animation off by default for new installations and exposes optional styles/segments through the quota-card context menu.
@@ -78,6 +79,12 @@ The three lamps after the menu-bar quota summary describe **Codex task attention
 | Green | No unread task needs attention and no task appears to be running. |
 
 Red and yellow are independent, so both can be lit when one result is waiting while another task is still running. Green is lit only when neither condition exists. Codex Balance checks this local state every two seconds, separately from quota refreshes, and does not mark a task as read or send task state over the network. This makes the status bar answer three different questions at a glance: **Does anything need me? Is anything still working? Is everything clear?**
+
+#### Local model activity
+
+The popover groups observed open Codex App/CLI sessions in the current `CODEX_HOME` by model, including subagents. **↑ is input tokens, not input TPS; ↓ is approximate response-sampled output tokens/second, not a live per-token counter.** Same-model concurrent tasks are summed; `[1/3]` means only one of three tasks has a fresh measurement for that column. Tool waits are excluded from model-item time, reasoning is counted once, missing timing shows `—`, and samples expire after 15 seconds. An already observed open turn stays visible as **quiet / waiting for updates** after 75 seconds of silence, not falsely generating or finished; other AI apps and separate Codex homes are not monitored. See [measurement details and limitations](docs/codex-balance.md#local-model-activity).
+
+This feature is available in current `main` / source builds; the `v2026.10.12` prebuilt release predates it.
 
 ### Codex Auth (`ca`)
 
@@ -97,13 +104,13 @@ Status bar, using the same synthetic quota values as the panel below:
 
 ![Codex Balance status bar](assets/status-bar.png)
 
-The sample has the green task light active because its synthetic state contains no unread or running task.
+The sample has the yellow task light active, matching the synthetic active models in the panel, and no unread task.
 
 Current English popover layout:
 
 <img src="assets/popover-sample-en.png" alt="Current Codex Balance English popover rendered from the production AppKit view with a two-row reset-credit expiration bubble" width="410">
 
-These images are rendered directly from the production AppKit views with synthetic account data. They show the current animation-off layout, including an unlimited 5-hour window, weekly quota, two reset credits with local expiration dates and times, theme and language controls, and the three action buttons; they contain no real account information.
+These images are rendered directly from the production AppKit views with synthetic account and model-activity data. They show the current animation-off layout, including an unlimited 5-hour window, weekly quota, two reset credits with local expiration dates and times, local model activity, theme and language controls, and the three action buttons; they contain no real account information. Model names and rates are illustrative, not benchmark results.
 
 ## Install from a release package
 
@@ -204,7 +211,7 @@ This repository review found no feature whose purpose is malware, credential exf
 | Unauthorized network request | Subscription requests go to `chatgpt.com`; relay requests go to the profile's configured URL. | Exact destinations are documented above. Review relay URLs and proxy variables before use. |
 | Filesystem damage | Install/uninstall scripts write known app, support, log, and LaunchAgent paths; `ca` updates Codex auth/config files. | Scripts do not require `sudo`; saved accounts are preserved on uninstall. Review diffs and back up local auth before testing changes. |
 | Prompt injection | The shipped runtime does not process natural language with an LLM, so this is not a direct runtime path today. | Any future AI-assisted issue/PR automation must treat repository text as untrusted and must not receive autonomous secret, shell, merge, or deployment authority. |
-| Supply chain | Runtime code has no third-party Swift packages; Python uses the standard library and JavaScript uses Node built-ins. The runtime still trusts executables resolved from `PATH` (`python3`, `codex`, `codex-auth`, `node`, `curl`, `osascript`, `open`) plus fixed macOS tools such as `/bin/zsh`, `/bin/sh`, `/usr/bin/security`, `/usr/bin/sqlite3`, and `/usr/bin/codesign`. Source installation and release packaging additionally trust the current developer environment and standard macOS, Git, Swift, archive, launchd, and file utilities; prebuilt releases remain a binary trust decision. | Release packaging copies directory content only from Git-tracked files. Verify the release checksum, tag, `COMMIT`, internal manifest, and app signature; inspect executable resolution and source; prefer source builds when stronger provenance is required; review dependency or tool-path changes separately. |
+| Supply chain | Runtime code has no third-party Swift packages; Python uses the standard library and JavaScript uses Node built-ins. The runtime still trusts executables resolved from `PATH` (`python3`, `codex`, `codex-auth`, `node`, `curl`, `osascript`, `open`) plus fixed macOS tools such as `/bin/zsh`, `/bin/sh`, `/usr/bin/security`, and `/usr/bin/codesign`. Source installation and release packaging additionally trust the current developer environment and standard macOS, Git, Swift, archive, launchd, and file utilities; prebuilt releases remain a binary trust decision. | Release packaging copies directory content only from Git-tracked files. Verify the release checksum, tag, `COMMIT`, internal manifest, and app signature; inspect executable resolution and source; prefer source builds when stronger provenance is required; review dependency or tool-path changes separately. |
 | Third-party contribution | A pull request can alter credential, command, network, or install behavior. | Require human review, tests, secret checks, and focused scrutiny of trust-boundary changes; never auto-publish an unreviewed fork/PR build. |
 
 The full threat model, reporting path, secure-install checklist, and file/network inventory are in [SECURITY.md](SECURITY.md).
@@ -327,7 +334,8 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 - 展示 5 小时、周额度、Credits、Spark、重置时间、套餐、账号和可用状态；
 - 对支持的中转接口展示余额、费用、token 用量和请求数；
 - 在状态栏额度后显示红、黄、绿三盏任务提示灯；
-- 每 30 秒刷新，打开面板或点击刷新时立即更新；
+- 每 30 秒刷新额度，打开面板或点击刷新时立即更新；
+- 按模型汇总本机活动 Codex 任务，显示输入 token 数及响应采样的输出 TPS；
 - `ca` 切换账号后，下一次刷新自动跟随；
 - 支持“自动/系统”和 40 种手动界面语言；
 - 新安装默认关闭动画，通过额度卡片右键菜单选择动画样式和展示段。
@@ -343,6 +351,12 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 | 绿灯 | 没有需要查看的未读任务，也没有看起来仍在运行的任务。 |
 
 红灯和黄灯彼此独立，所以“一个结果等着查看，同时另一个任务仍在执行”时两盏灯可以一起亮；只有两种情况都不存在时才亮绿灯。Codex Balance 每 2 秒只读检查一次本机任务状态，这套检查与额度刷新相互独立，不会替用户把任务标成已读，也不会把任务状态发送到网络。这样看一眼状态栏就能同时知道：**有没有结果需要我看、有没有任务还在做、现在是不是全部清空。**
+
+#### 本机模型活动
+
+面板按模型汇总当前 `CODEX_HOME` 下已观察到的开放 Codex App/CLI 会话，包含 subagent。**↑ 表示输入 token 数，不是输入 TPS；↓ 是近似的响应采样输出 tokens/秒，不是逐 token 实时计数。** 同模型并发任务相加，`[1/3]` 表示该列在三个任务中仅一个有新鲜的有效测量。模型时间不包含工具等待，推理 token 只计一次；缺少时间数据显示 `—`，样本 15 秒后失效。已观察到的开放 turn 在 75 秒没有新日志后保留为**等待更新**，不会被误标为正在生成或已完成；不监测其他 AI 应用或独立 Codex Home。详见[计算口径与限制](docs/codex-balance.md#local-model-activity)。
+
+此功能已在当前 `main` / 源码构建中提供；`v2026.10.12` 预编译 Release 尚未包含。
 
 ### Codex Auth (`ca`)
 
@@ -362,13 +376,13 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 ![Codex Balance 状态栏](assets/status-bar.png)
 
-示例数据没有未读或运行中的任务，因此图中点亮的是绿灯。
+示例数据有运行中的模型、没有未读任务，因此图中点亮的是黄灯，与下方面板一致。
 
 当前简体中文面板布局：
 
 <img src="assets/popover-sample-zh-Hans.png" alt="由生产 AppKit 界面直接渲染的 Codex Balance 简体中文面板，显示两行重置券到期日期与时间气泡" width="410">
 
-这些图片由生产 AppKit 界面直接使用伪造账号数据渲染，展示当前默认关闭动画时的真实布局，包括无限 5 小时窗口、周额度、两张重置券及其本机到期日期和时间、主题与语言控件和三个操作按钮；不包含真实账号信息。
+这些图片由生产 AppKit 界面直接使用伪造账号和模型活动数据渲染，展示当前默认关闭动画时的真实布局，包括无限 5 小时窗口、周额度、两张重置券及其本机到期日期和时间、本机模型活动、主题与语言控件和三个操作按钮；不包含真实账号信息。模型名与速率仅为示意，不是测速结果。
 
 ## 安装
 
