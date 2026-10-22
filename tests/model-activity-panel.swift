@@ -93,34 +93,65 @@ defer { statusDelegate.removeReadmeSampleStatusItem() }
             outputTPS: modelValue ?? value, measuredTasks: value == nil ? 0 : 1, responseSamples: value == nil ? 0 : 8)
     ], overallTPS: value)
 }
-let statusButton = statusDelegate.readmeSampleStatusButton(for: try readmeSampleSummary(), activity: activity(86.4))!
-check(statusButton.attributedTitle.string.hasSuffix("86 TPS"), "menu bar uses only a whole number and uppercase TPS")
+@MainActor func statusText(_ button: NSStatusBarButton) -> String {
+    button.attributedTitle.string.trimmingCharacters(in: .whitespaces)
+}
+let statusSummary = try readmeSampleSummary()
+let statusButton = statusDelegate.readmeSampleStatusButton(for: statusSummary, activity: activity(86.4))!
+check(statusText(statusButton).hasSuffix("86 TPS"), "menu bar uses only a whole number and uppercase TPS")
 check(!statusButton.attributedTitle.string.contains("≈") && !statusButton.attributedTitle.string.contains("model-a"), "no extra prefix, icon or model name in the numeric readout")
 check(statusButton.toolTip!.contains("model-a: 86 TPS"), "model detail is in the hover tooltip")
 statusDelegate.updateModelActivity(activity(98.2))
-check(statusButton.attributedTitle.string.hasSuffix("98 TPS"), "TPS refreshes even when quotas and task lights stay unchanged")
+check(statusText(statusButton).hasSuffix("98 TPS"), "TPS refreshes even when quotas and task lights stay unchanged")
 statusDelegate.updateModelActivity(activity(98.4, modelValue: 99))
 let unchangedTitle = statusButton.attributedTitle
 statusDelegate.updateModelActivity(activity(98.49, modelValue: 101))
 check(unchangedTitle.isEqual(to: statusButton.attributedTitle), "same rounded TPS does not rebuild the status title")
 check(statusButton.toolTip!.contains("model-a: 101 TPS"), "model tooltip stays fresh even without a title redraw")
 var widths: [CGFloat] = []
+var numberOffsets: [CGFloat] = []
 for value in [8.0, 86, 186] {
     statusDelegate.updateModelActivity(activity(value))
-    widths.append(statusButton.attributedTitle.size().width)
+    let title = statusButton.attributedTitle
+    widths.append(title.size().width)
+    let number = (title.string as NSString).range(of: "\(Int(value)) TPS", options: .backwards)
+    numberOffsets.append(title.attributedSubstring(from: NSRange(location: 0, length: number.location)).size().width)
 }
 check(widths.max()! - widths.min()! < 0.01, "one to three digit TPS has stable menu bar width")
+check(numberOffsets.max()! - numberOffsets.min()! < 0.01, "the first TPS digit stays close to the lights for every digit count")
 statusDelegate.updateModelActivity(activity(nil))
-check(statusButton.attributedTitle.string.hasSuffix("— TPS"), "no sample is unknown, never a fabricated zero")
+check(statusText(statusButton).hasSuffix("— TPS"), "no sample is unknown, never a fabricated zero")
 statusDelegate.updateModelActivity(activity(0))
-check(statusButton.attributedTitle.string.hasSuffix("0 TPS"), "a measured zero remains distinct from missing data")
+check(statusText(statusButton).hasSuffix("0 TPS"), "a measured zero remains distinct from missing data")
 statusDelegate.updateModelActivity(activity(86.4, tasks: 0))
-check(statusButton.attributedTitle.string.hasSuffix("86 TPS") && statusButton.toolTip!.contains(chinese ? "（近期）" : "(recent)"), "recent idle means remain visible and identified in the tooltip")
+check(statusText(statusButton).hasSuffix("86 TPS") && statusButton.toolTip!.contains(chinese ? "（近期）" : "(recent)"), "recent idle means remain visible and identified in the tooltip")
 statusDelegate.updateModelActivity(activity(86.4))
+let styledTitle = statusButton.attributedTitle
+let numberRange = (styledTitle.string as NSString).range(of: "86 TPS", options: .backwards)
+let lightRange = (styledTitle.string as NSString).range(of: "\u{FFFC}", options: .backwards)
+check((styledTitle.string as NSString).substring(with: NSRange(location: lightRange.location + 1, length: numberRange.location - lightRange.location - 1)) == " ", "only one space separates the task lights from the number")
+let numberFont = styledTitle.attribute(.font, at: numberRange.location, effectiveRange: nil) as! NSFont
+let unitFont = styledTitle.attribute(.font, at: numberRange.location + 3, effectiveRange: nil) as! NSFont
+let numberColor = styledTitle.attribute(.foregroundColor, at: numberRange.location, effectiveRange: nil) as! NSColor
+let unitColor = styledTitle.attribute(.foregroundColor, at: numberRange.location + 3, effectiveRange: nil) as! NSColor
+check(numberFont.pointSize > unitFont.pointSize && NSFontManager.shared.weight(of: numberFont) > NSFontManager.shared.weight(of: unitFont), "the number is larger and bolder than its secondary unit")
+check(unitColor.isEqual(NSColor.secondaryLabelColor), "TPS unit uses a quieter native secondary color")
 for mode in [CardThemeMode.dark, .light] {
+    let appearance = NSAppearance(named: mode == .dark ? .darkAqua : .aqua)!
+    appearance.performAsCurrentDrawingAppearance {
+        _ = statusDelegate.readmeSampleStatusButton(for: statusSummary, activity: activity(86.4))
+        let rgb = numberColor.usingColorSpace(.sRGB)!
+        func linear(_ c: CGFloat) -> CGFloat { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        let luminance = 0.2126 * linear(rgb.redComponent) + 0.7152 * linear(rgb.greenComponent) + 0.0722 * linear(rgb.blueComponent)
+        let contrast = mode == .dark ? (luminance + 0.05) / 0.05 : 1.05 / (luminance + 0.05)
+        check(contrast >= 4.5 && rgb.alphaComponent == 1, "numeric accent has readable contrast in \(mode.rawValue) appearance")
+        check(rgb.blueComponent > rgb.greenComponent && rgb.redComponent > rgb.greenComponent, "numeric accent matches the panel's purple TPS family")
+    }
     let title = statusButton.attributedTitle
     let preview = NSButton(frame: NSRect(x: 0, y: 0, width: ceil(title.size().width) + 14, height: 24))
-    preview.isBordered = false; preview.appearance = NSAppearance(named: mode == .dark ? .darkAqua : .aqua)
+    preview.isBordered = false; preview.appearance = appearance
+    preview.wantsLayer = true
+    preview.layer?.backgroundColor = (mode == .dark ? NSColor.black : NSColor.white).cgColor
     preview.attributedTitle = title
     try writeReadmeSamplePNG(view: preview, to: output.appendingPathComponent("statusbar-\(mode.rawValue).png"))
 }
@@ -128,9 +159,9 @@ var apiSummary = try readmeSampleSummary()
 apiSummary.kind = "api"
 apiSummary.apiUsage = APIUsageSummary(unit: "USD", remaining: 12, todayTokens: 3200)
 let apiButton = statusDelegate.readmeSampleStatusButton(for: apiSummary, activity: activity(86.4))!
-check(apiButton === statusButton && apiButton.attributedTitle.string.hasSuffix("86 TPS"), "API status uses the same item and numeric TPS suffix")
+check(apiButton === statusButton && statusText(apiButton).hasSuffix("86 TPS"), "API status uses the same item and numeric TPS suffix")
 statusDelegate.updateModelActivity(activity(99))
-check(apiButton.attributedTitle.string.contains("T ") && apiButton.attributedTitle.string.hasSuffix("99 TPS"), "API TPS updates independently without replacing its balance/token display")
+check(apiButton.attributedTitle.string.contains("T ") && statusText(apiButton).hasSuffix("99 TPS"), "API TPS updates independently without replacing its balance/token display")
 statusDelegate.updateModelActivity(ModelActivitySnapshot(availability: .unavailable))
-check(apiButton.attributedTitle.string.hasSuffix("— TPS") && apiButton.toolTip!.contains(chinese ? "暂时无法发现" : "discovery is unavailable"), "discovery failure is unknown and explained, not a fake zero or idle")
+check(statusText(apiButton).hasSuffix("— TPS") && apiButton.toolTip!.contains(chinese ? "暂时无法发现" : "discovery is unavailable"), "discovery failure is unknown and explained, not a fake zero or idle")
 print("model-activity-panel (\(L10n.shared.effectiveCode)): \(checks) assertions passed")
