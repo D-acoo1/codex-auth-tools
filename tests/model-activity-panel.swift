@@ -94,16 +94,16 @@ defer { statusDelegate.removeReadmeSampleStatusItem() }
     ], overallTPS: value)
 }
 let statusButton = statusDelegate.readmeSampleStatusButton(for: try readmeSampleSummary(), activity: activity(86.4))!
-check(statusButton.attributedTitle.string.hasSuffix("86 tps"), "menu bar uses only a whole number and lowercase tps")
+check(statusButton.attributedTitle.string.hasSuffix("86 TPS"), "menu bar uses only a whole number and uppercase TPS")
 check(!statusButton.attributedTitle.string.contains("≈") && !statusButton.attributedTitle.string.contains("model-a"), "no extra prefix, icon or model name in the numeric readout")
-check(statusButton.toolTip!.contains("model-a: 86 tps"), "model detail is in the hover tooltip")
+check(statusButton.toolTip!.contains("model-a: 86 TPS"), "model detail is in the hover tooltip")
 statusDelegate.updateModelActivity(activity(98.2))
-check(statusButton.attributedTitle.string.hasSuffix("98 tps"), "TPS refreshes even when quotas and task lights stay unchanged")
+check(statusButton.attributedTitle.string.hasSuffix("98 TPS"), "TPS refreshes even when quotas and task lights stay unchanged")
 statusDelegate.updateModelActivity(activity(98.4, modelValue: 99))
 let unchangedTitle = statusButton.attributedTitle
 statusDelegate.updateModelActivity(activity(98.49, modelValue: 101))
 check(unchangedTitle.isEqual(to: statusButton.attributedTitle), "same rounded TPS does not rebuild the status title")
-check(statusButton.toolTip!.contains("model-a: 101 tps"), "model tooltip stays fresh even without a title redraw")
+check(statusButton.toolTip!.contains("model-a: 101 TPS"), "model tooltip stays fresh even without a title redraw")
 var widths: [CGFloat] = []
 for value in [8.0, 86, 186] {
     statusDelegate.updateModelActivity(activity(value))
@@ -111,11 +111,11 @@ for value in [8.0, 86, 186] {
 }
 check(widths.max()! - widths.min()! < 0.01, "one to three digit TPS has stable menu bar width")
 statusDelegate.updateModelActivity(activity(nil))
-check(statusButton.attributedTitle.string.hasSuffix("— tps"), "no sample is unknown, never a fabricated zero")
+check(statusButton.attributedTitle.string.hasSuffix("— TPS"), "no sample is unknown, never a fabricated zero")
 statusDelegate.updateModelActivity(activity(0))
-check(statusButton.attributedTitle.string.hasSuffix("0 tps"), "a measured zero remains distinct from missing data")
+check(statusButton.attributedTitle.string.hasSuffix("0 TPS"), "a measured zero remains distinct from missing data")
 statusDelegate.updateModelActivity(activity(86.4, tasks: 0))
-check(statusButton.attributedTitle.string.hasSuffix("86 tps") && statusButton.toolTip!.contains(chinese ? "（近期）" : "(recent)"), "recent idle means remain visible and identified in the tooltip")
+check(statusButton.attributedTitle.string.hasSuffix("86 TPS") && statusButton.toolTip!.contains(chinese ? "（近期）" : "(recent)"), "recent idle means remain visible and identified in the tooltip")
 statusDelegate.updateModelActivity(activity(86.4))
 for mode in [CardThemeMode.dark, .light] {
     let title = statusButton.attributedTitle
@@ -128,9 +128,9 @@ var apiSummary = try readmeSampleSummary()
 apiSummary.kind = "api"
 apiSummary.apiUsage = APIUsageSummary(unit: "USD", remaining: 12, todayTokens: 3200)
 let apiButton = statusDelegate.readmeSampleStatusButton(for: apiSummary, activity: activity(86.4))!
-check(apiButton === statusButton && apiButton.attributedTitle.string.hasSuffix("86 tps"), "API status uses the same item and numeric TPS suffix")
+check(apiButton === statusButton && apiButton.attributedTitle.string.hasSuffix("86 TPS"), "API status uses the same item and numeric TPS suffix")
 statusDelegate.updateModelActivity(activity(99))
-check(apiButton.attributedTitle.string.contains("T ") && apiButton.attributedTitle.string.hasSuffix("99 tps"), "API TPS updates independently without replacing its balance/token display")
+check(apiButton.attributedTitle.string.contains("T ") && apiButton.attributedTitle.string.hasSuffix("99 TPS"), "API TPS updates independently without replacing its balance/token display")
 statusDelegate.updateModelActivity(ModelActivitySnapshot(availability: .unavailable))
-check(apiButton.attributedTitle.string.hasSuffix("— tps") && apiButton.toolTip!.contains(chinese ? "暂时无法发现" : "discovery is unavailable"), "discovery failure is unknown and explained, not a fake zero or idle")
+check(apiButton.attributedTitle.string.hasSuffix("— TPS") && apiButton.toolTip!.contains(chinese ? "暂时无法发现" : "discovery is unavailable"), "discovery failure is unknown and explained, not a fake zero or idle")
 print("model-activity-panel (\(L10n.shared.effectiveCode)): \(checks) assertions passed")
