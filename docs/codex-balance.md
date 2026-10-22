@@ -80,6 +80,10 @@ For deterministic integration checks, `~/Library/Application Support/CodexBalanc
 
 ## Local model activity
 
+The menu bar adds only a whole number and lowercase unit, such as **`86 tps`**, next to the existing quota and task lights. It uses a single existing status item, not a second icon. The collector computes the all-model mean from the combined response output and generation-time totals; it never averages already-averaged model speeds. An unmeasured model is not treated as zero. The common one-to-three-digit range reserves equal width to avoid shifting adjacent menu items. Hover reveals the 60-second weighting label and per-model readings.
+
+Activity updates refresh the readout even if quotas and lights are unchanged; unchanged rounded values do not rebuild its title. Quota errors stay visible in the tooltip while the independent local TPS continues updating. `— tps` is unknown, including an expired/no-sample state. Recent completed samples remain eligible until expiry, but do not imply a running task. The existing subscription and API/relay status formats, task lights, click-to-open behavior, and popover remain intact. No additional timer, helper, request, hook or persisted telemetry is introduced.
+
 The popover groups observed Codex App/CLI activity in the current `CODEX_HOME` by model, including subagents. Each model's primary readout uses an explicit TPS unit, such as **`≈ 86 TPS`**; the input-token amount is secondary. TPS means output tokens per second. Two rows fit in the fixed-height area; additional models scroll rather than being omitted. Value updates reuse the existing rows and preserve the quota card, optional animation, reset-credit bubble, and footer controls.
 
 | Display | Meaning |
@@ -106,7 +110,7 @@ Read-only diagnostic (the executable is inside the installed app bundle):
 "$HOME/Library/Application Support/CodexBalance/CodexBalance.app/Contents/MacOS/CodexBalance" --model-activity-once
 ```
 
-The standalone diagnostic attaches afresh, so its first response may not yet have enough timing context for a rate. Its JSON identifies the 60-second window and duration-weighted method, with valid-response counts; `measured_tasks` counts contributing sessions (which may include completed tasks). It includes only model names, counts, and measurements; no thread IDs, paths, conversation text, or credentials.
+The standalone diagnostic attaches afresh, so its first response may not yet have enough timing context for a rate. Its JSON identifies the 60-second window and duration-weighted method, with valid-response counts and `overall_tps` (the all-model mean, or null); `measured_tasks` counts contributing sessions (which may include completed tasks). It includes only model names, counts, and measurements; no thread IDs, paths, conversation text, or credentials.
 
 ### Open-source references
 

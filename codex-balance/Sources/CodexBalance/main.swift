@@ -2937,6 +2937,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     private var timer: Timer?
     private var taskLightTimer: Timer?
     private var modelActivity = ModelActivitySnapshot()
+    private var displayedTPSReadout = ""
     private var activityMonitor: ModelActivityMonitor?
     private var outsideClickMonitor: Any?
     private var lastSummary: CodexUsageSummary?
@@ -2955,7 +2956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         NSApp.setActivationPolicy(.accessory)
         taskLightState = readManualTaskLightState(requireOverride: true) ?? .idle
         updateStatusButton(title: "5h … / 7d …")
-        statusItem.button?.toolTip = L10n.shared.t("title")
+        updateStatusTooltip()
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover(_:))
         popover.behavior = .applicationDefined
@@ -2964,12 +2965,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         animationSettingsPopover.delegate = self
         updatePopoverContent()
         let monitor = ModelActivityMonitor(home: Self.defaultCodexHome()) { [weak self] snapshot in
-            guard let self else { return }
-            self.modelActivity = snapshot
-            self.refreshTaskLight()
-            if self.popover.isShown {
-                (self.popover.contentViewController as? CodexPanelViewController)?.updateModelActivity(snapshot)
-            }
+            self?.updateModelActivity(snapshot)
         }
         activityMonitor = monitor
         monitor.start()
@@ -2983,7 +2979,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         taskLightTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             guard let delegate = self else { return }
             Task { @MainActor in
-                delegate.refreshTaskLight()
+                delegate.refreshActivityStatus()
             }
         }
     }
@@ -3006,7 +3002,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                     delegate.lastSummary = summary
                     delegate.lastError = nil
                     delegate.updateStatusButton(summary: summary)
-                    delegate.statusItem.button?.toolTip = delegate.tooltip(for: summary)
                 case .failure(let error):
                     delegate.lastError = error.description
                     if let summary = delegate.lastSummary {
@@ -3014,8 +3009,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                     } else {
                         delegate.updateStatusButton(title: "5h ? / 7d ?")
                     }
-                    delegate.statusItem.button?.toolTip = L10n.shared.t("fetchFailed") + ": \(error.description)"
                 }
+                delegate.updateStatusTooltip()
                 if delegate.popover.isShown == true {
                     if delegate.animationSettingsPopover.isShown {
                         delegate.animationSettingsNeedsPanelRefresh = true
@@ -3258,11 +3253,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         L10n.shared.setSelectedCode(code)
         if let summary = lastSummary {
             updateStatusButton(summary: summary)
-            statusItem.button?.toolTip = tooltip(for: summary)
         } else {
             updateStatusButton(title: "5h … / 7d …")
-            statusItem.button?.toolTip = L10n.shared.t("title")
         }
+        updateStatusTooltip()
         updatePopoverContent()
     }
 
@@ -3271,17 +3265,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         guard let button = statusItem.button else { return }
         button.image = nil
         button.attributedTitle = statusAttributedTitle(from: title)
+        displayedTPSReadout = modelTPSReadout(modelActivity.overallTPS)
     }
 
     private func updateStatusButton(summary: CodexUsageSummary) {
         guard let button = statusItem.button else { return }
         button.image = nil
         button.attributedTitle = summary.isAPIAccount ? apiStatusAttributedTitle(summary) : statusAttributedTitle(from: summary.title)
+        displayedTPSReadout = modelTPSReadout(modelActivity.overallTPS)
     }
 
-    fileprivate func readmeSampleStatusTitle(for summary: CodexUsageSummary) -> NSAttributedString {
-        taskLightState = TaskLightState(hasUnread: false, hasRunning: true)
-        return summary.isAPIAccount ? apiStatusAttributedTitle(summary) : statusAttributedTitle(from: summary.title)
+    fileprivate func readmeSampleStatusButton(for summary: CodexUsageSummary, activity: ModelActivitySnapshot) -> NSStatusBarButton? {
+        lastSummary = summary
+        lastError = nil
+        modelActivity = activity
+        taskLightState = TaskLightState(hasUnread: activity.hasUnread, hasRunning: activity.hasRunning)
+        updateStatusButton(summary: summary)
+        updateStatusTooltip()
+        return statusItem.button
     }
 
     fileprivate func removeReadmeSampleStatusItem() {
@@ -3299,6 +3300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         appendSymbol("week", to: result)
         result.append(NSAttributedString(string: " \(parsed.secondary)", attributes: attrs))
         appendTaskLight(to: result)
+        appendModelTPS(to: result)
         return result
     }
 
@@ -3310,7 +3312,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         appendSymbol("money", to: result)
         result.append(NSAttributedString(string: " \(apiAmount(api?.displayRemaining, unit: api?.unit)) / T \(compactNumber(api?.todayTokens ?? api?.totalTokens))", attributes: attrs))
         appendTaskLight(to: result)
+        appendModelTPS(to: result)
         return result
+    }
+
+    private func modelTPSReadout(_ value: Double?) -> String {
+        (value.map { String(format: "%.0f", $0) } ?? "—") + " tps"
+    }
+
+    private func appendModelTPS(to result: NSMutableAttributedString) {
+        let readout = modelTPSReadout(modelActivity.overallTPS)
+        let digits = readout.count - " tps".count
+        let padding = String(repeating: "\u{2007}", count: max(0, 3 - digits))
+        result.append(NSAttributedString(string: "  " + padding + readout, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
+            .foregroundColor: NSColor.labelColor
+        ]))
     }
 
     private static func defaultTaskStatusFile() -> URL {
@@ -3367,17 +3384,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         modelActivity = ModelActivityMonitor(home: Self.defaultCodexHome(), onUpdate: { _ in }).collectOnce()
     }
 
-    private func refreshTaskLight() {
-        let nextState = readTaskLightState()
-        guard nextState != taskLightState else { return }
-        taskLightState = nextState
-        if let summary = lastSummary {
-            updateStatusButton(summary: summary)
-            statusItem.button?.toolTip = tooltip(for: summary)
-        } else {
-            updateStatusButton(title: "5h … / 7d …")
-            statusItem.button?.toolTip = L10n.shared.t("title") + "\n" + taskLightState.tooltipText
+    fileprivate func updateModelActivity(_ snapshot: ModelActivitySnapshot) {
+        modelActivity = snapshot
+        refreshActivityStatus()
+        if popover.isShown {
+            (popover.contentViewController as? CodexPanelViewController)?.updateModelActivity(snapshot)
         }
+    }
+
+    private func refreshActivityStatus() {
+        let nextState = readTaskLightState()
+        let needsTitle = nextState != taskLightState || modelTPSReadout(modelActivity.overallTPS) != displayedTPSReadout
+        taskLightState = nextState
+        if needsTitle {
+            if let summary = lastSummary { updateStatusButton(summary: summary) }
+            else { updateStatusButton(title: lastError == nil ? "5h … / 7d …" : "5h ? / 7d ?") }
+        }
+        updateStatusTooltip()
+    }
+
+    private func updateStatusTooltip() {
+        let chinese = L10n.shared.effectiveCode.hasPrefix("zh")
+        let base: String
+        if let lastError { base = L10n.shared.t("fetchFailed") + ": " + lastError + "\n" + taskLightState.tooltipText }
+        else if let lastSummary { base = tooltip(for: lastSummary) }
+        else { base = L10n.shared.t("title") + "\n" + taskLightState.tooltipText }
+        let heading = (chinese ? "本机全部模型 · 近1分钟加权平均：" : "All local models · 1-minute weighted average: ") + modelTPSReadout(modelActivity.overallTPS)
+        var lines = [base, heading]
+        if modelActivity.availability == .unavailable {
+            lines.append(chinese ? "暂时无法发现 Codex 活动，已有样本仍按60秒窗口失效。" : "Codex activity discovery is unavailable; observed samples still expire after 60s.")
+        }
+        for row in modelActivity.rows {
+            let recent = row.tasks == 0 ? (chinese ? "（近期）" : " (recent)") : ""
+            lines.append(row.model + ": " + modelTPSReadout(row.outputTPS) + recent)
+        }
+        let next = lines.joined(separator: "\n")
+        if statusItem.button?.toolTip != next { statusItem.button?.toolTip = next }
     }
 
     private func appendTaskLight(to result: NSMutableAttributedString) {
@@ -3817,6 +3859,10 @@ private func renderReadmeSample(popoverURL: URL, statusBarURL: URL?) throws {
     let summary = try readmeSampleSummary()
     let target = ReadmeSampleActionTarget()
     let action = #selector(ReadmeSampleActionTarget.ignore(_:))
+    let sampleActivity = ModelActivitySnapshot(availability: .ready, rows: [
+        ModelActivityRow(model: "gpt-codex", tasks: 2, generating: 2, inputTokens: 24500, inputTasks: 2, outputTPS: 86.4, measuredTasks: 2, responseSamples: 8),
+        ModelActivityRow(model: "gpt-codex-mini", tasks: 1, generating: 0, inputTokens: 8100, inputTasks: 1, outputTPS: nil, measuredTasks: 0)
+    ], overallTPS: 86.4)
     let controller = CodexPanelViewController(
         summary: summary,
         errorText: nil,
@@ -3835,10 +3881,7 @@ private func renderReadmeSample(popoverURL: URL, statusBarURL: URL?) throws {
         dismissResetCredits: {},
         trainClickAction: {},
         animationSettingsAction: { _, _ in },
-        modelActivity: ModelActivitySnapshot(availability: .ready, rows: [
-            ModelActivityRow(model: "gpt-codex", tasks: 2, generating: 2, inputTokens: 24500, inputTasks: 2, outputTPS: 86.4, measuredTasks: 2, responseSamples: 8),
-            ModelActivityRow(model: "gpt-codex-mini", tasks: 1, generating: 0, inputTokens: 8100, inputTasks: 1, outputTPS: nil, measuredTasks: 0)
-        ])
+        modelActivity: sampleActivity
     )
     let panel = controller.view
     panel.frame = NSRect(x: 0, y: 0, width: 410, height: 404 + ModelActivityView.panelSpace)
@@ -3847,7 +3890,10 @@ private func renderReadmeSample(popoverURL: URL, statusBarURL: URL?) throws {
     if let statusBarURL {
         let delegate = AppDelegate()
         defer { delegate.removeReadmeSampleStatusItem() }
-        let statusTitle = delegate.readmeSampleStatusTitle(for: summary)
+        guard let sampleButton = delegate.readmeSampleStatusButton(for: summary, activity: sampleActivity) else {
+            throw NSError(domain: "CodexBalance.Readme", code: 1, userInfo: [NSLocalizedDescriptionKey: "Status button unavailable"])
+        }
+        let statusTitle = sampleButton.attributedTitle
         let statusWidth = ceil(statusTitle.size().width) + 14
         let button = NSButton(frame: NSRect(x: 0, y: 0, width: statusWidth, height: 24))
         button.isBordered = false
@@ -3896,7 +3942,8 @@ if CommandLine.arguments.contains("--model-activity-once") {
     let home = AppDelegate.defaultCodexHome()
     let snapshot = ModelActivityMonitor(home: home, onUpdate: { _ in }).collectOnce()
     printJSON(["status": snapshot.availability.rawValue, "averaging_window_seconds": ModelActivityMonitor.sampleSeconds,
-        "method": "duration_weighted_response_average", "models": snapshot.rows.map { row -> [String: Any] in
+        "method": "duration_weighted_response_average",
+        "overall_tps": snapshot.overallTPS.map { $0 as Any } ?? NSNull(), "models": snapshot.rows.map { row -> [String: Any] in
         ["model": row.model, "tasks": row.tasks, "generating": row.generating,
          "quiet_tasks": row.quietTasks,
          "input_tokens": row.inputTokens.map { $0 as Any } ?? NSNull(),
