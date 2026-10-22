@@ -21,11 +21,11 @@ final class ModelActivityView: NSView {
         let separator = NSBox(frame: NSRect(x: 0, y: 107, width: bounds.width, height: 1))
         separator.boxType = .separator
         addSubview(separator)
-        addSubview(field(chinese ? "本机模型" : "Local models", frame: NSRect(x: 0, y: 89, width: 170, height: 16), weight: .semibold))
+        addSubview(field(chinese ? "本机模型 TPS" : "Local model TPS", frame: NSRect(x: 0, y: 89, width: 170, height: 16), weight: .semibold))
         let hint = field(chinese ? "响应采样" : "Response samples", frame: NSRect(x: 180, y: 89, width: bounds.width - 180, height: 16), color: secondary, alignment: .right)
         hint.toolTip = chinese
-            ? "仅观察本机 Codex 会话，不额外调用模型。↑ 每任务最近响应的输入 tokens（含缓存）；↓ 输出 tokens ÷ 模型生成时间（含推理、不含工具等待）。并发同模型相加；不是逐 token 实时测速。15 秒无新样本显示 —；部分任务有数据时标注覆盖数。"
-            : "Observes local Codex sessions without calling a model. ↑ Input tokens of each task's latest response, including cache. ↓ Output tokens / model-item time, including reasoning and excluding tools. Concurrent tasks are summed, not a per-request benchmark. This is not per-token live telemetry. Samples expire after 15s; partial coverage is marked."
+            ? "仅观察本机 Codex 会话，不额外调用模型。输入为每任务最近响应的 token 数（含缓存），不是输入 TPS。TPS = 输出 tokens ÷ 模型生成时间（含推理、不含工具等待）。并发同模型相加；不是逐 token 实时测速。15 秒无新样本显示 —；部分任务有数据时标注覆盖数。"
+            : "Observes local Codex sessions without calling a model. Input is each task's latest response token count, including cache, not input TPS. TPS = output tokens / model-item time, including reasoning and excluding tools. Concurrent tasks are summed, not a per-request benchmark. This is not per-token live telemetry. Samples expire after 15s; partial coverage is marked."
         addSubview(hint)
         samplingHint = hint
         scroll.frame = NSRect(x: 0, y: 19, width: bounds.width, height: 68)
@@ -41,7 +41,7 @@ final class ModelActivityView: NSView {
         empty.textColor = secondary
         empty.alignment = .center
         addSubview(empty)
-        addSubview(field(chinese ? "↑ 输入量 · ↓ 采样 TPS（tok/s）" : "↑ Input tokens · ↓ Sampled TPS (tok/s)", frame: NSRect(x: 0, y: 2, width: bounds.width, height: 14), size: 9, color: secondary))
+        addSubview(field(chinese ? "TPS = 每秒输出 token 数" : "TPS = output tokens per second", frame: NSRect(x: 0, y: 2, width: bounds.width, height: 14), size: 9, color: secondary))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -82,12 +82,10 @@ final class ModelActivityView: NSView {
         let input = NSTextField(labelWithString: "")
         let output = NSTextField(labelWithString: "")
         let secondary: NSColor
-        let inputTint: NSColor
         let outputTint: NSColor
 
         init(primary: NSColor, secondary: NSColor, light: Bool) {
             self.secondary = secondary
-            inputTint = light ? NSColor(calibratedRed: 0.08, green: 0.45, blue: 0.49, alpha: 1) : .systemTeal
             outputTint = light ? NSColor(calibratedRed: 0.50, green: 0.26, blue: 0.67, alpha: 1) : .systemPurple
             super.init(frame: .zero)
             for field in [name, status, input, output] { addSubview(field) }
@@ -95,7 +93,8 @@ final class ModelActivityView: NSView {
             name.textColor = primary; name.lineBreakMode = .byTruncatingMiddle
             status.font = .systemFont(ofSize: 9); status.textColor = secondary; status.alignment = .right
             input.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-            output.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+            input.textColor = secondary; input.alignment = .left
+            output.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
             output.alignment = .right
         }
 
@@ -123,12 +122,12 @@ final class ModelActivityView: NSView {
             }
             status.toolTip = status.stringValue
             let inputCoverage = row.inputTasks > 0 && row.inputTasks < row.tasks ? " [\(row.inputTasks)/\(row.tasks)]" : ""
-            input.stringValue = "↑ " + (row.inputTokens.map(Self.compact) ?? "—") + inputCoverage + " tok"
-            input.toolTip = row.inputTokens.map { "\($0) input tokens" }
-            input.textColor = row.inputTokens == nil ? secondary : inputTint
+            input.stringValue = (chinese ? "输入 " : "Input ") + (row.inputTokens.map(Self.compact) ?? "—") + " tok" + inputCoverage
+            input.toolTip = row.inputTokens.map { chinese ? "\($0) 个输入 token（非 TPS）" : "\($0) input tokens (not TPS)" }
             var value = row.outputTPS.map { "≈ " + String(format: "%.1f", $0) } ?? "—"
+            value += " TPS"
             if row.measuredTasks > 0, row.measuredTasks < row.tasks { value += " [\(row.measuredTasks)/\(row.tasks)]" }
-            output.stringValue = "↓ " + value + " tok/s"
+            output.stringValue = value
             output.textColor = row.outputTPS == nil || row.generating == 0 ? secondary : outputTint
             needsLayout = true
         }

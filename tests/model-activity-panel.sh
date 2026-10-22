@@ -12,4 +12,6 @@ swiftc -swift-version 6 -O -sdk "$(xcrun --show-sdk-path)" \
   "$ROOT/codex-balance/Sources/CodexBalance/Localization.swift" \
   "$ROOT/codex-balance/Sources/CodexBalance/ModelActivity.swift" \
   "$ROOT/codex-balance/Sources/CodexBalance/ModelActivityView.swift" -o "$TMP/tests"
-CODEX_BALANCE_LANG=en "$TMP/tests" "${1:-$TMP/images}"
+for language in en zh-Hans; do
+  CODEX_BALANCE_LANG="$language" "$TMP/tests" "${1:-$TMP/images}/$language"
+done
