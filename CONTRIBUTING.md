@@ -50,6 +50,7 @@ Run the checks relevant to the changed files. A normal full verification is:
 swift build --package-path codex-balance
 python3 tests/keepalive-auth.py
 bash tests/blackbox-ca-balance.sh
+bash tests/model-activity.sh
 git diff --check
 ```
 
@@ -96,6 +97,10 @@ README UI samples must come from the production AppKit view instead of a hand-dr
 ./scripts/render-readme-samples.sh
 ```
 
+For model-panel changes, `bash tests/model-activity-panel.sh <image-directory>` checks production-view row reuse, multi-model scrolling, empty/loading/unavailable states, and dark/light layouts in a graphical macOS session. All model names and counters in these fixtures are synthetic.
+
+For a read-only resource sample, run `node tests/profile-balance.mjs <pid> 60`. It reports parent-process CPU as a percentage of one core and RSS in MiB; RSS is not Activity Monitor's memory footprint. Compare like-for-like panel/workload conditions and do not present a short observational sample as a long-run guarantee.
+
 Review both panel images before committing them. The renderer uses the same `CodexPanelViewController`, card drawing code, labels, controls, and status title as the app, keeps animation off, and never reads a real auth snapshot.
 
 ## Pull request requirements
@@ -128,6 +133,7 @@ Do not open a public issue containing a workable exploit or secret. Use GitHub [
 swift build --package-path codex-balance
 python3 tests/keepalive-auth.py
 bash tests/blackbox-ca-balance.sh
+bash tests/model-activity.sh
 git diff --check
 ```
 

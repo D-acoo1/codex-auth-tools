@@ -36,7 +36,7 @@ else
     -sdk "$SDKROOT" \
     -target "$TARGET_ARCH-apple-macosx13.0" \
     -O \
-    Sources/CodexBalance/main.swift \
+    Sources/CodexBalance/*.swift \
     -o "$MANUAL_BUILD_DIR/CodexBalance" \
     -framework AppKit
   BUILT_BIN="$MANUAL_BUILD_DIR/CodexBalance"

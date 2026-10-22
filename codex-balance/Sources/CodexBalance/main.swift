@@ -2514,6 +2514,7 @@ final class AnimationSettingsViewController: NSViewController {
 
 final class CodexPanelViewController: NSViewController {
     private weak var cardView: UsageCardView?
+    private var modelActivityView: ModelActivityView?
 
     init(
         summary: CodexUsageSummary?,
@@ -2532,11 +2533,12 @@ final class CodexPanelViewController: NSViewController {
         showResetCreditsDetail: Bool,
         dismissResetCredits: @escaping () -> Void,
         trainClickAction: @escaping () -> Void,
-        animationSettingsAction: @escaping (UsageCardView, NSPoint) -> Void
+        animationSettingsAction: @escaping (UsageCardView, NSPoint) -> Void,
+        modelActivity: ModelActivitySnapshot = ModelActivitySnapshot()
     ) {
         super.init(nibName: nil, bundle: nil)
         let l = L10n.shared
-        let root = ThemePanelView(frame: NSRect(x: 0, y: 0, width: 410, height: 404), themeMode: themeMode)
+        let root = ThemePanelView(frame: NSRect(x: 0, y: 0, width: 410, height: 404 + ModelActivityView.panelSpace), themeMode: themeMode)
         root.appearance = panelAppearance(for: themeMode)
         root.wantsLayer = true
         root.layer?.backgroundColor = NSColor.clear.cgColor
@@ -2659,6 +2661,15 @@ final class CodexPanelViewController: NSViewController {
         quit.bezelStyle = .rounded
         root.addSubview(quit)
 
+        // Keep the footer fixed; the quota block moves together, including its bubble anchor.
+        for child in root.subviews where child.frame.minY >= 76 {
+            child.frame.origin.y += ModelActivityView.panelSpace
+        }
+        let activity = ModelActivityView(frame: NSRect(x: 22, y: 82, width: 366, height: 108), primary: primaryTextColor, secondary: secondaryTextColor, light: panelLight)
+        activity.update(modelActivity)
+        root.addSubview(activity)
+        modelActivityView = activity
+
         if showResetCreditsDetail,
            let summary,
            (summary.resetCreditsAvailable ?? 0) > 0 {
@@ -2674,6 +2685,10 @@ final class CodexPanelViewController: NSViewController {
 
     func updateTrainPresentation(styleIndex: Int, segmentMask: Int) {
         cardView?.updateTrainPresentation(styleIndex: styleIndex, segmentMask: segmentMask)
+    }
+
+    func updateModelActivity(_ snapshot: ModelActivitySnapshot) {
+        modelActivityView?.update(snapshot)
     }
 
     private func panelAppearance(for mode: CardThemeMode) -> NSAppearance? {
@@ -2720,7 +2735,7 @@ final class CodexPanelViewController: NSViewController {
 
     private func addResetCreditsBubble(_ root: NSView, summary: CodexUsageSummary, panelLight: Bool, dismiss: @escaping () -> Void) {
         let lineCount = max(1, min(5, summary.resetCredits.count))
-        let triggerFrame = NSRect(x: 232, y: 94, width: 156, height: 20)
+        let triggerFrame = NSRect(x: 232, y: 94 + ModelActivityView.panelSpace, width: 156, height: 20)
         let bubbleWidth = ResetCreditsBubbleView.preferredWidth(for: summary)
         let bubbleHeight = 15 + CGFloat(lineCount * 17)
         let bubbleFrame = NSRect(
@@ -2877,27 +2892,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         }
     }
 
-    private struct CodexThreadSnapshot {
-        let id: String
-        let updatedAt: TimeInterval
-        let rolloutPath: String?
-        let cwd: String
-        let threadSource: String
-        let agentNickname: String
-        let agentRole: String
-        let agentPath: String
-
-        var isUserVisible: Bool {
-            if threadSource.lowercased() == "subagent" {
-                return false
-            }
-            if !agentNickname.isEmpty || !agentRole.isEmpty || !agentPath.isEmpty {
-                return false
-            }
-            return true
-        }
-    }
-
     private static let trainStyleIndexKey = "CodexBalance.trainStyleIndex"
     private static let trainSegmentMaskKey = "CodexBalance.trainSegmentMask"
     private static let lastTrainSegmentMaskKey = "CodexBalance.lastNonzeroTrainSegmentMask"
@@ -2942,6 +2936,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     private let fetcher = CodexUsageFetcher()
     private var timer: Timer?
     private var taskLightTimer: Timer?
+    private var modelActivity = ModelActivitySnapshot()
+    private var activityMonitor: ModelActivityMonitor?
     private var outsideClickMonitor: Any?
     private var lastSummary: CodexUsageSummary?
     private var lastError: String?
@@ -2954,14 +2950,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     private var animationSettingsNeedsPanelRefresh = false
     private let trainStartTime = Date.timeIntervalSinceReferenceDate
     private let taskStatusFile = AppDelegate.defaultTaskStatusFile()
-    private let codexStateDatabase = AppDelegate.defaultCodexStateDatabase()
-    private let codexGlobalStateFile = AppDelegate.defaultCodexGlobalStateFile()
-    private let codexActiveWindowSeconds: TimeInterval = 75
-    private let codexUnreadWindowSeconds: TimeInterval = 24 * 60 * 60
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        taskLightState = readTaskLightState()
+        taskLightState = readManualTaskLightState(requireOverride: true) ?? .idle
         updateStatusButton(title: "5h … / 7d …")
         statusItem.button?.toolTip = L10n.shared.t("title")
         statusItem.button?.target = self
@@ -2971,6 +2963,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         animationSettingsPopover.behavior = .transient
         animationSettingsPopover.delegate = self
         updatePopoverContent()
+        let monitor = ModelActivityMonitor(home: Self.defaultCodexHome()) { [weak self] snapshot in
+            guard let self else { return }
+            self.modelActivity = snapshot
+            self.refreshTaskLight()
+            if self.popover.isShown {
+                (self.popover.contentViewController as? CodexPanelViewController)?.updateModelActivity(snapshot)
+            }
+        }
+        activityMonitor = monitor
+        monitor.start()
         refresh(nil)
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             guard let delegate = self else { return }
@@ -2984,6 +2986,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                 delegate.refreshTaskLight()
             }
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        activityMonitor?.stop()
     }
 
     @objc private func refresh(_ sender: Any?) {
@@ -3101,9 +3107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             },
             animationSettingsAction: { [weak self] card, point in
                 self?.showAnimationSettings(from: card, at: point)
-            }
+            },
+            modelActivity: modelActivity
         )
-        popover.contentSize = NSSize(width: 410, height: 404)
+        popover.contentSize = NSSize(width: 410, height: 404 + ModelActivityView.panelSpace)
     }
 
     private func showAnimationSettings(from card: UsageCardView, at point: NSPoint) {
@@ -3273,7 +3280,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     fileprivate func readmeSampleStatusTitle(for summary: CodexUsageSummary) -> NSAttributedString {
-        summary.isAPIAccount ? apiStatusAttributedTitle(summary) : statusAttributedTitle(from: summary.title)
+        taskLightState = TaskLightState(hasUnread: false, hasRunning: true)
+        return summary.isAPIAccount ? apiStatusAttributedTitle(summary) : statusAttributedTitle(from: summary.title)
     }
 
     fileprivate func removeReadmeSampleStatusItem() {
@@ -3317,7 +3325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         return stateDir.appendingPathComponent("task-status.json")
     }
 
-    private static func defaultCodexHome() -> URL {
+    fileprivate static func defaultCodexHome() -> URL {
         let environment = ProcessInfo.processInfo.environment
         if let value = environment["CODEX_HOME"], !value.isEmpty {
             return URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true)
@@ -3325,22 +3333,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
     }
 
-    private static func defaultCodexStateDatabase() -> URL {
-        defaultCodexHome().appendingPathComponent("state_5.sqlite")
-    }
-
-    private static func defaultCodexGlobalStateFile() -> URL {
-        defaultCodexHome().appendingPathComponent(".codex-global-state.json")
-    }
-
     fileprivate func readTaskLightState() -> TaskLightState {
         if let manual = readManualTaskLightState(requireOverride: true) {
             return manual
         }
-        if let automatic = readAutomaticTaskLightState() {
-            return automatic
-        }
-        return .idle
+        return TaskLightState(hasUnread: modelActivity.hasUnread, hasRunning: modelActivity.hasRunning)
     }
 
     private func readManualTaskLightState(requireOverride: Bool) -> TaskLightState? {
@@ -3365,203 +3362,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         return nil
     }
 
-    private func readAutomaticTaskLightState() -> TaskLightState? {
-        let unreadThreadIDs = readUnreadCodexThreadIDs()
-        guard let threads = readCodexThreadSnapshots() else {
-            return unreadThreadIDs.isEmpty ? nil : TaskLightState(hasUnread: true, hasRunning: false)
-        }
-        let now = Date().timeIntervalSince1970
-        let hasRunning = threads.contains(where: { isRecentlyActive($0, now: now) })
-        let visibleThreads = threads.filter(\.isUserVisible)
-        let hasPersistedUnread = visibleThreads.contains { thread in
-            unreadThreadIDs.contains(thread.id)
-                && isRecent(thread.updatedAt, now: now, window: codexUnreadWindowSeconds)
-        }
-        let hasUnread = hasPersistedUnread
-        if hasUnread || hasRunning {
-            return TaskLightState(hasUnread: hasUnread, hasRunning: hasRunning)
-        }
-        return .idle
+    fileprivate func loadActivityOnce() {
+        guard readManualTaskLightState(requireOverride: true) == nil else { return }
+        modelActivity = ModelActivityMonitor(home: Self.defaultCodexHome(), onUpdate: { _ in }).collectOnce()
     }
-
-    private func readCodexThreadSnapshots() -> [CodexThreadSnapshot]? {
-        guard FileManager.default.fileExists(atPath: codexStateDatabase.path) else {
-            return nil
-        }
-        let sql = """
-        SELECT id, updated_at, IFNULL(rollout_path, ''), IFNULL(cwd, ''), IFNULL(thread_source, ''), IFNULL(agent_nickname, ''), IFNULL(agent_role, ''), IFNULL(agent_path, '')
-        FROM threads
-        WHERE archived = 0
-        ORDER BY updated_at DESC
-        LIMIT 250;
-        """
-        guard let rows = runSQLiteRows(sql, database: codexStateDatabase) else {
-            return nil
-        }
-        return rows.compactMap { row in
-            let columns = row.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            guard columns.count >= 2, let updatedAt = TimeInterval(columns[1]) else {
-                return nil
-            }
-            let rolloutPath = columns.count >= 3 && !columns[2].isEmpty ? columns[2] : nil
-            return CodexThreadSnapshot(
-                id: columns[0],
-                updatedAt: updatedAt,
-                rolloutPath: rolloutPath,
-                cwd: columns.count >= 4 ? columns[3] : "",
-                threadSource: columns.count >= 5 ? columns[4] : "",
-                agentNickname: columns.count >= 6 ? columns[5] : "",
-                agentRole: columns.count >= 7 ? columns[6] : "",
-                agentPath: columns.count >= 8 ? columns[7] : ""
-            )
-        }
-    }
-
-    private func runSQLiteRows(_ sql: String, database: URL) -> [String]? {
-        let sqlitePath = "/usr/bin/sqlite3"
-        guard FileManager.default.isExecutableFile(atPath: sqlitePath) else {
-            return nil
-        }
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: sqlitePath)
-        process.arguments = ["-readonly", "-separator", "\t", "-noheader", database.path, sql]
-        process.standardOutput = output
-        process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            return nil
-        }
-        guard let text = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        return text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-    }
-
-    private func isRecentlyActive(_ thread: CodexThreadSnapshot, now: TimeInterval) -> Bool {
-        guard let rolloutPath = thread.rolloutPath else {
-            return false
-        }
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: rolloutPath),
-              let modifiedAt = attributes[.modificationDate] as? Date,
-              isRecent(modifiedAt.timeIntervalSince1970, now: now, window: codexActiveWindowSeconds) else {
-            return false
-        }
-        return rolloutHasOpenTurn(at: rolloutPath)
-    }
-
-    private func rolloutHasOpenTurn(at path: String) -> Bool {
-        let tailLimit = 96 * 1024
-        guard let tail = readFileTail(at: path, limit: tailLimit) else {
-            return false
-        }
-        guard let text = String(data: tail, encoding: .utf8) else {
-            return false
-        }
-        var openTurn = false
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let lineData = String(rawLine).data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
-                continue
-            }
-            let eventType = object["type"] as? String
-            let payload = object["payload"] as? [String: Any]
-            let payloadType = payload?["type"] as? String
-
-            if eventType == "turn_context" {
-                openTurn = true
-                continue
-            }
-
-            switch payloadType {
-            case "task_complete":
-                openTurn = false
-            case "message":
-                if payload?["role"] as? String == "assistant",
-                   payload?["phase"] as? String == "final_answer" {
-                    openTurn = false
-                }
-            case "agent_message":
-                if payload?["phase"] as? String == "final_answer" {
-                    openTurn = false
-                }
-            case "function_call", "function_call_output", "tool_search_call", "tool_search_output", "custom_tool_call", "custom_tool_call_output", "reasoning":
-                openTurn = true
-            default:
-                break
-            }
-        }
-        return openTurn
-    }
-
-    private func readFileTail(at path: String, limit: Int) -> Data? {
-        guard limit > 0 else {
-            return Data()
-        }
-        do {
-            let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
-            defer {
-                try? handle.close()
-            }
-            let fileSize = try handle.seekToEnd()
-            let readSize = min(UInt64(limit), fileSize)
-            try handle.seek(toOffset: fileSize - readSize)
-            return try handle.read(upToCount: Int(readSize)) ?? Data()
-        } catch {
-            return nil
-        }
-    }
-
-    private func isRecent(_ timestamp: TimeInterval, now: TimeInterval, window: TimeInterval) -> Bool {
-        let age = now - timestamp
-        return age >= 0 && age <= window
-    }
-
-    private func readUnreadCodexThreadIDs() -> Set<String> {
-        guard let data = try? Data(contentsOf: codexGlobalStateFile),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let persisted = root["electron-persisted-atom-state"] as? [String: Any],
-              let unreadByHost = persisted["unread-thread-ids-by-host-v1"] as? [String: Any] else {
-            return []
-        }
-        var result = Set<String>()
-        for value in unreadByHost.values {
-            if let ids = value as? [String] {
-                result.formUnion(ids)
-            }
-        }
-        return result
-    }
-    private func readActiveWorkspaceRoots() -> [String] {
-        guard let data = try? Data(contentsOf: codexGlobalStateFile),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let roots = root["active-workspace-roots"] as? [String] else {
-            return []
-        }
-        return roots
-    }
-
-    private func isInActiveWorkspace(_ thread: CodexThreadSnapshot, activeWorkspaceRoots: [String]) -> Bool {
-        guard !activeWorkspaceRoots.isEmpty else { return true }
-        guard !thread.cwd.isEmpty else { return false }
-        let cwd = standardizedPath(thread.cwd)
-        return activeWorkspaceRoots.contains { root in
-            let activeRoot = standardizedPath(root)
-            return cwd == activeRoot || cwd.hasPrefix(activeRoot + "/")
-        }
-    }
-
-    private func standardizedPath(_ path: String) -> String {
-        let expanded = (path as NSString).expandingTildeInPath
-        return URL(fileURLWithPath: expanded).standardizedFileURL.path
-    }
-
 
     private func refreshTaskLight() {
         let nextState = readTaskLightState()
@@ -3964,13 +3768,14 @@ private func writeReadmeSamplePNG(
     window.hasShadow = false
     window.ignoresMouseEvents = true
     window.level = .floating
-    window.appearance = NSAppearance(named: .darkAqua)
+    let appearance = view.appearance ?? NSAppearance(named: .darkAqua)
+    window.appearance = appearance
     window.contentView = view
     if let screen = NSScreen.screens.max(by: { $0.backingScaleFactor < $1.backingScaleFactor }) {
         window.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX + 24, y: screen.visibleFrame.minY + 24))
     }
     view.frame = NSRect(origin: .zero, size: size)
-    view.appearance = NSAppearance(named: .darkAqua)
+    view.appearance = appearance
     window.orderFrontRegardless()
     view.layoutSubtreeIfNeeded()
     view.displayIfNeeded()
@@ -4029,10 +3834,14 @@ private func renderReadmeSample(popoverURL: URL, statusBarURL: URL?) throws {
         showResetCreditsDetail: true,
         dismissResetCredits: {},
         trainClickAction: {},
-        animationSettingsAction: { _, _ in }
+        animationSettingsAction: { _, _ in },
+        modelActivity: ModelActivitySnapshot(availability: .ready, rows: [
+            ModelActivityRow(model: "gpt-codex", tasks: 2, generating: 2, inputTokens: 24500, inputTasks: 2, outputTPS: 86.4, measuredTasks: 2),
+            ModelActivityRow(model: "gpt-codex-mini", tasks: 1, generating: 0, inputTokens: 8100, inputTasks: 1, outputTPS: nil, measuredTasks: 0)
+        ])
     )
     let panel = controller.view
-    panel.frame = NSRect(x: 0, y: 0, width: 410, height: 404)
+    panel.frame = NSRect(x: 0, y: 0, width: 410, height: 404 + ModelActivityView.panelSpace)
     try writeReadmeSamplePNG(view: panel, to: popoverURL)
 
     if let statusBarURL {
@@ -4083,8 +3892,22 @@ if CommandLine.arguments.contains("--once") {
     }
 }
 
+if CommandLine.arguments.contains("--model-activity-once") {
+    let home = AppDelegate.defaultCodexHome()
+    let snapshot = ModelActivityMonitor(home: home, onUpdate: { _ in }).collectOnce()
+    printJSON(["status": snapshot.availability.rawValue, "models": snapshot.rows.map { row -> [String: Any] in
+        ["model": row.model, "tasks": row.tasks, "generating": row.generating,
+         "quiet_tasks": row.quietTasks,
+         "input_tokens": row.inputTokens.map { $0 as Any } ?? NSNull(),
+         "input_tasks": row.inputTasks,
+         "sampled_output_tps": row.outputTPS.map { $0 as Any } ?? NSNull(), "measured_tasks": row.measuredTasks]
+    }])
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--task-light-once") {
     let delegate = AppDelegate()
+    delegate.loadActivityOnce()
     let state = delegate.readTaskLightState()
     printJSON(["ok": true, "state": state.rawValue, "unread": state.hasUnread, "running": state.hasRunning])
     exit(0)

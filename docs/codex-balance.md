@@ -47,7 +47,7 @@ These `backend-api/wham` URLs are current implementation details without a stabl
 - For API or relay accounts, the popover shows remaining balance or quota, today's cost, total cost, today's tokens, total tokens, and provider/base URL.
 - Refresh and usage-page buttons do not close the popover.
 - Clicking outside the popover closes it.
-- Token consumption totals are shown only for API relay accounts when the relay usage endpoint provides them.
+- Quota/service-side token consumption totals are shown only for API relay accounts when the relay usage endpoint provides them; the local activity section is separate response metadata, not billing totals.
 - Membership expiration is intentionally not shown because the current usage endpoint does not expose a reliable field for it.
 - The UI follows the first supported macOS preferred language by default.
 - The popover language picker supports Automatic/System plus 40 manual languages.
@@ -63,20 +63,50 @@ The three-lamp indicator appended to the menu-bar title is an attention model fo
 | State | Automatic rule |
 | --- | --- |
 | Red / unread | A user-visible, non-archived thread is present in Codex's unread set and its database `updated_at` is no more than 24 hours old. Subagent threads and rows with agent metadata are excluded from this unread signal. |
-| Yellow / running | A non-archived thread has a rollout file modified within the last 75 seconds, and the last 96 KiB still describes an open turn rather than `task_complete` or an assistant/agent final answer. |
+| Yellow / running | A non-archived thread has a rollout file modified within the last 75 seconds, and its observed lifecycle still describes an open turn rather than completion, interruption, failure, or an assistant/agent final answer. |
 | Green / idle | Neither unread nor running is true. |
 
-Red and yellow are separate booleans and may be active together; green is active only when both are false. The app recalculates the lights every two seconds, independently of the 30-second quota refresh.
+Red and yellow are separate booleans and may be active together; green is active only when both are false. A shared background collector discovers tasks and checks freshness every two seconds, independently of the 30-second quota refresh. Known rollout appends are coalesced for 150 ms and update activity without waiting for discovery.
 
 Automatic detection reads local Codex state only:
 
 - unread thread IDs from `$CODEX_HOME/.codex-global-state.json`;
-- up to the 250 most recently updated non-archived rows from `$CODEX_HOME/state_5.sqlite`, queried with `/usr/bin/sqlite3 -readonly`;
-- the tail of each recent rollout file when deciding whether a turn is still open.
+- up to the 250 most recently updated non-archived rows from `$CODEX_HOME/state_5.sqlite`, queried in-process through system SQLite in read-only mode;
+- a bounded 256 KiB rollout tail on attachment, then only appended bytes; completed inactive readers are released after the activity window, while already observed open readers remain subscribed as quiet/unknown until completion or removal from the bounded candidate set.
 
 The default `CODEX_HOME` is `~/.codex`. Reading the lights does not modify Codex's database, rollout files, unread set, or task state, and it does not make a network request.
 
 For deterministic integration checks, `~/Library/Application Support/CodexBalance/task-status.json` can override automatic detection with JSON such as `{"state":"unread+running","override":true}`. Accepted state words include `idle`/`green`, `unread`/`red`, and `running`/`yellow`. `CODEX_BALANCE_STATE_DIR` relocates that file, `CODEX_BALANCE_TASK_LIGHT_MODE=manual` also accepts a plain-text state, and `CodexBalance --task-light-once` prints the resolved state without opening the UI.
+
+## Local model activity
+
+The popover groups active Codex App/CLI tasks in the current `CODEX_HOME` by model, including subagents. Two rows fit in the fixed-height area; additional models scroll rather than being omitted. Value updates reuse the existing rows and preserve the quota card, optional animation, reset-credit bubble, and footer controls.
+
+| Display | Meaning |
+| --- | --- |
+| Task count / generating / tools / quiet | Observed open local turns, classified from lifecycle and tool-call metadata. Silence beyond 75 seconds becomes quiet/unknown, not proof of continued generation or completion. This is activity detection, not proof of an open server stream. |
+| ↑ Input `tok` | Sum of each task's most recent response input-token count, including its cached subset. It is **not** input TPS, prefill speed, a live upload counter, or account billing usage. |
+| ↓ ≈ Output `tok/s` | For each valid response, `output_tokens / union(model-item intervals in seconds)`. Intervals come from `event_msg.item_completed.started_at_ms/completed_at_ms` for Reasoning, AgentMessage, and Plan; tool execution is not part of those intervals. Output already includes reasoning; it is never added again. Same-model concurrent tasks' recent rates are summed. |
+| `[measured/tasks]` | Only this many tasks have a fresh valid measurement for that input/output column. A partial aggregate is not presented as full coverage. |
+| `—` | No fresh sample, missing/zero timing, incomplete initial attachment, skipped oversized/malformed records, or unsupported log shape. No guessed rate or fake zero is substituted. |
+
+Codex settles counts after a response rather than continuously emitting authoritative per-token counts to rollouts. This is **response-sampled, approximate throughput**, not instantaneous wire/decode speed and not a cross-model benchmark. Item timings can cover only the observable portion of generation; transport latency, invisible model work, and tool-call serialization are not reliably measurable here. Samples expire after 15 seconds and are dimmed during observed tool waits. A generation can be active while the rate is still `—`.
+
+The existing 75-second freshness window for the yellow task light is retained. An already observed open turn stays subscribed and visible as quiet/unknown after that window; fresh appends restore its observed activity. Very long silent generations/tool waits and crashed unfinished sessions cannot be distinguished with certainty. Initial attachment only considers fresh files, so a session that was already silent when Balance started may not yet appear. Only the 250 most recently updated, non-archived threads in this Codex home are candidates. Separate homes, remote machines, and other AI apps are not monitored. Unavailable database discovery is explicitly marked; already observed file activity can continue without inventing new tasks. The quota/account collector remains independent.
+
+Implementation uses a single utility-priority serial queue, read-only system SQLite, native file-change notifications, metadata-only decoding, bounded line buffers, and bounded append batches. It never scans the full session directory, launches a helper process for telemetry, subscribes to full desktop conversation snapshots, installs hooks, calls a model, writes Codex state, or persists/sends activity data. The model panel is updated only while open; closed-panel sampling continues for the task lights.
+
+Read-only diagnostic (the executable is inside the installed app bundle):
+
+```bash
+"$HOME/Library/Application Support/CodexBalance/CodexBalance.app/Contents/MacOS/CodexBalance" --model-activity-once
+```
+
+The standalone diagnostic attaches afresh, so its first response may not yet have enough timing context for a rate. Its JSON includes only model names, counts, and measurements; no thread IDs, paths, conversation text, or credentials.
+
+### Open-source references
+
+The implementation is original and adds no package dependencies. Measurement and collection decisions were informed by [codex-pacer](https://github.com/RyanZhangNTU/codex-pacer/tree/785b1c07cadb92e1991901b8ba9f2213d857fcdb) (MIT; response accounting, freshness and bounded incremental collection), [codex-statusbar](https://github.com/dongyue-19/codex-statusbar) (MIT; model-item time unions), and [token-pulse](https://github.com/zzccchen/token-pulse) (MIT; output-only measurements and incomplete-timing handling). Their different metrics are not treated as interchangeable. Full desktop IPC snapshots were evaluated but are unnecessary for this log-based sampler.
 
 ## Refresh behavior
 
