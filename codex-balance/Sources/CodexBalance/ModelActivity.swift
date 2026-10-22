@@ -59,6 +59,7 @@ struct ModelActivityRow: Equatable, Sendable {
     let outputTPS: Double?
     let measuredTasks: Int
     var quietTasks: Int = 0
+    var responseSamples: Int = 0
 }
 
 struct ModelActivitySnapshot: Equatable, Sendable {
@@ -74,15 +75,21 @@ struct ModelActivitySnapshot: Equatable, Sendable {
 /// Model item intervals are unioned so overlapping reasoning/message carriers do
 /// not double the denominator. Tool execution intervals are not model intervals.
 struct ModelActivitySession {
+    static let averageSeconds: TimeInterval = 60
+    static let maximumSamples = 128
     struct Sample {
         let at: TimeInterval
+        let model: String
         let input: Int?
-        let tps: Double?
+        let output: Int
+        let duration: TimeInterval?
+        var tps: Double? { duration.map { Double(output) / $0 } }
     }
     var model: String
     var isOpen = false
     var isWaiting = false
     var sample: Sample?
+    private(set) var recentSamples: [Sample] = []
     private var turnID: String?
     private var intervals: [(Double, Double)] = []
     private var lastUsageKey: String?
@@ -92,6 +99,10 @@ struct ModelActivitySession {
     private var timingComplete = true
 
     init(model: String) { self.model = model }
+
+    mutating func pruneSamples(now: TimeInterval) {
+        recentSamples.removeAll { now - $0.at > Self.averageSeconds }
+    }
 
     mutating func invalidateTiming() {
         intervals.removeAll(keepingCapacity: true)
@@ -185,9 +196,15 @@ struct ModelActivitySession {
             if responseIDs.count > 16 { responseIDs.removeFirst() }
         }
         let duration = Self.unionDuration(intervals)
-        let rate = hasAccountingBoundary && timingComplete && duration > 0
-            ? Double(output) / duration : nil
-        sample = Sample(at: at, input: usage.input_tokens.flatMap { $0 >= 0 ? $0 : nil }, tps: rate)
+        let measurement = Sample(at: at, model: model,
+            input: usage.input_tokens.flatMap { $0 >= 0 ? $0 : nil }, output: output,
+            duration: hasAccountingBoundary && timingComplete && duration > 0 ? duration : nil)
+        sample = measurement
+        pruneSamples(now: at)
+        if measurement.duration != nil {
+            recentSamples.append(measurement)
+            if recentSamples.count > Self.maximumSamples { recentSamples.removeFirst() }
+        }
         intervals.removeAll(keepingCapacity: true)
         hasAccountingBoundary = true
         timingComplete = true
@@ -337,7 +354,7 @@ final class ActivityRollout {
 /// No recursive directory scans, network requests, hooks, or extra processes.
 final class ModelActivityMonitor: @unchecked Sendable {
     static let activeSeconds: TimeInterval = 75
-    static let sampleSeconds: TimeInterval = 15
+    static let sampleSeconds = ModelActivitySession.averageSeconds
     let home: URL
     private let queue = DispatchQueue(label: "CodexBalance.model-activity", qos: .utility)
     private var timer: DispatchSourceTimer?
@@ -455,18 +472,27 @@ final class ModelActivityMonitor: @unchecked Sendable {
     }
 
     private func snapshot(now: TimeInterval) -> ModelActivitySnapshot {
+        for file in files.values { file.session.pruneSamples(now: now) }
         let active = files.values.filter { $0.session.isOpen }
         let grouped = Dictionary(grouping: active) { $0.session.model }
-        let rows = grouped.map { model, members in
+        let recent = Dictionary(grouping: files.flatMap { path, file in
+            file.session.recentSamples.filter { now >= $0.at }.map { (path, $0) }
+        }) { $0.1.model }
+        let rows = Set(grouped.keys).union(recent.keys).map { model in
+            let members = grouped[model] ?? []
             let samples = members.compactMap(\.session.sample).filter { now >= $0.at && now - $0.at <= Self.sampleSeconds }
-            let measured = samples.compactMap(\.tps)
             let inputs = samples.compactMap(\.input)
+            let responses = recent[model] ?? []
+            let duration = responses.reduce(0.0) { $0 + ($1.1.duration ?? 0) }
+            let output = responses.reduce(0.0) { $0 + Double($1.1.output) }
             return ModelActivityRow(model: model.isEmpty ? "Codex" : model, tasks: members.count,
                 generating: members.filter { !$0.session.isWaiting && now - $0.modifiedAt <= Self.activeSeconds }.count,
                 inputTokens: inputs.isEmpty ? nil : inputs.reduce(0, +),
                 inputTasks: inputs.count,
-                outputTPS: measured.isEmpty ? nil : measured.reduce(0, +), measuredTasks: measured.count,
-                quietTasks: members.filter { now - $0.modifiedAt > Self.activeSeconds }.count)
+                outputTPS: duration > 0 ? output / duration : nil,
+                measuredTasks: Set(responses.map { $0.0 }).count,
+                quietTasks: members.filter { now - $0.modifiedAt > Self.activeSeconds }.count,
+                responseSamples: responses.count)
         }.sorted { $0.model.localizedStandardCompare($1.model) == .orderedAscending }
         let hasUnread = (!available && threads.isEmpty && !unread.isEmpty)
             || threads.contains { $0.userVisible && unread.contains($0.id) && now >= $0.updatedAt && now - $0.updatedAt <= 86_400 }

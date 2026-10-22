@@ -3836,7 +3836,7 @@ private func renderReadmeSample(popoverURL: URL, statusBarURL: URL?) throws {
         trainClickAction: {},
         animationSettingsAction: { _, _ in },
         modelActivity: ModelActivitySnapshot(availability: .ready, rows: [
-            ModelActivityRow(model: "gpt-codex", tasks: 2, generating: 2, inputTokens: 24500, inputTasks: 2, outputTPS: 86.4, measuredTasks: 2),
+            ModelActivityRow(model: "gpt-codex", tasks: 2, generating: 2, inputTokens: 24500, inputTasks: 2, outputTPS: 86.4, measuredTasks: 2, responseSamples: 8),
             ModelActivityRow(model: "gpt-codex-mini", tasks: 1, generating: 0, inputTokens: 8100, inputTasks: 1, outputTPS: nil, measuredTasks: 0)
         ])
     )
@@ -3895,12 +3895,14 @@ if CommandLine.arguments.contains("--once") {
 if CommandLine.arguments.contains("--model-activity-once") {
     let home = AppDelegate.defaultCodexHome()
     let snapshot = ModelActivityMonitor(home: home, onUpdate: { _ in }).collectOnce()
-    printJSON(["status": snapshot.availability.rawValue, "models": snapshot.rows.map { row -> [String: Any] in
+    printJSON(["status": snapshot.availability.rawValue, "averaging_window_seconds": ModelActivityMonitor.sampleSeconds,
+        "method": "duration_weighted_response_average", "models": snapshot.rows.map { row -> [String: Any] in
         ["model": row.model, "tasks": row.tasks, "generating": row.generating,
          "quiet_tasks": row.quietTasks,
          "input_tokens": row.inputTokens.map { $0 as Any } ?? NSNull(),
          "input_tasks": row.inputTasks,
-         "sampled_output_tps": row.outputTPS.map { $0 as Any } ?? NSNull(), "measured_tasks": row.measuredTasks]
+         "sampled_output_tps": row.outputTPS.map { $0 as Any } ?? NSNull(), "measured_tasks": row.measuredTasks,
+         "response_samples": row.responseSamples]
     }])
     exit(0)
 }

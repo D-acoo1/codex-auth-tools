@@ -63,7 +63,7 @@ It is **not** a team credential vault, a cloud account-sync service, or a replac
 - displays balance, cost, token usage, and request totals for supported relay endpoints;
 - appends a red/yellow/green task-attention indicator to the menu-bar quota summary;
 - refreshes quotas every 30 seconds and immediately when opened or manually refreshed;
-- groups active local Codex tasks by model, with input-token amounts and response-sampled output TPS;
+- groups local Codex activity by model, with input-token amounts and a stable 1-minute average output TPS;
 - follows account switches made by `ca` on the next refresh;
 - supports Automatic/System plus 40 selectable UI languages;
 - keeps animation off by default for new installations and exposes optional styles/segments through the quota-card context menu.
@@ -82,7 +82,7 @@ Red and yellow are independent, so both can be lit when one result is waiting wh
 
 #### Local model activity
 
-The popover groups observed open Codex App/CLI sessions in the current `CODEX_HOME` by model, including subagents. **The prominent readout, such as `≈ 86.4 TPS`, is approximate response-sampled output tokens per second, not a live per-token counter.** The smaller `Input` amount is input tokens, not input TPS. Same-model concurrent tasks are summed; `[1/3]` means only one of three tasks has a fresh measurement for that column. Tool waits are excluded from model-item time, reasoning is counted once, missing timing shows `— TPS`, and samples expire after 15 seconds. An already observed open turn stays visible as **quiet / waiting for updates** after 75 seconds of silence, not falsely generating or finished; other AI apps and separate Codex homes are not monitored. See [measurement details and limitations](docs/codex-balance.md#local-model-activity).
+The popover groups observed Codex App/CLI sessions in the current `CODEX_HOME` by model, including subagents. **The prominent readout, such as `≈ 86 TPS`, is a duration-weighted average of valid responses settled in the last 60 seconds: total output tokens divided by total model-generation seconds.** Same-model concurrent responses contribute to the average, not a sum of speeds. Whole-number TPS avoids decimal jitter; waiting for tools or finishing a task no longer immediately clears a recent mean. When no task is open, its retained row says **Recent average · idle**; it disappears when all samples expire. The smaller `Input` amount is each open task's latest input-token count, not input TPS; its `[1/3]` marker means one of three open tasks has a recent input count. Hover the TPS value for valid-response and contributing-session counts. Reasoning is counted once, tool waits are excluded, and missing timing shows `— TPS`, not a guessed speed. Open turns become **quiet / waiting for updates** after 75 seconds of silence, not falsely generating or finished. Other AI apps and separate Codex homes are not monitored. See [measurement details and limitations](docs/codex-balance.md#local-model-activity).
 
 This feature is available in current `main` / source builds; the `v2026.10.12` prebuilt release predates it.
 
@@ -335,7 +335,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 - 对支持的中转接口展示余额、费用、token 用量和请求数；
 - 在状态栏额度后显示红、黄、绿三盏任务提示灯；
 - 每 30 秒刷新额度，打开面板或点击刷新时立即更新；
-- 按模型汇总本机活动 Codex 任务，显示输入 token 数及响应采样的输出 TPS；
+- 按模型汇总本机 Codex 活动，显示输入 token 数及近1分钟平均输出 TPS；
 - `ca` 切换账号后，下一次刷新自动跟随；
 - 支持“自动/系统”和 40 种手动界面语言；
 - 新安装默认关闭动画，通过额度卡片右键菜单选择动画样式和展示段。
@@ -354,7 +354,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 #### 本机模型活动
 
-面板按模型汇总当前 `CODEX_HOME` 下已观察到的开放 Codex App/CLI 会话，包含 subagent。**大号读数直接显示 `≈ 86.4 TPS`，表示近似的响应采样输出 token 数/秒，不是逐 token 实时计数。** 较小的“输入”是输入 token 量，不是输入 TPS。同模型并发任务相加，`[1/3]` 表示该列在三个任务中仅一个有新鲜的有效测量。模型时间不包含工具等待，推理 token 只计一次；缺少时间数据显示 `— TPS`，样本 15 秒后失效。已观察到的开放 turn 在 75 秒没有新日志后保留为**等待更新**，不会被误标为正在生成或已完成；不监测其他 AI 应用或独立 Codex Home。详见[计算口径与限制](docs/codex-balance.md#local-model-activity)。
+面板按模型汇总当前 `CODEX_HOME` 下已观察到的 Codex App/CLI 会话，包含 subagent。**大号读数如 `≈ 86 TPS`，是近60秒内结算的有效响应按生成时长加权的平均值：总输出 token 数 ÷ 总模型生成秒数。** 同模型并发响应合并算平均速度，不再直接相加；TPS取整，减少小数位抖动。工具等待或任务结束不会立即清空近期均值；当前没有开放任务时标为**近期均值 · 当前无任务**，所有样本过期后移除该行。较小的“输入”是开放任务最近一次响应的输入量，不是输入 TPS；其 `[1/3]` 仅表示三个开放任务中一个有近期输入计数。悬停TPS可查看有效响应数和贡献会话数。推理 token 只计一次，模型时间不含工具等待；缺少时间数据显示 `— TPS`，不会猜测速度。开放 turn 在75秒没有新日志后标为**等待更新**，不会被误判为生成或完成；不监测其他 AI 应用或独立 Codex Home。详见[计算口径与限制](docs/codex-balance.md#local-model-activity)。
 
 此功能已在当前 `main` / 源码构建中提供；`v2026.10.12` 预编译 Release 尚未包含。
 
