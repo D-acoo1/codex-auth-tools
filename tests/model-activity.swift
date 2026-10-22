@@ -165,6 +165,7 @@ var snapshot = monitor.collectOnce(now: now)
 expect(snapshot.availability == .ready && snapshot.rows.count == 2, "same model grouped, different models separated")
 let group = snapshot.rows[0]
 expect(group.tasks == 3 && group.measuredTasks == 2 && group.outputTPS == 100 && group.responseSamples == 2, "same-model concurrent speeds are averaged, not added")
+expect(snapshot.overallTPS == 100, "unknown model speeds do not count as zero in the overall mean")
 expect(group.inputTokens == 48000, "per-task inputs summed without caching twice")
 expect(group.inputTasks == 2, "input coverage is distinct from task count")
 expect(snapshot.hasUnread && snapshot.hasRunning, "unread and running are independent")
@@ -216,6 +217,19 @@ appendAverage(line("event_msg", ["type": "turn_aborted"], at: 16))
 expect(averageRows(26).rows.first?.outputTPS == 140, "turn termination does not clear the recent mean")
 expect(averageRows(69).rows.first?.outputTPS == 300 && averageRows(69).rows.first?.responseSamples == 1, "window expiry removes only expired responses")
 expect(averageRows(73).rows.isEmpty && !averageRows(73).hasRunning, "idle model is removed after all recent samples expire")
+expect(averageRows(73).overallTPS == nil, "no valid sample means an unknown overall speed, not zero")
+
+let extraModel = averageHome.appendingPathComponent("extra-model.jsonl")
+try! (line("turn_context", ["model": "model-c", "turn_id": "extra"])
+    + line("event_msg", ["type": "item_completed", "item": ["type": "Reasoning"],
+        "started_at_ms": epoch * 1000, "completed_at_ms": (epoch + 3) * 1000])
+    + line("token_usage_record", ["response_id": "extra", "usage": ["input_tokens": 1000, "output_tokens": 600]])).write(to: extraModel)
+expect(sqlite3_open(averageHome.appendingPathComponent("state_5.sqlite").path, &averageDB) == SQLITE_OK, "reopen cross-model fixture")
+expect(sqlite3_exec(averageDB, "INSERT INTO threads VALUES ('extra', \(Int(now)), '\(extraModel.path)', 0, 'model-c', 'user', '')", nil, nil, nil) == SQLITE_OK, "insert another measured model")
+sqlite3_close(averageDB)
+let combined = ModelActivityMonitor(home: averageHome, onUpdate: { _ in }).collectOnce(now: epoch + 16)
+expect(combined.rows.map(\.outputTPS) == [140, 200], "per-model means remain independent")
+expect(combined.overallTPS == 162.5, "overall TPS is (700+600)/(5+3), not the mean or sum of model means")
 
 // A fresh append after attach must be visible without rereading the history.
 var observed: [ModelActivitySnapshot] = []

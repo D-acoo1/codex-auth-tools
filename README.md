@@ -82,6 +82,8 @@ Red and yellow are independent, so both can be lit when one result is waiting wh
 
 #### Local model activity
 
+The menu bar also shows a compact **`86 tps`** readout beside the quota/task lights, without a model name, extra icon, or approximation prefix. It is the duration-weighted average across **all** observed local models in the same 60-second response window: total output tokens divided by total model-generation seconds, not an average of per-model averages. Hover for the calculation label and each model's value. It updates independently of quota or light changes; `— tps` means no valid sample, not zero.
+
 The popover groups observed Codex App/CLI sessions in the current `CODEX_HOME` by model, including subagents. **The prominent readout, such as `≈ 86 TPS`, is a duration-weighted average of valid responses settled in the last 60 seconds: total output tokens divided by total model-generation seconds.** Same-model concurrent responses contribute to the average, not a sum of speeds. Whole-number TPS avoids decimal jitter; waiting for tools or finishing a task no longer immediately clears a recent mean. When no task is open, its retained row says **Recent average · idle**; it disappears when all samples expire. The smaller `Input` amount is each open task's latest input-token count, not input TPS; its `[1/3]` marker means one of three open tasks has a recent input count. Hover the TPS value for valid-response and contributing-session counts. Reasoning is counted once, tool waits are excluded, and missing timing shows `— TPS`, not a guessed speed. Open turns become **quiet / waiting for updates** after 75 seconds of silence, not falsely generating or finished. Other AI apps and separate Codex homes are not monitored. See [measurement details and limitations](docs/codex-balance.md#local-model-activity).
 
 This feature is available in current `main` / source builds; the `v2026.10.12` prebuilt release predates it.
@@ -104,7 +106,7 @@ Status bar, using the same synthetic quota values as the panel below:
 
 ![Codex Balance status bar](assets/status-bar.png)
 
-The sample has the yellow task light active, matching the synthetic active models in the panel, and no unread task.
+The sample has the yellow task light active, no unread task, and a text-only `86 tps` mean, matching the synthetic activity values in the panel.
 
 Current English popover layout:
 
@@ -354,6 +356,8 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 #### 本机模型活动
 
+顶部菜单栏在额度与任务灯旁直接显示 **`86 tps`**，不带模型名、额外图标或近似符号。该值是近60秒有效响应的**全部本机模型加权平均**：所有输出 token 总数 ÷ 所有模型生成秒数，不是各模型均值再做简单平均。悬停可看计算口径与各模型明细；数值独立更新，不必等额度或红绿灯变化。`— tps` 表示没有有效样本，不是0。
+
 面板按模型汇总当前 `CODEX_HOME` 下已观察到的 Codex App/CLI 会话，包含 subagent。**大号读数如 `≈ 86 TPS`，是近60秒内结算的有效响应按生成时长加权的平均值：总输出 token 数 ÷ 总模型生成秒数。** 同模型并发响应合并算平均速度，不再直接相加；TPS取整，减少小数位抖动。工具等待或任务结束不会立即清空近期均值；当前没有开放任务时标为**近期均值 · 当前无任务**，所有样本过期后移除该行。较小的“输入”是开放任务最近一次响应的输入量，不是输入 TPS；其 `[1/3]` 仅表示三个开放任务中一个有近期输入计数。悬停TPS可查看有效响应数和贡献会话数。推理 token 只计一次，模型时间不含工具等待；缺少时间数据显示 `— TPS`，不会猜测速度。开放 turn 在75秒没有新日志后标为**等待更新**，不会被误判为生成或完成；不监测其他 AI 应用或独立 Codex Home。详见[计算口径与限制](docs/codex-balance.md#local-model-activity)。
 
 此功能已在当前 `main` / 源码构建中提供；`v2026.10.12` 预编译 Release 尚未包含。
@@ -376,7 +380,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 ![Codex Balance 状态栏](assets/status-bar.png)
 
-示例数据有运行中的模型、没有未读任务，因此图中点亮的是黄灯，与下方面板一致。
+示例数据有运行中的模型、没有未读任务，因此图中点亮黄灯，并显示纯文字 `86 tps` 均值，与下方面板一致。
 
 当前简体中文面板布局：
 

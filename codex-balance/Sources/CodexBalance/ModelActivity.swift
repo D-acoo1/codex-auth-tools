@@ -67,6 +67,7 @@ struct ModelActivitySnapshot: Equatable, Sendable {
     var availability: Availability = .starting
     var rows: [ModelActivityRow] = []
     var hasUnread = false
+    var overallTPS: Double?
     var hasRunning: Bool { rows.contains { $0.tasks > $0.quietTasks } }
 }
 
@@ -478,6 +479,7 @@ final class ModelActivityMonitor: @unchecked Sendable {
         let recent = Dictionary(grouping: files.flatMap { path, file in
             file.session.recentSamples.filter { now >= $0.at }.map { (path, $0) }
         }) { $0.1.model }
+        var totalOutput = 0.0, totalDuration = 0.0
         let rows = Set(grouped.keys).union(recent.keys).map { model in
             let members = grouped[model] ?? []
             let samples = members.compactMap(\.session.sample).filter { now >= $0.at && now - $0.at <= Self.sampleSeconds }
@@ -485,6 +487,8 @@ final class ModelActivityMonitor: @unchecked Sendable {
             let responses = recent[model] ?? []
             let duration = responses.reduce(0.0) { $0 + ($1.1.duration ?? 0) }
             let output = responses.reduce(0.0) { $0 + Double($1.1.output) }
+            totalOutput += output
+            totalDuration += duration
             return ModelActivityRow(model: model.isEmpty ? "Codex" : model, tasks: members.count,
                 generating: members.filter { !$0.session.isWaiting && now - $0.modifiedAt <= Self.activeSeconds }.count,
                 inputTokens: inputs.isEmpty ? nil : inputs.reduce(0, +),
@@ -496,7 +500,8 @@ final class ModelActivityMonitor: @unchecked Sendable {
         }.sorted { $0.model.localizedStandardCompare($1.model) == .orderedAscending }
         let hasUnread = (!available && threads.isEmpty && !unread.isEmpty)
             || threads.contains { $0.userVisible && unread.contains($0.id) && now >= $0.updatedAt && now - $0.updatedAt <= 86_400 }
-        return ModelActivitySnapshot(availability: available ? .ready : .unavailable, rows: rows, hasUnread: hasUnread)
+        return ModelActivitySnapshot(availability: available ? .ready : .unavailable, rows: rows, hasUnread: hasUnread,
+            overallTPS: totalDuration > 0 ? totalOutput / totalDuration : nil)
     }
 
     private func publish(now: TimeInterval) {
