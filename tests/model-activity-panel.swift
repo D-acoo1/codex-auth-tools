@@ -20,7 +20,7 @@ let chinese = L10n.shared.effectiveCode.hasPrefix("zh")
 
 let samples = (0..<8).map { index in
     ModelActivityRow(model: index == 0 ? "a-very-long-model-name-that-needs-truncation" : "model-\(index)",
-        tasks: 3, generating: index % 2, inputTokens: 24000, inputTasks: 2, outputTPS: index == 1 ? nil : 123.4, measuredTasks: index == 1 ? 0 : 2)
+        tasks: 3, generating: index % 2, inputTokens: 24000, inputTasks: 2, outputTPS: index == 1 ? nil : 123.4, measuredTasks: index == 1 ? 0 : 2, responseSamples: index == 1 ? 0 : 8)
 }
 for mode in [CardThemeMode.dark, .light] {
     let controller = CodexPanelViewController(summary: try readmeSampleSummary(), errorText: nil,
@@ -42,11 +42,13 @@ for mode in [CardThemeMode.dark, .light] {
     check(scroll.documentView!.subviews.count == 8, "eight rows retained")
     check(bubble.frame.minY >= 234 && activity.frame.maxY < 196, "coupon anchor and model panel do not overlap")
     let labels = allViews(activity).compactMap { $0 as? NSTextField }
-    let tps = labels.first { $0.stringValue == "≈ 123.4 TPS [2/3]" }!
+    let tps = labels.first { $0.stringValue == "≈ 123 TPS" }!
     let input = labels.first { $0.stringValue == (chinese ? "输入 24.0k tok [2/3]" : "Input 24.0k tok [2/3]") }!
     check(tps.font!.pointSize == 13 && tps.font!.pointSize > input.font!.pointSize, "TPS is the primary readout, not the input amount")
     check(tps.alignment == .right && input.alignment == .left, "primary and secondary values have stable alignment")
     check(labels.contains { $0.stringValue == "— TPS" }, "missing measurement keeps an explicit TPS unit, not fake zero")
+    check(labels.contains { $0.stringValue == (chinese ? "近1分钟平均" : "1-minute average") }, "visible qualifier identifies the average window")
+    check(tps.toolTip!.contains("8") && tps.toolTip!.contains("2"), "average tooltip reports sample and contributing-session counts")
     check(!labels.contains { $0.stringValue.contains("↑") || $0.stringValue.contains("↓") || $0.stringValue.contains("tok/s") }, "readout does not require decoding traffic arrows or a different rate unit")
     for field in [tps, input] {
         check(field.cell!.cellSize.width <= field.bounds.width && field.cell!.cellSize.height <= field.bounds.height, "\(field.stringValue) fits without clipping: \(field.cell!.cellSize) in \(field.bounds.size)")
@@ -55,9 +57,9 @@ for mode in [CardThemeMode.dark, .light] {
     controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: samples))
     check(rowIdentities == allViews(activity).filter { $0 is NSTextField }.map(ObjectIdentifier.init), "unchanged update reuses labels")
     var changed = samples
-    changed[0] = ModelActivityRow(model: samples[0].model, tasks: 4, generating: 3, inputTokens: 48200, inputTasks: 4, outputTPS: 198.2, measuredTasks: 4)
+    changed[0] = ModelActivityRow(model: samples[0].model, tasks: 4, generating: 3, inputTokens: 48200, inputTasks: 4, outputTPS: 198.2, measuredTasks: 4, responseSamples: 12)
     controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: changed))
-    check(allViews(activity).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "≈ 198.2 TPS" }, "full coverage omits the partial-coverage suffix")
+    check(allViews(activity).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "≈ 198 TPS" }, "averages use whole TPS to avoid decimal jitter")
     check(rowIdentities == allViews(activity).filter { $0 is NSTextField }.map(ObjectIdentifier.init), "changed values do not recreate row labels")
     check(root.subviews.contains { $0 === card } && root.subviews.contains { $0 === bubble }, "updating TPS preserves card animation and open bubble")
     scroll.documentView!.scroll(NSPoint(x: 0, y: 206))
@@ -74,5 +76,13 @@ for mode in [CardThemeMode.dark, .light] {
     ]))
     check(allViews(activity).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains(chinese ? "等待更新" : "quiet") }, "quiet tasks are not called generating or complete")
     try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("quiet-\(mode.rawValue).png"))
+    controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: [
+        ModelActivityRow(model: "recent-model", tasks: 0, generating: 0, inputTokens: nil, inputTasks: 0,
+            outputTPS: 86.4, measuredTasks: 2, responseSamples: 8)
+    ]))
+    let recentLabels = allViews(activity).compactMap { $0 as? NSTextField }
+    check(recentLabels.contains { $0.stringValue == (chinese ? "近期均值 · 当前无任务" : "Recent average · idle") }, "recent mean does not imply an active task")
+    check(recentLabels.contains { $0.stringValue == "≈ 86 TPS" }, "completion retains a readable numeric mean")
+    try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("recent-\(mode.rawValue).png"))
 }
 print("model-activity-panel (\(L10n.shared.effectiveCode)): \(checks) assertions passed")
