@@ -80,15 +80,15 @@ For deterministic integration checks, `~/Library/Application Support/CodexBalanc
 
 ## Local model activity
 
-The popover groups active Codex App/CLI tasks in the current `CODEX_HOME` by model, including subagents. Two rows fit in the fixed-height area; additional models scroll rather than being omitted. Value updates reuse the existing rows and preserve the quota card, optional animation, reset-credit bubble, and footer controls.
+The popover groups active Codex App/CLI tasks in the current `CODEX_HOME` by model, including subagents. Each model's primary readout uses an explicit TPS unit, such as **`≈ 86.4 TPS`**; the input-token amount is secondary. TPS means output tokens per second. Two rows fit in the fixed-height area; additional models scroll rather than being omitted. Value updates reuse the existing rows and preserve the quota card, optional animation, reset-credit bubble, and footer controls.
 
 | Display | Meaning |
 | --- | --- |
 | Task count / generating / tools / quiet | Observed open local turns, classified from lifecycle and tool-call metadata. Silence beyond 75 seconds becomes quiet/unknown, not proof of continued generation or completion. This is activity detection, not proof of an open server stream. |
-| ↑ Input `tok` | Sum of each task's most recent response input-token count, including its cached subset. It is **not** input TPS, prefill speed, a live upload counter, or account billing usage. |
-| ↓ ≈ Output `tok/s` | For each valid response, `output_tokens / union(model-item intervals in seconds)`. Intervals come from `event_msg.item_completed.started_at_ms/completed_at_ms` for Reasoning, AgentMessage, and Plan; tool execution is not part of those intervals. Output already includes reasoning; it is never added again. Same-model concurrent tasks' recent rates are summed. |
+| Input `tok` | Sum of each task's most recent response input-token count, including its cached subset. It is **not** input TPS, prefill speed, a live upload counter, or account billing usage. |
+| `≈ 86.4 TPS` | For each valid response, `output_tokens / union(model-item intervals in seconds)`. Intervals come from `event_msg.item_completed.started_at_ms/completed_at_ms` for Reasoning, AgentMessage, and Plan; tool execution is not part of those intervals. Output already includes reasoning; it is never added again. Same-model concurrent tasks' recent rates are summed. |
 | `[measured/tasks]` | Only this many tasks have a fresh valid measurement for that input/output column. A partial aggregate is not presented as full coverage. |
-| `—` | No fresh sample, missing/zero timing, incomplete initial attachment, skipped oversized/malformed records, or unsupported log shape. No guessed rate or fake zero is substituted. |
+| `— TPS` | No fresh output sample, missing/zero timing, incomplete initial attachment, skipped oversized/malformed records, or unsupported log shape. No guessed rate or fake zero is substituted. |
 
 Codex settles counts after a response rather than continuously emitting authoritative per-token counts to rollouts. This is **response-sampled, approximate throughput**, not instantaneous wire/decode speed and not a cross-model benchmark. Item timings can cover only the observable portion of generation; transport latency, invisible model work, and tool-call serialization are not reliably measurable here. Samples expire after 15 seconds and are dimmed during observed tool waits. A generation can be active while the rate is still `—`.
 
