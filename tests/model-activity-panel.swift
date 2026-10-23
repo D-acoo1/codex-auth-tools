@@ -32,6 +32,7 @@ for mode in [CardThemeMode.dark, .light] {
     let root = controller.view
     root.layoutSubtreeIfNeeded()
     check(root.bounds.height == 524, "panel has stable space for model rows")
+    check(allViews(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue == L10n.shared.t("fiveHours") }, "the full popover retains the 5-hour quota row")
     let activity = root.subviews.first { $0 is ModelActivityView }!
     let card = root.subviews.first { $0 is UsageCardView }!
     let bubble = root.subviews.first { $0 is ResetCreditsBubbleView }!
@@ -101,6 +102,18 @@ let statusButton = statusDelegate.readmeSampleStatusButton(for: statusSummary, a
 check(statusText(statusButton).hasSuffix("86 TPS"), "menu bar uses only a whole number and uppercase TPS")
 check(!statusButton.attributedTitle.string.contains("≈") && !statusButton.attributedTitle.string.contains("model-a"), "no extra prefix, icon or model name in the numeric readout")
 check(statusButton.toolTip!.contains("model-a: 86 TPS"), "model detail is in the hover tooltip")
+
+check(statusText(statusButton).hasPrefix("\u{FFFC} 85% \u{FFFC}") && !statusText(statusButton).contains("∞") && !statusText(statusButton).contains("/"), "subscription status begins with weekly quota, not the 5-hour value or separator")
+check(statusButton.attributedTitle.string.filter { $0 == "\u{FFFC}" }.count == 2, "only the weekly icon and task-light attachment remain")
+check(statusButton.toolTip!.contains(L10n.shared.t("primaryRemaining")), "hover details retain the 5-hour information")
+for (rawTitle, weekly) in [("5h 12% / 7d 73%", "73%"), ("5h … / 7d …", "…"), ("5h ? / 7d ?", "?"), ("5h 37%", "?")] {
+    var summary = statusSummary
+    summary.title = rawTitle
+    let button = statusDelegate.readmeSampleStatusButton(for: summary, activity: activity(86.4))!
+    check(statusText(button).hasPrefix("\u{FFFC} \(weekly) \u{FFFC}") && !statusText(button).contains("/"), "weekly-only rendering handles finite/loading/error/missing-weekly titles: \(rawTitle)")
+}
+_ = statusDelegate.readmeSampleStatusButton(for: statusSummary, activity: activity(86.4))
+
 statusDelegate.updateModelActivity(activity(98.2))
 check(statusText(statusButton).hasSuffix("98 TPS"), "TPS refreshes even when quotas and task lights stay unchanged")
 statusDelegate.updateModelActivity(activity(98.4, modelValue: 99))

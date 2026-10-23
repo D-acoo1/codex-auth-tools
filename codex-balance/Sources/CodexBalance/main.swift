@@ -3294,11 +3294,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         let bodyFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
         let attrs: [NSAttributedString.Key: Any] = [.font: bodyFont, .foregroundColor: NSColor.labelColor]
 
-        let parsed = parseStatusTitle(title)
-        appendSymbol("timer", to: result)
-        result.append(NSAttributedString(string: " \(parsed.primary) / ", attributes: attrs))
         appendSymbol("week", to: result)
-        result.append(NSAttributedString(string: " \(parsed.secondary)", attributes: attrs))
+        result.append(NSAttributedString(string: " \(weeklyStatusValue(from: title))", attributes: attrs))
         appendTaskLight(to: result)
         appendModelTPS(to: result)
         return result
@@ -3508,14 +3505,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         return "\(value)"
     }
 
-    private func parseStatusTitle(_ title: String) -> (primary: String, secondary: String) {
-        let stripped = title
-            .replacingOccurrences(of: "5h ", with: "")
-            .replacingOccurrences(of: "7d ", with: "")
-        let parts = stripped.components(separatedBy: " / ")
-        if parts.count >= 2 { return (parts[0], parts[1]) }
-        if parts.count == 1 { return (parts[0], "?") }
-        return ("?", "?")
+    private func weeklyStatusValue(from title: String) -> String {
+        let parts = title.components(separatedBy: " / ")
+        return parts.count >= 2 ? parts[1].replacingOccurrences(of: "7d ", with: "") : "?"
     }
 
     private func appendSymbol(_ name: String, to result: NSMutableAttributedString) {

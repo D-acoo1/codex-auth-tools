@@ -15,7 +15,7 @@ Codex stores the active login locally, but users who work with multiple accounts
 
 | Component | Command or app | Problem solved |
 | --- | --- | --- |
-| **Codex Balance** | `CodexBalance` | Shows current 5-hour, weekly, Credits, Spark, reset, or relay usage in the macOS menu bar. |
+| **Codex Balance** | `CodexBalance` | Shows weekly quota or relay usage, task lights, and TPS in the menu bar, with full details in the popover. |
 | **Codex Auth** | `ca`, `codex-ac` | Saves, lists, renews, and switches local Codex login snapshots and API-compatible relay profiles. |
 
 The project has no hosted account service and no project-operated analytics backend. Account snapshots, API keys, cached usage, and configuration are persisted on the user's Mac; credentials are transmitted only to the selected ChatGPT or relay service when an authenticated operation requires them.
@@ -58,7 +58,8 @@ It is **not** a team credential vault, a cloud account-sync service, or a replac
 
 - reads the active Codex login from `~/.codex/auth.json`;
 - classifies quota windows by duration instead of API field order;
-- shows a missing 5-hour limit as unlimited without copying the weekly value;
+- keeps the ChatGPT menu bar compact with weekly quota, task lights, and TPS; 5-hour details remain in the popover and hover tooltip;
+- shows a missing 5-hour limit as unlimited in the popover without copying the weekly value;
 - displays 5-hour, weekly, Credits, Spark, reset time, plan, account, and availability data;
 - displays balance, cost, token usage, and request totals for supported relay endpoints;
 - appends a red/yellow/green task-attention indicator to the menu-bar quota summary;
@@ -296,7 +297,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 | 组件 | 命令或程序 | 解决的问题 |
 | --- | --- | --- |
-| **Codex Balance** | `CodexBalance` | 在 macOS 状态栏展示 5 小时、周额度、Credits、Spark、重置时间或中转用量。 |
+| **Codex Balance** | `CodexBalance` | 状态栏展示周额度或中转用量、任务灯与 TPS，展开面板查看完整详情。 |
 | **Codex Auth** | `ca`, `codex-ac` | 在本机保存、查看、续期和切换 Codex 登录快照与 API 中转配置。 |
 
 项目没有托管账号服务，也没有项目方运营的数据统计后端。账号快照、API key、额度缓存和配置持久化在用户自己的 Mac 上；只有执行需要认证的操作时，凭据才会发送给当前选择的 ChatGPT 或中转服务。
@@ -332,7 +333,8 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 - 从 `~/.codex/auth.json` 读取当前 Codex 登录；
 - 按额度窗口真实周期分类，不依赖接口字段顺序；
-- 5 小时限制暂时消失时显示“无限”，不会错误复制周额度；
+- ChatGPT 账号状态栏只展示周额度、任务灯与 TPS，5 小时信息保留在展开面板和悬停详情中；
+- 5 小时限制暂时消失时，面板显示“无限”，不会错误复制周额度；
 - 展示 5 小时、周额度、Credits、Spark、重置时间、套餐、账号和可用状态；
 - 对支持的中转接口展示余额、费用、token 用量和请求数；
 - 在状态栏额度后显示红、黄、绿三盏任务提示灯；
