@@ -31,7 +31,6 @@ struct ActivityRecord: Decodable {
         let started_at_ms: Double?
         let completed_at_ms: Double?
         let usage: Usage?
-        let thread_token_usage: Usage?
         let info: Info?
         let item: Item?
     }
@@ -93,7 +92,8 @@ struct ModelActivitySession {
     private(set) var recentSamples: [Sample] = []
     private var turnID: String?
     private var intervals: [(Double, Double)] = []
-    private var lastUsageKey: String?
+    private var lastLegacyUsageKey: String?
+    private var usesNativeUsage = false
     private var responseIDs: [String] = []
     private var hasAccountingBoundary = false
     private var pendingCalls = Set<String>()
@@ -113,20 +113,28 @@ struct ModelActivitySession {
     mutating func consume(_ record: ActivityRecord) {
         guard let p = record.payload else {
             if record.type == "turn_context" { isOpen = true }
+            else if record.type == "token_usage_record" {
+                invalidateTiming()
+                hasAccountingBoundary = false
+            }
             return
         }
-        let at = record.type == "token_usage_record" || p.type == "token_count" || p.type == "item_completed"
-            ? record.date : nil
         if let id = p.turn_id, id != turnID {
             turnID = id
             intervals.removeAll(keepingCapacity: true)
             sample = nil
-            lastUsageKey = nil
+            lastLegacyUsageKey = nil
+            usesNativeUsage = false
             responseIDs.removeAll(keepingCapacity: true)
             pendingCalls.removeAll(keepingCapacity: true)
             hasAccountingBoundary = false
             timingComplete = true
         }
+        // Native accounting owns this turn. Legacy mirrors can arrive after the
+        // next response's item timings and have unrelated cumulative totals.
+        if usesNativeUsage, record.type == "event_msg", p.type == "token_count" { return }
+        let at = record.type == "token_usage_record" || p.type == "token_count" || p.type == "item_completed"
+            ? record.date : nil
         if let nextModel = p.model, !nextModel.isEmpty, nextModel != model {
             model = nextModel
             sample = nil
@@ -149,10 +157,9 @@ struct ModelActivitySession {
                     isOpen = true
                     isWaiting = false
                     if let start = p.started_at_ms, let end = p.completed_at_ms,
-                       start > 0, end > start, let at, end / 1000 <= at + 5 {
-                        if intervals.count < 128 { intervals.append((start / 1000, end / 1000)) }
-                        else { invalidateTiming() }
-                    }
+                       start > 0, end > start, let at, end / 1000 <= at + 5, intervals.count < 128 {
+                        intervals.append((start / 1000, end / 1000))
+                    } else { invalidateTiming() }
                 } else if p.item?.type == "ContextCompaction" {
                     invalidateTiming()
                 }
@@ -180,21 +187,39 @@ struct ModelActivitySession {
         }
 
         let usage: ActivityRecord.Usage?
-        let total: ActivityRecord.Usage?
-        if record.type == "token_usage_record" {
-            usage = p.usage; total = p.thread_token_usage
+        let isNative = record.type == "token_usage_record"
+        if isNative {
+            if let id = p.response_id, responseIDs.contains(id) { return }
+            usage = p.usage
         } else if record.type == "event_msg", p.type == "token_count" {
-            usage = p.info?.last_token_usage; total = p.info?.total_token_usage
+            usage = p.info?.last_token_usage
+            // Legacy quota-only notifications do not settle a response.
+            if usage == nil { return }
         } else { return }
-        guard let usage, let output = usage.output_tokens, output >= 0, let at else { return }
-        // Authoritative and legacy carriers often describe the same response.
-        let key = "\(total?.output_tokens ?? -1):\(total?.input_tokens ?? -1):\(output):\(usage.input_tokens ?? -1)"
-        if let id = p.response_id, responseIDs.contains(id) { return }
-        if key == lastUsageKey, total != nil || intervals.isEmpty { return }
-        lastUsageKey = key
-        if let id = p.response_id {
+        guard let usage, let output = usage.output_tokens, output >= 0, let at,
+              !isNative || p.response_id?.isEmpty == false else {
+            invalidateTiming()
+            hasAccountingBoundary = false
+            return
+        }
+        if isNative, let id = p.response_id {
             responseIDs.append(id)
             if responseIDs.count > 16 { responseIDs.removeFirst() }
+            let promoted = !usesNativeUsage && lastLegacyUsageKey != nil
+            usesNativeUsage = true
+            if promoted {
+                // Counters cannot match pending intervals across sources. Wait
+                // for a clean native boundary; keep already valid history.
+                sample = nil
+                invalidateTiming()
+                hasAccountingBoundary = false
+                return
+            }
+        } else {
+            let total = p.info?.total_token_usage
+            let key = "\(total?.output_tokens ?? -1):\(total?.input_tokens ?? -1):\(output):\(usage.input_tokens ?? -1)"
+            if key == lastLegacyUsageKey, total != nil || intervals.isEmpty { return }
+            lastLegacyUsageKey = key
         }
         let duration = Self.unionDuration(intervals)
         let measurement = Sample(at: at, model: model,
@@ -480,7 +505,7 @@ final class ModelActivityMonitor: @unchecked Sendable {
             file.session.recentSamples.filter { now >= $0.at }.map { (path, $0) }
         }) { $0.1.model }
         var totalOutput = 0.0, totalDuration = 0.0
-        let rows = Set(grouped.keys).union(recent.keys).map { model in
+        let rows = Set(grouped.keys).union(recent.keys).map { model -> ModelActivityRow in
             let members = grouped[model] ?? []
             let samples = members.compactMap(\.session.sample).filter { now >= $0.at && now - $0.at <= Self.sampleSeconds }
             let inputs = samples.compactMap(\.input)

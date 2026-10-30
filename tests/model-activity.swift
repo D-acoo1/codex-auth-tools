@@ -91,6 +91,135 @@ expect(attached.sample?.tps == nil, "no timings means unavailable, not zero or f
 attached.consume(item(from: 2, to: 2)); attached.consume(usage(total: 7000, response: "response-e"))
 expect(attached.sample?.tps == nil, "zero duration is not infinite TPS")
 expect(attached.recentSamples.count == 1, "incomplete or invalid timings do not dilute the valid average")
+
+// All recognized model items must be timed, not just one convenient subset.
+for type in ["Reasoning", "AgentMessage", "Plan"] {
+    let invalidTimings: [[String: Any]] = [
+        ["completed_at_ms": (epoch + 8) * 1000],
+        ["started_at_ms": (epoch + 5) * 1000],
+        ["started_at_ms": (epoch + 8) * 1000, "completed_at_ms": (epoch + 7) * 1000],
+        ["started_at_ms": (epoch + 5) * 1000, "completed_at_ms": (epoch + 5) * 1000],
+        ["started_at_ms": 0, "completed_at_ms": (epoch + 8) * 1000],
+        ["started_at_ms": (epoch + 5) * 1000, "completed_at_ms": (epoch + 14) * 1000]
+    ]
+    for (index, timing) in invalidTimings.enumerated() {
+        for badFirst in [false, true] {
+            var partial = ModelActivitySession(model: "model-a")
+            partial.consume(start())
+            var payload = timing
+            payload["type"] = "item_completed"; payload["item"] = ["type": type]
+            let bad = record("event_msg", payload)
+            if badFirst { partial.consume(bad) }
+            partial.consume(item(from: 0, to: 4))
+            if !badFirst { partial.consume(bad) }
+            partial.consume(usage(output: 800))
+            expect(partial.sample?.tps == nil && partial.recentSamples.isEmpty,
+                "\(type) invalid timing \(index), badFirst=\(badFirst): never divide full output by a partial interval")
+            partial.consume(item(from: 0, to: 4))
+            partial.consume(usage(total: 1800, output: 400, response: "complete"))
+            expect(partial.sample?.tps == 100 && partial.recentSamples.count == 1,
+                "a complete accounting boundary recovers after invalid timing")
+        }
+    }
+}
+var overflow = measuredSession()
+for _ in 0..<129 { overflow.consume(item(from: 0, to: 1)) }
+overflow.consume(item(from: 1, to: 4))
+overflow.consume(usage(total: 2200, output: 800, response: "overflow"))
+expect(overflow.sample?.tps == nil && overflow.recentSamples.count == 1,
+    "item overflow stays invalid and preserves earlier valid history")
+
+// Cumulative native and legacy totals are different namespaces. A mirror may
+// arrive after timing for the next response, so comparing those totals is unsafe.
+for mirrorTotal in [400, 1400] {
+    var native = ModelActivitySession(model: "model-a")
+    native.consume(start()); native.consume(item(from: 0, to: 4))
+    native.consume(usage(total: 400, output: 400, response: "native-a", at: 4))
+    native.consume(item(from: 5, to: 7))
+    native.consume(usage(total: mirrorTotal, output: 400, legacy: true, at: 7.1))
+    native.consume(usage(total: 600, output: 200, response: "native-b", at: 7.2))
+    expect(native.sample?.tps == 100 && native.recentSamples.count == 2,
+        "late legacy total \(mirrorTotal) cannot steal native response timing")
+    expect(native.recentSamples.reduce(0) { $0 + $1.output } == 600
+        && native.recentSamples.reduce(0) { $0 + ($1.duration ?? 0) } == 6,
+        "native-only weighted mean stays 600/6 rather than counting a legacy mirror")
+    native.consume(item(from: 5, to: 7))
+    native.consume(usage(total: 9999, output: 400, response: "native-a"))
+    native.consume(usage(total: 600, output: 200, response: "native-c"))
+    expect(native.sample?.tps == 100 && native.recentSamples.count == 3,
+        "native response identity, not cumulative or equal per-response counts, owns deduplication")
+}
+var interrupted = measuredSession()
+interrupted.invalidateTiming()
+interrupted.consume(usage(total: 9999, legacy: true))
+interrupted.consume(item(from: 0, to: 4))
+interrupted.consume(usage(total: 1800, output: 400, response: "after-gap"))
+expect(interrupted.sample?.tps == nil && interrupted.recentSamples.count == 1,
+    "a late legacy mirror cannot revalidate timing after a skipped/malformed record")
+interrupted.consume(item(from: 0, to: 4))
+interrupted.consume(usage(total: 2200, output: 400, response: "after-boundary"))
+expect(interrupted.sample?.tps == 100 && interrupted.recentSamples.count == 2,
+    "native timing recovers at the next complete response without losing old valid samples")
+
+var legacyOnly = ModelActivitySession(model: "model-a")
+legacyOnly.consume(start()); legacyOnly.consume(item(from: 0, to: 4))
+legacyOnly.consume(record("event_msg", ["type": "token_count"]))
+legacyOnly.consume(usage(total: 400, output: 400, legacy: true))
+expect(legacyOnly.sample?.tps == 100, "legacy-only sessions still measure complete responses")
+legacyOnly.consume(item(from: 5, to: 7))
+legacyOnly.consume(usage(total: 400, output: 400, legacy: true))
+legacyOnly.consume(usage(total: 600, output: 200, legacy: true))
+expect(legacyOnly.sample?.tps == 100 && legacyOnly.recentSamples.count == 2,
+    "legacy-only duplicate totals preserve the following response interval")
+legacyOnly.consume(item(from: 5, to: 7))
+legacyOnly.consume(usage(total: 600, output: 0, legacy: true))
+expect(legacyOnly.sample?.tps == 0, "a measured zero output is zero TPS, not unknown")
+
+var promoted = ModelActivitySession(model: "model-a")
+promoted.consume(start()); promoted.consume(item(from: 0, to: 4))
+promoted.consume(usage(total: 1400, output: 400, legacy: true, at: 4))
+promoted.consume(item(from: 5, to: 6))
+promoted.consume(usage(total: 400, output: 400, response: "promoted-a", at: 6))
+expect(promoted.sample == nil && promoted.recentSamples.count == 1,
+    "source promotion drops ambiguous pending timing without erasing valid legacy history")
+promoted.consume(usage(total: 1600, output: 200, legacy: true, at: 7))
+promoted.consume(item(from: 6, to: 7))
+promoted.consume(usage(total: 600, output: 200, response: "promoted-b", at: 7))
+expect(promoted.sample?.tps == nil && promoted.recentSamples.count == 1,
+    "partial timing across a source switch cannot become a complete next response")
+promoted.consume(item(from: 8, to: 10))
+promoted.consume(usage(total: 400, output: 400, response: "promoted-a", at: 10))
+promoted.consume(usage(total: 800, output: 200, response: "promoted-c", at: 10))
+expect(promoted.sample?.tps == 100 && promoted.recentSamples.count == 2,
+    "native accounting recovers after a clean boundary and ignores repeated promotion IDs")
+promoted.consume(start("legacy-next-turn")); promoted.consume(item(from: 0, to: 4))
+promoted.consume(usage(total: 400, output: 400, legacy: true))
+expect(promoted.sample?.tps == 100 && promoted.recentSamples.count == 3,
+    "a new turn can resume from a legacy-only writer without losing recent history")
+
+// Unusable native accounting is not evidence to disable a working legacy writer,
+// nor is it safe to carry its pending timing into a later response.
+for invalidUsage in [
+    try! JSONDecoder().decode(ActivityRecord.self, from: Data("{\"type\":\"token_usage_record\"}".utf8)),
+    record("token_usage_record", ["usage": ["output_tokens": 400]]),
+    record("token_usage_record", ["response_id": "", "usage": ["output_tokens": 400]]),
+    record("token_usage_record", ["response_id": "bad"]),
+    record("token_usage_record", ["response_id": "bad", "usage": ["output_tokens": -1]]),
+    try! JSONDecoder().decode(ActivityRecord.self,
+        from: Data("{\"type\":\"token_usage_record\",\"timestamp\":\"bad\",\"payload\":{\"response_id\":\"bad\",\"usage\":{\"output_tokens\":400}}}".utf8))
+] {
+    var malformed = ModelActivitySession(model: "model-a")
+    malformed.consume(start()); malformed.consume(item(from: 0, to: 4))
+    malformed.consume(invalidUsage)
+    malformed.consume(item(from: 5, to: 7))
+    malformed.consume(usage(total: 400, output: 400, legacy: true))
+    expect(malformed.sample?.tps == nil && malformed.recentSamples.isEmpty,
+        "unusable accounting invalidates timing and the unknown next-response boundary")
+    malformed.consume(item(from: 5, to: 7))
+    malformed.consume(usage(total: 600, output: 200, legacy: true))
+    expect(malformed.sample?.tps == 100,
+        "malformed native accounting does not promote away from valid legacy support")
+}
 var bounded = ModelActivitySession(model: "model-a")
 bounded.consume(start())
 for index in 0..<150 {
@@ -230,6 +359,32 @@ sqlite3_close(averageDB)
 let combined = ModelActivityMonitor(home: averageHome, onUpdate: { _ in }).collectOnce(now: epoch + 16)
 expect(combined.rows.map(\.outputTPS) == [140, 200], "per-model means remain independent")
 expect(combined.overallTPS == 162.5, "overall TPS is (700+600)/(5+3), not the mean or sum of model means")
+
+// The real append reader/monitor must retain a valid mean through an incomplete
+// response, then resume measurements without carrying its partial intervals.
+let integrityMonitor = ModelActivityMonitor(home: home, onUpdate: { _ in })
+expect(integrityMonitor.collectOnce(now: now).rows.first?.outputTPS == 100,
+    "append integrity fixture starts with a valid recent mean")
+let amended = try! FileHandle(forWritingTo: first)
+try! amended.seekToEnd()
+try! amended.write(contentsOf: line("event_msg", ["type": "item_completed", "item": ["type": "Reasoning"],
+    "started_at_ms": (epoch + 10) * 1000, "completed_at_ms": (epoch + 12) * 1000], at: 14)
+    + line("event_msg", ["type": "item_completed", "item": ["type": "AgentMessage"],
+        "completed_at_ms": (epoch + 13) * 1000], at: 14)
+    + line("token_usage_record", ["response_id": "partial", "usage": ["output_tokens": 800]], at: 14))
+let partialMean = integrityMonitor.collectOnce(now: epoch + 14)
+expect(partialMean.rows.first?.outputTPS == 100 && partialMean.rows.first?.responseSamples == 2,
+    "an invalid response leaves the observed monitor's prior weighted mean intact")
+try! amended.write(contentsOf: line("event_msg", ["type": "item_completed", "item": ["type": "AgentMessage"],
+    "started_at_ms": (epoch + 14) * 1000, "completed_at_ms": (epoch + 16) * 1000], at: 16)
+    + line("event_msg", ["type": "token_count", "info": ["last_token_usage": ["output_tokens": 800],
+        "total_token_usage": ["output_tokens": 1200]]], at: 16)
+    + line("token_usage_record", ["response_id": "recovered", "usage": ["output_tokens": 400]], at: 16))
+try! amended.close()
+let recoveredMean = integrityMonitor.collectOnce(now: epoch + 16)
+expect(recoveredMean.rows.first?.outputTPS == 120 && recoveredMean.rows.first?.responseSamples == 3,
+    "append recovery yields (400+400+400)/(4+4+2), without the bad response or delayed mirror")
+expect(recoveredMean.overallTPS == 120, "menu-bar overall mean uses the same recovered samples")
 
 // A fresh append after attach must be visible without rereading the history.
 var observed: [ModelActivitySnapshot] = []
