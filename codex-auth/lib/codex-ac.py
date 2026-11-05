@@ -305,7 +305,7 @@ def import_auth(alias: str, auth_path: Path, source: str, force: bool = False, a
         "updated_at": now_iso(),
         "last_switched_at": old.get("last_switched_at"),
     }
-    # 保留已有 usage 快照；迁移或 refresh 会再覆盖。
+    # Preserve the cached usage snapshot until migration or refresh replaces it.
     for k in [
         "last_usage",
         "last_usage_at",
@@ -329,14 +329,14 @@ def import_auth(alias: str, auth_path: Path, source: str, force: bool = False, a
             if k in old:
                 rec[k] = old[k]
     reg["accounts"][alias] = rec
-    # 同步进 codex-auth 原生 registry：usage/list 继续沿用它的成熟处理。
+    # Sync the native codex-auth registry so usage/list keeps its existing handling.
     if source != "codex-auth":
         try:
             subprocess.run(["codex-auth", "import", str(auth_path), "--alias", alias], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
         except Exception:
             pass
     if reg.get("active_alias") is None:
-        # 只在首次初始化时设置元数据 active，不写 ~/.codex/auth.json。
+        # Set active metadata only on first initialization; never write ~/.codex/auth.json.
         reg["active_alias"] = detect_current_alias(reg, DEFAULT_CODEX_HOME) or alias
     save_registry(reg, ac_home)
     return "updated" if existed else "imported"
@@ -949,7 +949,7 @@ def sync_usage_from_codex_auth_registry(reg: Dict[str, Any]) -> bool:
 def sync_codex_auth_for_list(reg: Dict[str, Any], *, api: bool, cached: bool) -> bool:
     if cached:
         return False
-    # usage 刷新交给 codex-auth native 实现，避免 Python 重写造成额度口径漂移。
+    # Delegate usage refresh to native codex-auth to keep quota parsing consistent.
     run_codex_auth_native_refresh(api=api)
     return sync_usage_from_codex_auth_registry(reg)
 
@@ -1971,9 +1971,9 @@ def codex_for_daemon() -> Optional[str]:
 
 
 def refresh_remote_control_after_switch() -> None:
-    # 2026-05-24: 用户远程控制改走 SSH 公网跳板。
-    # ca 切换 ChatGPT 账号时不再刷新 Codex App 手机端 remote-control，
-    # 避免过期 refresh token 导致切号后出现误导性报错。
+    # Remote-control connectivity is handled separately through the SSH relay.
+    # Switching ChatGPT accounts must not refresh Codex App's mobile session,
+    # which may fail with unrelated expired-refresh-token errors.
     return
 
 
@@ -2527,7 +2527,7 @@ def cmd_import_codex_auth(args: argparse.Namespace) -> int:
             eprint(f"跳过：{alias} 快照不存在：{path}")
             continue
         status = import_auth(alias, path, "codex-auth", force=args.force)
-        # 迁移 codex-auth 已经刷到的 usage 快照，避免只迁移登录态。
+        # Import usage snapshots already refreshed by codex-auth, not just logins.
         dst_reg = load_registry()
         dst = dst_reg.get("accounts", {}).get(alias)
         if dst is not None:
@@ -2539,7 +2539,7 @@ def cmd_import_codex_auth(args: argparse.Namespace) -> int:
         existing.add(alias)
         count += 1
         print(f"{status}: {alias}")
-    # 迁移后按当前 ~/.codex/auth.json 矫正 active_alias，不替换 auth。
+    # Align active_alias with the current auth.json after import, without replacing auth.
     reg = load_registry()
     cur = detect_current_alias(reg, DEFAULT_CODEX_HOME)
     if cur:
@@ -2694,7 +2694,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     except OSError:
         pass
     copy_private(src, home / "auth.json")
-    # 复用主配置，避免 CODEX_HOME 隔离后丢 config/prompts。只创建不存在的软链。
+    # Reuse the main config/prompts in an isolated CODEX_HOME; create only missing links.
     for name in ["config.toml", "AGENTS.md"]:
         target = DEFAULT_CODEX_HOME / name
         link = home / name

@@ -36,7 +36,7 @@ const showAlias = args.includes('--alias');
 const maskAccount = args.includes('--mask');
 const noColor = args.includes('--no-color');
 const useColor = !noColor && process.stdout.isTTY;
-// 默认必须和 `codex-auth list` 一致：走 API；只有显式 --skip-api 才走本地快照。
+// Match codex-auth list: use the API unless --skip-api explicitly requests local snapshots.
 const api = !skipApi;
 
 function readJson(p, fallback=null) {

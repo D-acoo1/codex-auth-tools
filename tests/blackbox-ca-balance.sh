@@ -724,7 +724,7 @@ assert_matches "$TMP/list-reset-cached.txt" 'demo@example.com +Pro +∞ +51% .* 
 assert_not_contains "$TMP/list-reset-cached.txt" 'Now!'
 
 # A full usage refresh failure follows the same fallback: cached quota and
-# reset credits remain useful instead of being replaced by "刷新失败".
+# reset credits remain useful instead of being replaced by a refresh-error label.
 "$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
 import json, sys, time
 path = sys.argv[1]

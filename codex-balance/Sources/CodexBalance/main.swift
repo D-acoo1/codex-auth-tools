@@ -923,7 +923,7 @@ final class CodexUsageFetcher: @unchecked Sendable {
             let data = try JSONSerialization.data(withJSONObject: dictionary, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: stateFile, options: .atomic)
         } catch {
-            // 状态文件只用于本机验收，失败不影响菜单栏显示。
+            // The state file is for local diagnostics; write failures must not affect the menu bar.
         }
     }
 }
