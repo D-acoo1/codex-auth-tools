@@ -212,6 +212,10 @@ struct ModelActivitySession {
             hasAccountingBoundary = false
             return
         }
+        // Initial attachment can land inside an oversized tool result and see
+        // only its following usage settlement. It is still turn activity;
+        // observed completion remains authoritative over late accounting.
+        if !ended { isOpen = true }
         if isNative, let id = p.response_id {
             responseIDs.append(id)
             if responseIDs.count > 16 { responseIDs.removeFirst() }

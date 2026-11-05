@@ -1261,6 +1261,7 @@ def cmd_tokens(args: argparse.Namespace) -> int:
             save_registry(reg)
 
     rows = []
+    unique_totals = {}
     for alias in aliases:
         rec = accounts[alias]
         account = first_str(rec.get("email"), rec.get("email_masked")) or "<unknown>"
@@ -1273,6 +1274,11 @@ def cmd_tokens(args: argparse.Namespace) -> int:
         if rec.get("kind") == "api":
             account = "api:" + str(rec.get("base_url") or rec.get("provider_id") or alias).removeprefix("https://").removeprefix("http://")
             total = peak = updated = "-"
+        else:
+            key = rec.get("identity_hash") or ("alias", alias)
+            candidate = (at or 0, not rec.get("last_token_totals_error"), totals.get("lifetime_tokens"))
+            if key not in unique_totals or candidate[:2] > unique_totals[key][:2]:
+                unique_totals[key] = candidate
         rows.append(("*" if alias == active else " ", alias, account, total, peak, updated))
     headers = ("ALIAS", "ACCOUNT", "TOTAL TOKENS", "PEAK/DAY", "UPDATED")
     # Wide CJK units occupy two terminal cells; account identifiers remain ASCII.
@@ -1282,6 +1288,10 @@ def cmd_tokens(args: argparse.Namespace) -> int:
     print("  " + "  ".join(value + " " * (size - width(value)) for value, size in zip(headers, widths)))
     for marker, *values in rows:
         print(marker + " " + "  ".join(value + " " * (size - width(value)) for value, size in zip(values, widths)))
+    totals = [value for _, _, value in unique_totals.values()]
+    total = fmt_token_total(sum(totals)) if totals and all(type(value) is int and value >= 0 for value in totals) else ("?" if totals else "-")
+    stale = " !" if any(not fresh for _, fresh, _ in unique_totals.values()) else ""
+    print(f"\nTotal tokens: {total}{stale}")
     if failures:
         summary = ", ".join(f"{alias} ({reset_credit_error_label(status)})" for alias, status in failures.items())
         eprint(f"warning: token usage refresh failed: {summary}；保留上次成功数据，UPDATED 后的 ! 表示刷新失败。")

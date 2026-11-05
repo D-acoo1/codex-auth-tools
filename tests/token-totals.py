@@ -90,10 +90,13 @@ try:
         blank = run("--cached")
         expect("TOTAL TOKENS" in blank.stdout and "PEAK/DAY" in blank.stdout, "clear total versus daily peak headers")
         expect(not state["requests"], "empty cache performs no request")
+        expect(blank.stdout.rstrip().endswith("Total tokens: ?"), "unknown totals are not summed as zero")
         state["responses"]["other"] = (200, {"stats": {"lifetime_tokens": 0, "peak_daily_tokens": None}})
         live = run()
         expect(set(state["requests"]) == {"fox", "other"} and len(state["requests"]) == 2, "query every ChatGPT snapshot but never API profiles")
         expect("1050.6亿" in live.stdout and "86.5亿" in live.stdout and "relay" in live.stdout, "compact server statistics and API row")
+        expect(live.stdout.rstrip().endswith("Total tokens: 1050.6亿"), "one final total excludes API profiles")
+        expect(live.stdout.count("Total tokens:") == 1, "aggregate occupies one line")
         cached = json.loads(reg.read_text())
         expect(cached["accounts"]["fox"]["token_totals"] == {"lifetime_tokens": 105062499332, "peak_daily_tokens": 8650848703}, "only normalized service totals persisted")
         expect(cached["accounts"]["other"]["token_totals"] == {"lifetime_tokens": 0, "peak_daily_tokens": None}, "zero and unknown are distinct")
@@ -101,10 +104,36 @@ try:
         data = reg.read_bytes()
         prior_requests = len(state["requests"])
         one = run("fox", "fox", "--cached")
-        expect("other" not in one.stdout and "relay" not in one.stdout and one.stdout.count("1050.6亿") == 1, "specified aliases deduplicated and filtered")
+        expect("other" not in one.stdout and "relay" not in one.stdout and one.stdout.count("1050.6亿") == 2, "one selected detail row plus its aggregate; duplicate aliases never add a second row")
         expect(reg.read_bytes() == data and len(state["requests"]) == prior_requests, "cached path has no registry write or request")
         run("does-not-exist", success=False)
         expect(reg.read_bytes() == data and len(state["requests"]) == prior_requests, "bad alias fails before network/cache changes")
+        expect(run("other", "--cached").stdout.rstrip().endswith("Total tokens: 0"), "known zero aggregate")
+        expect(run("relay", "--cached").stdout.rstrip().endswith("Total tokens: -"), "API-only aggregate is not applicable")
+        partial = json.loads(data)
+        partial["accounts"]["other"]["token_totals"]["lifetime_tokens"] = None
+        reg.write_text(json.dumps(partial))
+        expect(run("--cached").stdout.rstrip().endswith("Total tokens: ?"), "one unknown account keeps the aggregate unknown")
+        rounding = json.loads(data)
+        for alias in ("fox", "other"):
+            rounding["accounts"][alias]["token_totals"]["lifetime_tokens"] = 14400
+        reg.write_text(json.dumps(rounding))
+        expect(run("--cached").stdout.rstrip().endswith("Total tokens: 2.9万"), "sum raw integers before rounding, not 1.4万 plus 1.4万")
+        duplicates = json.loads(data)
+        duplicate = dict(duplicates["accounts"]["fox"], alias="copy",
+                         token_totals={"lifetime_tokens": 200000000000, "peak_daily_tokens": None})
+        duplicate["last_token_totals_at"] -= 1
+        duplicates["accounts"]["copy"] = duplicate
+        reg.write_text(json.dumps(duplicates))
+        expect(run("--cached").stdout.rstrip().endswith("Total tokens: 1050.6亿"), "same account under multiple aliases is counted once using the fresher snapshot")
+        duplicate["last_token_totals_at"] += 2
+        reg.write_text(json.dumps(duplicates))
+        expect(run("--cached").stdout.rstrip().endswith("Total tokens: 2000亿"), "newer duplicate snapshot supplies the aggregate")
+        duplicate["last_token_totals_at"] -= 1
+        duplicate["last_token_totals_error"] = "503"
+        reg.write_text(json.dumps(duplicates))
+        expect(run("--cached").stdout.rstrip().endswith("Total tokens: 1050.6亿"), "equal-age successful identity snapshot wins over a failed alias")
+        reg.write_bytes(data)
         for payload in [b"invalid JSON", [], {}, {"stats": []}, {"stats": {"lifetime_tokens": True}},
                         {"stats": {"lifetime_tokens": -1}}, {"stats": {"lifetime_tokens": "10"}},
                         {"stats": {"lifetime_tokens": 1.5}}, b"x" * (2 * 1024 * 1024 + 1)]:
@@ -117,6 +146,7 @@ try:
         state["responses"]["fox"] = (503, {})
         failed = run("fox")
         expect("1050.6亿" in failed.stdout and "503" in failed.stderr, "HTTP failure preserves cached success")
+        expect(failed.stdout.rstrip().endswith("Total tokens: 1050.6亿 !"), "aggregate using a failed-refresh cache is visibly marked")
         expect("!" in run("fox", "--cached").stdout, "cached error marker is not silently lost")
         state["responses"]["fox"] = (200, {"stats": None})
         run("fox")

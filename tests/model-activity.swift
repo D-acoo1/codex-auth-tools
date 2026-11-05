@@ -259,6 +259,30 @@ let unicode = line("turn_context", ["model": "模型-🚀"])
 for byte in unicode { reader.ingest(Data([byte])) }
 expect(reader.session.model == "模型-🚀", "split UTF-8 is decoded only at record boundaries")
 
+// Initial attachment may see only a settlement after a tool record larger than
+// the tail window. Recover lifecycle without reading that tool payload.
+for legacy in [false, true] {
+    var unknown = ModelActivitySession(model: "model-a")
+    unknown.consume(usage(legacy: legacy))
+    expect(unknown.isOpen, "a valid settlement confirms an otherwise unknown open turn")
+    expect(unknown.recentSamples.isEmpty, "settlement-only attachment cannot invent TPS timings")
+    unknown.consume(record("event_msg", ["type": "task_complete"]))
+    unknown.consume(usage(response: "late", legacy: legacy))
+    expect(!unknown.isOpen, "settlement cannot reopen an explicitly completed turn")
+}
+var quotaOnly = ModelActivitySession(model: "model-a")
+quotaOnly.consume(record("event_msg", ["type": "token_count"]))
+quotaOnly.consume(record("token_usage_record", ["response_id": "invalid", "usage": ["output_tokens": -1]]))
+expect(!quotaOnly.isOpen, "quota-only or invalid accounting does not claim a task")
+let largeTool = root.appendingPathComponent("large-tool.jsonl")
+try! (line("response_item", ["type": "custom_tool_call_output", "output": String(repeating: "x", count: ActivityRollout.tailBytes + 2048)])
+    + line("event_msg", ["type": "token_count", "info": ["last_token_usage": ["output_tokens": 100]]])).write(to: largeTool)
+let tailOnly = ActivityRollout(path: largeTool.path, model: "model-a")!
+tailOnly.drain()
+expect(tailOnly.session.isOpen, "actual tail reader recovers after an oversized tool result")
+expect(tailOnly.bytesRead <= ActivityRollout.tailBytes && tailOnly.session.recentSamples.isEmpty,
+    "lifecycle recovery neither enlarges the tail nor fabricates a response speed")
+
 let home = root.appendingPathComponent("home", isDirectory: true)
 try! FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
 let monitor = ModelActivityMonitor(home: home, openRollouts: { nil }, onUpdate: { _ in })

@@ -95,6 +95,7 @@ Local model activity is included in `v2026.10.23` and later releases.
 - preserves a newer live ChatGPT credential in the saved account before switching away;
 - atomically switches the active Codex auth snapshot;
 - lists saved accounts, quota windows, Credits balances, and each ChatGPT account's available reset-credit count and local expiration times;
+- reports account lifetime tokens and historical daily peaks with `ca tokens`, plus a single deduplicated `Total tokens` summary;
 - distinguishes a missing 5-hour window from the weekly quota;
 - supports API-compatible provider and relay profiles;
 - stores API keys in macOS Keychain or a mode-`0600` local fallback file;
@@ -373,6 +374,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 - 切走当前账号前，先把 Codex 已更新的较新 ChatGPT 登录凭据保存回该账号快照；
 - 原子切换当前 Codex 登录快照；
 - 查看已保存账号、额度窗口、Credits 余额，以及每个 ChatGPT 账号可用的重置券数量和本机到期时间；
+- 使用 `ca tokens` 查看各账号累计 Token 和历史单日峰值，并在末尾用一行 `Total tokens` 汇总，重复账号不重复计数；
 - 正确区分“没有 5 小时窗口”和“周额度”；
 - 管理 OpenAI-compatible API 与中转配置；
 - 优先把 API key 存入 macOS Keychain，失败时存入权限为 `0600` 的本机文件；
