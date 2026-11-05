@@ -18,11 +18,49 @@ let chinese = L10n.shared.effectiveCode.hasPrefix("zh")
 }
 @MainActor func allViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(allViews) }
 
+@MainActor func checkNativePopoverCorners(_ mode: CardThemeMode) throws {
+    let anchorWindow = NSWindow(contentRect: NSRect(x: 80, y: 100, width: 40, height: 24),
+        styleMask: .borderless, backing: .buffered, defer: false)
+    anchorWindow.isReleasedWhenClosed = false
+    anchorWindow.orderFrontRegardless()
+    let controller = NSViewController()
+    let surface = ThemePanelView(frame: NSRect(x: 0, y: 0, width: 410, height: 524), themeMode: mode)
+    surface.appearance = NSAppearance(named: mode == .light ? .aqua : .darkAqua)
+    controller.view = surface
+    let popover = NSPopover()
+    popover.animates = false
+    popover.behavior = .applicationDefined
+    popover.contentViewController = controller
+    popover.show(relativeTo: anchorWindow.contentView!.bounds, of: anchorWindow.contentView!, preferredEdge: .maxY)
+    defer { popover.close(); anchorWindow.close() }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+    surface.displayIfNeeded()
+    CATransaction.flush()
+    let window = surface.window!
+    let image = CGWindowListCreateImage(.null, .optionIncludingWindow,
+        CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution])!
+    let bitmap = NSBitmapImageRep(cgImage: image)
+    try bitmap.representation(using: .png, properties: [:])!.write(
+        to: output.appendingPathComponent("native-corners-\(mode.rawValue).png"))
+    let scale = CGFloat(image.width) / window.frame.width
+    let expected: [CGFloat] = mode == .light ? [0.970, 0.950, 0.910] : [0.07, 0.07, 0.07]
+    for point in [NSPoint(x: 8, y: 8), NSPoint(x: 402, y: 8),
+                  NSPoint(x: 8, y: 516), NSPoint(x: 402, y: 516)] {
+        let p = surface.convert(point, to: nil)
+        let color = bitmap.colorAt(x: Int(p.x * scale), y: Int((window.frame.height - p.y) * scale))!
+            .usingColorSpace(.sRGB)!
+        let channels = [color.redComponent, color.greenComponent, color.blueComponent]
+        check(zip(channels, expected).allSatisfy { abs($0 - $1) < 0.045 },
+            "native popover corner is filled by the themed surface: \(point), \(channels)")
+    }
+}
+
 let samples = (0..<8).map { index in
     ModelActivityRow(model: index == 0 ? "a-very-long-model-name-that-needs-truncation" : "model-\(index)",
         tasks: 3, generating: index % 2, inputTokens: 24000, inputTasks: 2, outputTPS: index == 1 ? nil : 123.4, measuredTasks: index == 1 ? 0 : 2, responseSamples: index == 1 ? 0 : 8)
 }
 for mode in [CardThemeMode.dark, .light] {
+    try checkNativePopoverCorners(mode)
     let controller = CodexPanelViewController(summary: try readmeSampleSummary(), errorText: nil,
         target: sampleTarget, refreshAction: sampleAction, openAction: sampleAction, quitAction: sampleAction,
         languageAction: sampleAction, themeAction: sampleAction, resetCreditsAction: sampleAction,
@@ -58,11 +96,18 @@ for mode in [CardThemeMode.dark, .light] {
     controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: samples))
     check(rowIdentities == allViews(activity).filter { $0 is NSTextField }.map(ObjectIdentifier.init), "unchanged update reuses labels")
     var changed = samples
-    changed[0] = ModelActivityRow(model: samples[0].model, tasks: 4, generating: 3, inputTokens: 48200, inputTasks: 4, outputTPS: 198.2, measuredTasks: 4, responseSamples: 12)
+    changed[0] = ModelActivityRow(model: samples[0].model, tasks: 4, generating: 3, inputTokens: 48200, inputTasks: 4, outputTPS: 198.2, measuredTasks: 4, responseSamples: 12, subagentTasks: 2)
     controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: changed))
+    let childStatus = allViews(activity).compactMap { $0 as? NSTextField }.first {
+        $0.stringValue == (chinese ? "2 任务 + 2 子任务" : "2 chats + 2 agents")
+    }
+    check(childStatus != nil, "parent tasks and subagents have explicit separate counts")
+    root.layoutSubtreeIfNeeded()
+    check(childStatus!.cell!.cellSize.width <= childStatus!.bounds.width, "main/subagent counts fit the row")
     check(allViews(activity).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "≈ 198 TPS" }, "averages use whole TPS to avoid decimal jitter")
     check(rowIdentities == allViews(activity).filter { $0 is NSTextField }.map(ObjectIdentifier.init), "changed values do not recreate row labels")
     check(root.subviews.contains { $0 === card } && root.subviews.contains { $0 === bubble }, "updating TPS preserves card animation and open bubble")
+    try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("subagents-\(mode.rawValue).png"))
     scroll.documentView!.scroll(NSPoint(x: 0, y: 206))
     try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("scrolled-\(mode.rawValue).png"))
     for availability in [ModelActivitySnapshot.Availability.starting, .ready, .unavailable] {

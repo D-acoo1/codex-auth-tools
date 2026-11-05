@@ -4,7 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d "${CODEX_AUTH_TEST_TMPDIR:-${TMPDIR:-/tmp}}/ca-balance.XXXXXX")"
 USAGE_SERVER_PID=""
+TASK_WRITER_PID=""
 cleanup() {
+  if [[ -n "${TASK_WRITER_PID:-}" ]]; then
+    kill "$TASK_WRITER_PID" >/dev/null 2>&1 || true
+    wait "$TASK_WRITER_PID" 2>/dev/null || true
+  fi
   if [[ -n "${USAGE_SERVER_PID:-}" ]]; then
     kill "$USAGE_SERVER_PID" >/dev/null 2>&1 || true
     wait "$USAGE_SERVER_PID" 2>/dev/null || true
@@ -360,6 +365,7 @@ assert_task_light() {
   actual="$(CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_BALANCE_STATE_DIR="$CODEX_BALANCE_STATE_DIR" "$BALANCE_BIN" --task-light-once | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
   if [[ "$actual" != "$expected" ]]; then
     echo "expected task light '$expected', got '$actual'" >&2
+    "$BALANCE_BIN" --model-activity-once >&2
     exit 1
   fi
 }
@@ -425,6 +431,30 @@ assert_task_light unread
 write_task_db
 TASK_ROLLOUT="$TMP/open-turn.jsonl"
 printf '%s\n' '{"type":"turn_context"}' > "$TASK_ROLLOUT"
+mkdir -p "$TMP/writer"
+cat > "$TMP/writer/main.c" <<'C'
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc != 3) return 1;
+    int first = open(argv[1], O_RDONLY), second = open(argv[2], O_RDONLY);
+    if (first < 0 || second < 0) { perror("fixture open"); return 1; }
+    puts("ready");
+    fflush(stdout);
+    while (1) pause();
+}
+C
+printf '%s\n' '{"type":"turn_context"}' > "$TMP/open-turn-plus-unread.jsonl"
+/usr/bin/xcrun --sdk macosx clang -isysroot "$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
+  "$TMP/writer/main.c" -o "$TMP/writer/codex"
+"$TMP/writer/codex" "$TASK_ROLLOUT" "$TMP/open-turn-plus-unread.jsonl" > "$TMP/writer/ready" &
+TASK_WRITER_PID=$!
+for _ in {1..100}; do
+  grep -qx ready "$TMP/writer/ready" && break
+  sleep 0.05
+done
+assert_contains "$TMP/writer/ready" ready
 /usr/bin/sqlite3 "$TASK_DB" "INSERT INTO threads(id, updated_at, archived, thread_source, agent_nickname, agent_role, agent_path, title, rollout_path) VALUES('worker-running', $TASK_NOW, 0, 'subagent', 'worker1', 'worker', '', 'worker running', '$TASK_ROLLOUT');"
 write_unread_state
 assert_task_light running

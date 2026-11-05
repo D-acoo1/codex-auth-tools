@@ -261,7 +261,7 @@ expect(reader.session.model == "模型-🚀", "split UTF-8 is decoded only at re
 
 let home = root.appendingPathComponent("home", isDirectory: true)
 try! FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-let monitor = ModelActivityMonitor(home: home, onUpdate: { _ in })
+let monitor = ModelActivityMonitor(home: home, openRollouts: { nil }, onUpdate: { _ in })
 expect(monitor.collectOnce().availability == .unavailable, "missing database is distinct from idle")
 let dbURL = home.appendingPathComponent("state_5.sqlite")
 var db: OpaquePointer?
@@ -318,7 +318,7 @@ expect(sqlite3_open(averageHome.appendingPathComponent("state_5.sqlite").path, &
 expect(sqlite3_exec(averageDB, "CREATE TABLE threads (id TEXT, updated_at INTEGER, rollout_path TEXT, archived INTEGER, model TEXT, thread_source TEXT, agent_role TEXT)", nil, nil, nil) == SQLITE_OK, "create average table")
 expect(sqlite3_exec(averageDB, "INSERT INTO threads VALUES ('average', \(Int(now)), '\(averageFile.path)', 0, 'model-a', 'user', '')", nil, nil, nil) == SQLITE_OK, "insert average fixture")
 sqlite3_close(averageDB)
-let averageMonitor = ModelActivityMonitor(home: averageHome, onUpdate: { _ in })
+let averageMonitor = ModelActivityMonitor(home: averageHome, openRollouts: { nil }, onUpdate: { _ in })
 @MainActor func averageRows(_ seconds: Double) -> ModelActivitySnapshot { averageMonitor.collectOnce(now: epoch + seconds) }
 @MainActor func appendAverage(_ data: Data) {
     let h = try! FileHandle(forWritingTo: averageFile)
@@ -356,13 +356,13 @@ try! (line("turn_context", ["model": "model-c", "turn_id": "extra"])
 expect(sqlite3_open(averageHome.appendingPathComponent("state_5.sqlite").path, &averageDB) == SQLITE_OK, "reopen cross-model fixture")
 expect(sqlite3_exec(averageDB, "INSERT INTO threads VALUES ('extra', \(Int(now)), '\(extraModel.path)', 0, 'model-c', 'user', '')", nil, nil, nil) == SQLITE_OK, "insert another measured model")
 sqlite3_close(averageDB)
-let combined = ModelActivityMonitor(home: averageHome, onUpdate: { _ in }).collectOnce(now: epoch + 16)
+let combined = ModelActivityMonitor(home: averageHome, openRollouts: { nil }, onUpdate: { _ in }).collectOnce(now: epoch + 16)
 expect(combined.rows.map(\.outputTPS) == [140, 200], "per-model means remain independent")
 expect(combined.overallTPS == 162.5, "overall TPS is (700+600)/(5+3), not the mean or sum of model means")
 
 // The real append reader/monitor must retain a valid mean through an incomplete
 // response, then resume measurements without carrying its partial intervals.
-let integrityMonitor = ModelActivityMonitor(home: home, onUpdate: { _ in })
+let integrityMonitor = ModelActivityMonitor(home: home, openRollouts: { nil }, onUpdate: { _ in })
 expect(integrityMonitor.collectOnce(now: now).rows.first?.outputTPS == 100,
     "append integrity fixture starts with a valid recent mean")
 let amended = try! FileHandle(forWritingTo: first)
@@ -386,9 +386,42 @@ expect(recoveredMean.rows.first?.outputTPS == 120 && recoveredMean.rows.first?.r
     "append recovery yields (400+400+400)/(4+4+2), without the bad response or delayed mirror")
 expect(recoveredMean.overallTPS == 120, "menu-bar overall mean uses the same recovered samples")
 
+// Runtime writer ownership is independent of a 75-second log silence. Balance
+// must attach a live long task on startup, and never count an orphan as running.
+try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: epoch - 1000)], ofItemAtPath: second.path)
+let owned = ModelActivityMonitor(home: home, openRollouts: { [second.resolvingSymlinksInPath().path] }, onUpdate: { _ in })
+let longTask = owned.collectOnce(now: now)
+expect(longTask.rows.first(where: { $0.model == "model-a" })?.tasks == 1,
+    "a live writer's silent turn is discovered on initial attach")
+expect(longTask.hasRunning && longTask.rows.first?.quietTasks == 0,
+    "an attached long task is not demoted merely because no log was written for 75 seconds")
+expect(longTask.rows.first?.subagentTasks == 1,
+    "subagent counts are separately identifiable instead of silently matching the sidebar")
+let orphan = ModelActivityMonitor(home: home, openRollouts: { [] }, onUpdate: { _ in }).collectOnce(now: epoch + 16)
+expect(orphan.rows.allSatisfy { $0.tasks == 0 } && !orphan.hasRunning,
+    "fresh orphan logs cannot claim a live task when no Codex process owns them")
+expect(orphan.overallTPS == 120, "writer ownership does not erase recent valid TPS samples")
+try! FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: second.path)
+for terminal in ["task_complete", "turn_aborted", "task_failed"] {
+    var ended = ModelActivitySession(model: "model-a")
+    ended.consume(start()); ended.consume(record("event_msg", ["type": terminal]))
+    ended.consume(item(from: 0, to: 4))
+    ended.consume(record("response_item", ["type": "custom_tool_call_output", "call_id": "late"]))
+    ended.consume(record("response_item", ["type": "reasoning"]))
+    expect(!ended.isOpen && !ended.isWaiting, "late records never reopen a terminated turn")
+    ended.consume(start("fresh-turn")); ended.consume(item(from: 0, to: 4))
+    expect(ended.isOpen, "a genuinely new turn resumes lifecycle detection")
+}
+var finalAnswer = measuredSession()
+finalAnswer.consume(record("response_item", ["type": "message", "role": "assistant", "phase": "final_answer"]))
+finalAnswer.consume(item("AgentMessage", from: 5, to: 8))
+finalAnswer.consume(usage(total: 1600, output: 200, response: "late-accounting"))
+expect(!finalAnswer.isOpen, "final-answer accounting order never reopens a finished task")
+expect(finalAnswer.recentSamples.count == 2, "finished response accounting may still update the recent average")
+
 // A fresh append after attach must be visible without rereading the history.
 var observed: [ModelActivitySnapshot] = []
-let live = ModelActivityMonitor(home: home) { observed.append($0) }
+let live = ModelActivityMonitor(home: home, openRollouts: { nil }) { observed.append($0) }
 live.start()
 let started = Date()
 while observed.isEmpty && Date().timeIntervalSince(started) < 3 { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }

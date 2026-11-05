@@ -76,7 +76,7 @@ The three lamps after the menu-bar quota summary describe **Codex task attention
 | Lamp | Meaning |
 | --- | --- |
 | Red | At least one user-visible Codex task updated within the last 24 hours is still unread. Subagent/background-agent threads do not raise the red light. |
-| Yellow | At least one unarchived task appears to be running: its rollout changed within the last 75 seconds and still contains an open turn without a completion or final answer. |
+| Yellow | At least one unarchived task has an open turn and its rollout is held by a running Codex process, including silent tool/inference waits. If process inspection is unavailable, the fallback requires a rollout update within 75 seconds. |
 | Green | No unread task needs attention and no task appears to be running. |
 
 Red and yellow are independent, so both can be lit when one result is waiting while another task is still running. Green is lit only when neither condition exists. Codex Balance checks this local state every two seconds, separately from quota refreshes, and does not mark a task as read or send task state over the network. This makes the status bar answer three different questions at a glance: **Does anything need me? Is anything still working? Is everything clear?**
@@ -85,9 +85,9 @@ Red and yellow are independent, so both can be lit when one result is waiting wh
 
 The menu bar also shows a compact **`86 TPS`** readout beside the quota/task lights, without a model name, extra icon, or approximation prefix. The bold purple number sits close to the lights, with a smaller, quieter TPS unit. It is the duration-weighted average across **all** observed local models in the same 60-second response window: total output tokens divided by total model-generation seconds, not an average of per-model averages. Hover for the calculation label and each model's value. It updates independently of quota or light changes; `— TPS` means no valid sample, not zero.
 
-The popover groups observed Codex App/CLI sessions in the current `CODEX_HOME` by model, including subagents. **The prominent readout, such as `≈ 86 TPS`, is a duration-weighted average of valid responses settled in the last 60 seconds: total output tokens divided by total model-generation seconds.** Same-model concurrent responses contribute to the average, not a sum of speeds. Whole-number TPS avoids decimal jitter; waiting for tools or finishing a task no longer immediately clears a recent mean. When no task is open, its retained row says **Recent average · idle**; it disappears when all samples expire. The smaller `Input` amount is each open task's latest input-token count, not input TPS; its `[1/3]` marker means one of three open tasks has a recent input count. Hover the TPS value for valid-response and contributing-session counts. Reasoning is counted once and tool waits are excluded. Any missing/invalid model-item timing excludes that whole response without erasing valid recent history; no valid sample shows `— TPS`, not a guessed speed. Native accounting takes precedence over legacy mirrors, while legacy-only turns remain supported. Open turns become **quiet / waiting for updates** after 75 seconds of silence, not falsely generating or finished. Other AI apps and separate Codex homes are not monitored. See [measurement details and limitations](docs/codex-balance.md#local-model-activity).
+The popover groups observed Codex App/CLI sessions in the current `CODEX_HOME` by model, including subagents. **The prominent readout, such as `≈ 86 TPS`, is a duration-weighted average of valid responses settled in the last 60 seconds: total output tokens divided by total model-generation seconds.** Same-model concurrent responses contribute to the average, not a sum of speeds. Whole-number TPS avoids decimal jitter; waiting for tools or finishing a task no longer immediately clears a recent mean. When no task is open, its retained row says **Recent average · idle**; it disappears when all samples expire. The smaller `Input` amount is each open task's latest input-token count, not input TPS; its `[1/3]` marker means one of three open tasks has a recent input count. Hover the TPS value for valid-response and contributing-session counts. Reasoning is counted once and tool waits are excluded. Any missing/invalid model-item timing excludes that whole response without erasing valid recent history; no valid sample shows `— TPS`, not a guessed speed. Native accounting takes precedence over legacy mirrors, while legacy-only turns remain supported. Open tasks are matched to live Codex rollout writers, including silent long-running tasks after a Balance restart. Parent tasks and subagents have separate counts; completed turns are not reopened by late log records. If process inspection is unavailable, log-only activity becomes **quiet / waiting for updates** after 75 seconds. Other AI apps and separate Codex homes are not monitored. See [measurement details and limitations](docs/codex-balance.md#local-model-activity).
 
-This feature is available in current `main` / source builds; the `v2026.10.12` prebuilt release predates it.
+Local model activity is included in `v2026.10.23` and later releases.
 
 ### Codex Auth (`ca`)
 
@@ -160,6 +160,7 @@ ca --help
 ca import-current personal
 ca ll
 ca resets
+ca tokens
 ca s personal
 ca keepalive --dry-run
 ```
@@ -178,13 +179,14 @@ API keys are kept in Keychain or `~/.codex-ac/secrets`, not embedded in `config.
 
 ## Data and network boundaries
 
-For ChatGPT subscription accounts, Codex Balance uses only the active local Codex access token. A normal `ca ll` or `ca refresh` can also use each saved ChatGPT account's token to refresh stale quota rows. The `RESET` column in `ca ll` shows the available reset-credit count (`?` when unavailable and `-` for API/relay profiles); `ca resets` queries every saved ChatGPT account without switching the active account and lists each credit's expiration in local time. `ca ll --cached` and `ca resets --cached` read the last known values without performing a network refresh. Scheduled keepalive is different again: it delegates due login renewal to the installed Codex `app-server` in a temporary account home.
+For ChatGPT subscription accounts, Codex Balance uses only the active local Codex access token. A normal `ca ll` or `ca refresh` can also use each saved ChatGPT account's token to refresh stale quota rows. The `RESET` column in `ca ll` shows the available reset-credit count (`?` when unavailable and `-` for API/relay profiles); `ca resets` queries every saved ChatGPT account without switching the active account and lists each credit's expiration in local time. `ca tokens [aliases...]` separately shows service-provided lifetime token totals and historical single-day peaks, without switching accounts or estimating from local logs. `ca ll --cached`, `ca resets --cached`, and `ca tokens --cached` read cached values without a network request. Scheduled keepalive is different again: it delegates due login renewal to the installed Codex `app-server` in a temporary account home.
 
 The current implementation requests these ChatGPT endpoints:
 
 ```text
 GET https://chatgpt.com/backend-api/wham/usage
 GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
+GET https://chatgpt.com/backend-api/wham/profiles/me
 Authorization: Bearer <corresponding Codex access token>
 ChatGPT-Account-Id: <corresponding Codex account ID, when present>
 ```
@@ -270,6 +272,7 @@ codex-auth-tools/
 ```bash
 swift build --package-path codex-balance
 python3 tests/keepalive-auth.py
+python3 tests/token-totals.py
 bash tests/blackbox-ca-balance.sh
 git diff --check
 ```
@@ -351,7 +354,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 | 灯 | 含义 |
 | --- | --- |
 | 红灯 | 最近 24 小时内至少有一个用户可见的 Codex 任务仍未阅读；subagent 和后台 agent 线程不会点亮红灯。 |
-| 黄灯 | 至少有一个未归档任务看起来仍在执行：对应 rollout 在最近 75 秒内更新，而且结尾仍是一个没有完成结果或最终答复的开放 turn。 |
+| 黄灯 | 至少有一个未归档任务仍有开放 turn，且日志由运行中的 Codex 进程持有；长时间推理或工具等待也保留。进程检查不可用时，回退为最近75秒有日志更新。 |
 | 绿灯 | 没有需要查看的未读任务，也没有看起来仍在运行的任务。 |
 
 红灯和黄灯彼此独立，所以“一个结果等着查看，同时另一个任务仍在执行”时两盏灯可以一起亮；只有两种情况都不存在时才亮绿灯。Codex Balance 每 2 秒只读检查一次本机任务状态，这套检查与额度刷新相互独立，不会替用户把任务标成已读，也不会把任务状态发送到网络。这样看一眼状态栏就能同时知道：**有没有结果需要我看、有没有任务还在做、现在是不是全部清空。**
@@ -360,9 +363,9 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 顶部菜单栏在额度与任务灯旁直接显示 **`86 TPS`**，不带模型名、额外图标或近似符号。紫色加粗数字紧邻任务灯，TPS单位使用更小的次要样式。该值是近60秒有效响应的**全部本机模型加权平均**：所有输出 token 总数 ÷ 所有模型生成秒数，不是各模型均值再做简单平均。悬停可看计算口径与各模型明细；数值独立更新，不必等额度或红绿灯变化。`— TPS` 表示没有有效样本，不是0。
 
-面板按模型汇总当前 `CODEX_HOME` 下已观察到的 Codex App/CLI 会话，包含 subagent。**大号读数如 `≈ 86 TPS`，是近60秒内结算的有效响应按生成时长加权的平均值：总输出 token 数 ÷ 总模型生成秒数。** 同模型并发响应合并算平均速度，不再直接相加；TPS取整，减少小数位抖动。工具等待或任务结束不会立即清空近期均值；当前没有开放任务时标为**近期均值 · 当前无任务**，所有样本过期后移除该行。较小的“输入”是开放任务最近一次响应的输入量，不是输入 TPS；其 `[1/3]` 仅表示三个开放任务中一个有近期输入计数。悬停TPS可查看有效响应数和贡献会话数。推理 token 只计一次，模型时间不含工具等待；任一模型item计时缺失或非法都会排除整次响应，不清空近期有效均值；没有有效样本时显示 `— TPS`，不会猜测速度。原生计数优先于旧版镜像，同时兼容只有旧版计数的turn。开放 turn 在75秒没有新日志后标为**等待更新**，不会被误判为生成或完成；不监测其他 AI 应用或独立 Codex Home。详见[计算口径与限制](docs/codex-balance.md#local-model-activity)。
+面板按模型汇总当前 `CODEX_HOME` 下已观察到的 Codex App/CLI 会话，包含 subagent。**大号读数如 `≈ 86 TPS`，是近60秒内结算的有效响应按生成时长加权的平均值：总输出 token 数 ÷ 总模型生成秒数。** 同模型并发响应合并算平均速度，不再直接相加；TPS取整，减少小数位抖动。工具等待或任务结束不会立即清空近期均值；当前没有开放任务时标为**近期均值 · 当前无任务**，所有样本过期后移除该行。较小的“输入”是开放任务最近一次响应的输入量，不是输入 TPS；其 `[1/3]` 仅表示三个开放任务中一个有近期输入计数。悬停TPS可查看有效响应数和贡献会话数。推理 token 只计一次，模型时间不含工具等待；任一模型item计时缺失或非法都会排除整次响应，不清空近期有效均值；没有有效样本时显示 `— TPS`，不会猜测速度。原生计数优先于旧版镜像，同时兼容只有旧版计数的turn。任务同时匹配正在运行的 Codex 进程持有的日志，因此重启控件后也能发现长时间无日志的任务；主任务与子任务分别计数，迟到记录不会重新打开已结束任务。只有进程检查不可用时，才在75秒无日志后标为**等待更新**；不监测其他 AI 应用或独立 Codex Home。详见[计算口径与限制](docs/codex-balance.md#local-model-activity)。
 
-此功能已在当前 `main` / 源码构建中提供；`v2026.10.12` 预编译 Release 尚未包含。
+本机模型活动已包含在 `v2026.10.23` 及之后的 Release 中。
 
 ### Codex Auth (`ca`)
 
@@ -435,6 +438,7 @@ ca --help
 ca import-current personal
 ca ll
 ca resets
+ca tokens
 ca s personal
 ca keepalive --dry-run
 ```
@@ -453,13 +457,14 @@ API key 会保存在 Keychain 或 `~/.codex-ac/secrets`，不会直接写入 `co
 
 ## 数据和网络边界
 
-ChatGPT 订阅账号下，Codex Balance 只使用当前本机 Codex access token。普通 `ca ll` 或 `ca refresh` 还可能使用每个已保存 ChatGPT 账号的 token 刷新过期额度。`ca ll` 的 `RESET` 列显示可用重置券数量（无法获取时为 `?`，API/中转配置为 `-`）；`ca resets` 不切换当前账号，直接查询所有已保存 ChatGPT 账号并按本机时间列出每张券的到期时分。`ca ll --cached` 和 `ca resets --cached` 只读上次缓存，不执行网络刷新。定时自动续期走另一条路径：它会在临时账号目录中调用已安装 Codex 的 `app-server` 续期临近过期的登录。
+ChatGPT 订阅账号下，Codex Balance 只使用当前本机 Codex access token。普通 `ca ll` 或 `ca refresh` 还可能使用每个已保存 ChatGPT 账号的 token 刷新过期额度。`ca ll` 的 `RESET` 列显示可用重置券数量（无法获取时为 `?`，API/中转配置为 `-`）；`ca resets` 不切换当前账号，直接查询所有已保存 ChatGPT 账号并按本机时间列出每张券的到期时分。`ca tokens [aliases...]` 独立展示服务端累计 Token 数与历史单日峰值，不切换账号，也不从本机日志估算。`ca ll --cached`、`ca resets --cached` 和 `ca tokens --cached` 只读上次缓存，不执行网络刷新。定时自动续期走另一条路径：它会在临时账号目录中调用已安装 Codex 的 `app-server` 续期临近过期的登录。
 
 当前实现会请求以下 ChatGPT 地址：
 
 ```text
 GET https://chatgpt.com/backend-api/wham/usage
 GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
+GET https://chatgpt.com/backend-api/wham/profiles/me
 Authorization: Bearer <对应 Codex access token>
 ChatGPT-Account-Id: <对应 Codex account ID，存在时发送>
 ```

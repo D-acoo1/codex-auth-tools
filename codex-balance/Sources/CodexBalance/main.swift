@@ -2132,8 +2132,8 @@ final class ThemePanelView: NSView {
         self.themeMode = themeMode
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.cornerRadius = 28
-        layer?.masksToBounds = true
+        // NSPopover owns the outer rounded shape. A second content mask exposes
+        // its differently colored material between the two corner radii.
     }
 
     required init?(coder: NSCoder) {
@@ -3950,6 +3950,7 @@ if CommandLine.arguments.contains("--model-activity-once") {
         "overall_tps": snapshot.overallTPS.map { $0 as Any } ?? NSNull(), "models": snapshot.rows.map { row -> [String: Any] in
         ["model": row.model, "tasks": row.tasks, "generating": row.generating,
          "quiet_tasks": row.quietTasks,
+         "subagent_tasks": row.subagentTasks,
          "input_tokens": row.inputTokens.map { $0 as Any } ?? NSNull(),
          "input_tasks": row.inputTasks,
          "sampled_output_tps": row.outputTPS.map { $0 as Any } ?? NSNull(), "measured_tasks": row.measuredTasks,

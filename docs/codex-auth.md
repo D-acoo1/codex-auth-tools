@@ -21,6 +21,9 @@ ca s fox              # switch active account
 ca resets             # list each account's reset-credit expiration times
 ca resets fox         # query one saved account without switching to it
 ca resets --cached    # read the last successful detail cache without networking
+ca tokens             # account lifetime tokens and historical daily peak
+ca tokens fox         # query a selected account without switching
+ca tokens --cached    # read cached token totals without networking
 ca r fox              # relogin/update one account snapshot
 ca keepalive --dry-run # show which snapshots are due without changing them
 ca keepalive           # run one keepalive check now
@@ -32,6 +35,8 @@ ca doctor             # environment checks
 The `RESET` column shows the available reset-credit count: an integer (including `0`) means the value was read successfully, `?` means it is unavailable, and `-` means it does not apply to an API/relay profile. The `UPDATED` column is the age of the usage snapshot. If a live refresh fails while a previous snapshot is available, the table keeps showing that snapshot (including Credits and reset counts), appends `!` to `UPDATED`, and prints a warning instead of replacing useful values with an error label. `ca ll --cached` does not perform a network refresh and shows the last known values without the live-refresh marker. These requests currently target `https://chatgpt.com/backend-api/wham/usage`, an implementation-detail endpoint without a stable public API contract. The endpoint may change and must be re-reviewed if the source changes.
 
 `ca resets [aliases...]` queries the saved ChatGPT snapshots directly, without replacing `~/.codex/auth.json`, and prints every returned reset-credit expiration as local `M.D HH:mm`. With no aliases it includes every saved account; API/relay rows display `-`. Successful details are cached locally, so `ca resets --cached` is immediate and performs no network request. If a live detail request fails after a previous success, the command preserves the expiration rows, appends `!` to `UPDATED`, and prints a warning. These detail requests currently target `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`, which is also an implementation-detail endpoint without a stable public API contract.
+
+`ca tokens [aliases...]` reads `stats.lifetime_tokens` and `stats.peak_daily_tokens` from `https://chatgpt.com/backend-api/wham/profiles/me`. These are the account-service totals used by Codex, not local session estimates or TPS; `PEAK/DAY` is the historical maximum for a single day. Values use compact `万`/`亿` units with one decimal place when needed. A real zero is `0`, missing service metrics are `?`, and API/relay profiles are `-`. Queries validate the saved account identity and do not replace active auth, renew credentials or switch accounts. Successful counters are cached; a failure preserves the prior values and their successful update time, marks `UPDATED` with `!`, and prints a warning. `--cached` performs no request or registry update and retains an existing failure marker. Reimporting the same identity preserves its cache; replacing an alias with another identity does not. The profile endpoint, like the quota/reset endpoints, is an implementation detail and can change.
 
 Before `ca s <alias>` replaces the active ChatGPT account, it identity-checks `~/.codex/auth.json` and saves it back to the outgoing account when Codex has rotated that login to a newer credential. A stale live file never overwrites a fresher saved snapshot, and the switch stops instead of discarding a newer credential if that save cannot be completed.
 

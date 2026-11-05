@@ -59,6 +59,7 @@ struct ModelActivityRow: Equatable, Sendable {
     let measuredTasks: Int
     var quietTasks: Int = 0
     var responseSamples: Int = 0
+    var subagentTasks: Int = 0
 }
 
 struct ModelActivitySnapshot: Equatable, Sendable {
@@ -98,6 +99,7 @@ struct ModelActivitySession {
     private var hasAccountingBoundary = false
     private var pendingCalls = Set<String>()
     private var timingComplete = true
+    private var ended = false
 
     init(model: String) { self.model = model }
 
@@ -112,7 +114,7 @@ struct ModelActivitySession {
 
     mutating func consume(_ record: ActivityRecord) {
         guard let p = record.payload else {
-            if record.type == "turn_context" { isOpen = true }
+            if record.type == "turn_context" { isOpen = true; ended = false }
             else if record.type == "token_usage_record" {
                 invalidateTiming()
                 hasAccountingBoundary = false
@@ -129,6 +131,7 @@ struct ModelActivitySession {
             pendingCalls.removeAll(keepingCapacity: true)
             hasAccountingBoundary = false
             timingComplete = true
+            ended = false
         }
         // Native accounting owns this turn. Legacy mirrors can arrive after the
         // next response's item timings and have unrelated cumulative totals.
@@ -143,6 +146,7 @@ struct ModelActivitySession {
         if record.type == "turn_context" || (record.type == "event_msg" && p.type == "task_started") {
             isOpen = true
             isWaiting = false
+            ended = false
             // A complete turn start establishes the first request boundary.
             hasAccountingBoundary = true
         }
@@ -151,10 +155,11 @@ struct ModelActivitySession {
             case "task_complete", "turn_aborted", "task_failed":
                 isOpen = false
                 isWaiting = false
+                ended = true
                 pendingCalls.removeAll(keepingCapacity: true)
             case "item_completed":
                 if ["Reasoning", "AgentMessage", "Plan"].contains(p.item?.type ?? "") {
-                    isOpen = true
+                    if !ended { isOpen = true }
                     isWaiting = false
                     if let start = p.started_at_ms, let end = p.completed_at_ms,
                        start > 0, end > start, let at, end / 1000 <= at + 5, intervals.count < 128 {
@@ -169,21 +174,26 @@ struct ModelActivitySession {
         if record.type == "response_item" {
             switch p.type {
             case "function_call", "custom_tool_call", "tool_search_call":
-                isOpen = true
-                isWaiting = true
-                if let id = p.call_id { pendingCalls.insert(id) }
+                if !ended {
+                    isOpen = true
+                    isWaiting = true
+                    if let id = p.call_id { pendingCalls.insert(id) }
+                }
             case "function_call_output", "custom_tool_call_output", "tool_search_output":
-                isOpen = true
+                if !ended { isOpen = true }
                 if let id = p.call_id { pendingCalls.remove(id) }
                 isWaiting = !pendingCalls.isEmpty
             case "reasoning":
-                isOpen = true
+                if !ended { isOpen = true }
                 isWaiting = false
             default: break
             }
         }
         if p.type == "agent_message" || (record.type == "response_item" && p.type == "message") {
-            if p.phase == "final_answer", p.role == nil || p.role == "assistant" { isOpen = false }
+            if p.phase == "final_answer", p.role == nil || p.role == "assistant" {
+                isOpen = false; isWaiting = false; ended = true
+                pendingCalls.removeAll(keepingCapacity: true)
+            }
         }
 
         let usage: ActivityRecord.Usage?
@@ -256,6 +266,42 @@ struct ActivityThread {
     let userVisible: Bool
 }
 
+/// Kernel-owned open file metadata, not a desktop conversation snapshot. An open
+/// Codex writer lets a long/silent turn be discovered after Balance restarts.
+enum ActivityProcesses {
+    static func rolloutPaths() -> Set<String>? {
+        let count = proc_listallpids(nil, 0)
+        guard count > 0, count < 65_000 else { return nil }
+        var pids = [pid_t](repeating: 0, count: Int(count) + 64)
+        let read = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.stride))
+        guard read > 0, read <= pids.count else { return nil }
+        var paths = Set<String>()
+        for pid in pids.prefix(Int(read)) where pid > 0 {
+            var executable = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+            guard proc_pidpath(pid, &executable, UInt32(executable.count)) > 0,
+                  executable.withUnsafeBufferPointer({ String(cString: $0.baseAddress!) }).split(separator: "/").last == "codex" else { continue }
+            let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+            // A process can exit between queries. Keep the successful writers.
+            guard size > 0 else { continue }
+            let capacity = Int(size) / MemoryLayout<proc_fdinfo>.stride + 64
+            guard capacity <= 16_384 else { return nil }
+            var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: capacity)
+            let bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(capacity * MemoryLayout<proc_fdinfo>.stride))
+            guard bytes > 0 else { continue }
+            for fd in fds.prefix(Int(bytes) / MemoryLayout<proc_fdinfo>.stride) where fd.proc_fdtype == PROX_FDTYPE_VNODE {
+                var info = vnode_fdinfowithpath()
+                guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info,
+                    Int32(MemoryLayout<vnode_fdinfowithpath>.stride)) > 0 else { continue }
+                let path = withUnsafeBytes(of: &info.pvip.vip_path) {
+                    String(cString: $0.baseAddress!.assumingMemoryBound(to: CChar.self))
+                }
+                if path.hasSuffix(".jsonl") { paths.insert(path) }
+            }
+        }
+        return paths
+    }
+}
+
 /// A read-only SQLite connection, never a sqlite3 child process. Reopening per
 /// discovery also handles Codex replacing the database during an upgrade.
 enum ActivityDatabase {
@@ -290,8 +336,10 @@ enum ActivityDatabase {
         var rows: [ActivityThread] = []
         var status = sqlite3_step(statement)
         while status == SQLITE_ROW {
+            let rawPath = text(2)
             rows.append(ActivityThread(id: text(0), updatedAt: sqlite3_column_double(statement, 1),
-                path: text(2), model: text(3), userVisible: text(4).lowercased() != "subagent"
+                path: rawPath.isEmpty ? "" : URL(fileURLWithPath: rawPath).resolvingSymlinksInPath().path,
+                model: text(3), userVisible: text(4).lowercased() != "subagent"
                     && text(5).isEmpty && text(6).isEmpty && text(7).isEmpty))
             status = sqlite3_step(statement)
         }
@@ -389,13 +437,16 @@ final class ModelActivityMonitor: @unchecked Sendable {
     private var unread = Set<String>()
     private var globalStamp: Date?
     private var available = false
+    private var writerPaths: Set<String>?
     private var stopped = true
     private var flushScheduled = false
     private var lastSnapshot: ModelActivitySnapshot?
     private let onUpdate: @MainActor @Sendable (ModelActivitySnapshot) -> Void
+    private let openRollouts: @Sendable () -> Set<String>?
 
-    init(home: URL, onUpdate: @escaping @MainActor @Sendable (ModelActivitySnapshot) -> Void) {
-        self.home = home; self.onUpdate = onUpdate
+    init(home: URL, openRollouts: @escaping @Sendable () -> Set<String>? = ActivityProcesses.rolloutPaths,
+         onUpdate: @escaping @MainActor @Sendable (ModelActivitySnapshot) -> Void) {
+        self.home = home; self.onUpdate = onUpdate; self.openRollouts = openRollouts
     }
 
     func start() {
@@ -426,6 +477,7 @@ final class ModelActivityMonitor: @unchecked Sendable {
         let dbRows = ActivityDatabase.threads(at: home.appendingPathComponent("state_5.sqlite"))
         available = dbRows != nil
         if let dbRows { threads = dbRows }
+        writerPaths = openRollouts()
         readUnread()
         let candidates = threads.filter { !$0.path.isEmpty }
         let paths = Set(candidates.map(\.path))
@@ -435,12 +487,14 @@ final class ModelActivityMonitor: @unchecked Sendable {
                   let modified = attributes[.modificationDate] as? Date,
                   let inode = attributes[.systemFileNumber] as? NSNumber else { files.removeValue(forKey: thread.path); continue }
             if files[thread.path]?.inode != inode.uint64Value { files.removeValue(forKey: thread.path) }
-            guard now - modified.timeIntervalSince1970 <= Self.activeSeconds,
+            guard writerPaths?.contains(thread.path) == true || now - modified.timeIntervalSince1970 <= Self.activeSeconds,
                   modified.timeIntervalSince1970 <= now + 5 else {
                 // Keep an already observed open turn subscribed. Silence is not
                 // completion: a long inference/tool wait becomes "quiet", not
                 // falsely idle or live. Discovery is still bounded to 250 rows.
-                if files[thread.path]?.session.isOpen != true { files.removeValue(forKey: thread.path) }
+                if writerPaths != nil || files[thread.path]?.session.isOpen != true {
+                    files.removeValue(forKey: thread.path)
+                }
                 continue
             }
             if files[thread.path] == nil, let file = ActivityRollout(path: thread.path, model: thread.model) {
@@ -499,8 +553,11 @@ final class ModelActivityMonitor: @unchecked Sendable {
 
     private func snapshot(now: TimeInterval) -> ModelActivitySnapshot {
         for file in files.values { file.session.pruneSamples(now: now) }
-        let active = files.values.filter { $0.session.isOpen }
-        let grouped = Dictionary(grouping: active) { $0.session.model }
+        let active = files.filter { path, file in
+            file.session.isOpen && (writerPaths?.contains(path) ?? true)
+        }
+        let grouped = Dictionary(grouping: active.values) { $0.session.model }
+        let subagentPaths = Set(threads.filter { !$0.userVisible }.map(\.path))
         let recent = Dictionary(grouping: files.flatMap { path, file in
             file.session.recentSamples.filter { now >= $0.at }.map { (path, $0) }
         }) { $0.1.model }
@@ -515,13 +572,14 @@ final class ModelActivityMonitor: @unchecked Sendable {
             totalOutput += output
             totalDuration += duration
             return ModelActivityRow(model: model.isEmpty ? "Codex" : model, tasks: members.count,
-                generating: members.filter { !$0.session.isWaiting && now - $0.modifiedAt <= Self.activeSeconds }.count,
+                generating: members.filter { !$0.session.isWaiting && (writerPaths != nil || now - $0.modifiedAt <= Self.activeSeconds) }.count,
                 inputTokens: inputs.isEmpty ? nil : inputs.reduce(0, +),
                 inputTasks: inputs.count,
                 outputTPS: duration > 0 ? output / duration : nil,
                 measuredTasks: Set(responses.map { $0.0 }).count,
-                quietTasks: members.filter { now - $0.modifiedAt > Self.activeSeconds }.count,
-                responseSamples: responses.count)
+                quietTasks: writerPaths == nil ? members.filter { now - $0.modifiedAt > Self.activeSeconds }.count : 0,
+                responseSamples: responses.count,
+                subagentTasks: active.filter { subagentPaths.contains($0.key) && $0.value.session.model == model }.count)
         }.sorted { $0.model.localizedStandardCompare($1.model) == .orderedAscending }
         let hasUnread = (!available && threads.isEmpty && !unread.isEmpty)
             || threads.contains { $0.userVisible && unread.contains($0.id) && now >= $0.updatedAt && now - $0.updatedAt <= 86_400 }

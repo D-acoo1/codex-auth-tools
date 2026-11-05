@@ -29,7 +29,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.7"
+VERSION = "0.8.8"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
@@ -324,6 +324,10 @@ def import_auth(alias: str, auth_path: Path, source: str, force: bool = False, a
     ]:
         if k in old:
             rec[k] = old[k]
+    if old.get("identity_hash") == info.get("identity_hash"):
+        for k in ("token_totals", "last_token_totals_at", "last_token_totals_error"):
+            if k in old:
+                rec[k] = old[k]
     reg["accounts"][alias] = rec
     # 同步进 codex-auth 原生 registry：usage/list 继续沿用它的成熟处理。
     if source != "codex-auth":
@@ -556,10 +560,7 @@ def reset_credits_endpoint() -> str:
     return RESET_CREDITS_URL
 
 
-def parse_reset_credit_details_response(body: bytes) -> Optional[Dict[str, Any]]:
-    root = json.loads(body.decode("utf-8"))
-    if not isinstance(root, dict):
-        return None
+def parse_reset_credit_details_response(root: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     raw_credits = root.get("credits")
     available = _as_int(root.get("available_count"))
     if available is not None and available < 0:
@@ -579,7 +580,7 @@ def parse_reset_credit_details_response(body: bytes) -> Optional[Dict[str, Any]]
     return {"available_count": available, "credits": credits}
 
 
-def _open_reset_credits_request(req: urllib.request.Request, timeout: int):
+def _open_usage_request(req: urllib.request.Request, timeout: int):
     if os.environ.get("NODE_ENV") == "test":
         return urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout)
     proxy = os.environ.get("CODEX_AC_USAGE_PROXY")
@@ -589,7 +590,8 @@ def _open_reset_credits_request(req: urllib.request.Request, timeout: int):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def fetch_reset_credit_details(
+def fetch_account_json(
+    url: str,
     auth_path: Path,
     rec: Dict[str, Any],
     timeout: int = 20,
@@ -609,7 +611,7 @@ def fetch_reset_credit_details(
     if rec.get("chatgpt_account_id") and rec.get("chatgpt_account_id") != account_id:
         return None, "IdentityMismatch"
     req = urllib.request.Request(
-        reset_credits_endpoint(),
+        url,
         method="GET",
         headers={
             "Authorization": f"Bearer {access_token}",
@@ -619,7 +621,7 @@ def fetch_reset_credit_details(
         },
     )
     try:
-        with _open_reset_credits_request(req, timeout) as resp:
+        with _open_usage_request(req, timeout) as resp:
             body = resp.read(2 * 1024 * 1024 + 1)
             status = getattr(resp, "status", 200)
     except urllib.error.HTTPError as exc:
@@ -631,12 +633,24 @@ def fetch_reset_credit_details(
     if status < 200 or status >= 300:
         return None, str(status)
     try:
-        details = parse_reset_credit_details_response(body)
+        root = json.loads(body.decode("utf-8"))
     except Exception as exc:
         return None, exc.__class__.__name__
-    if details is None:
+    if not isinstance(root, dict):
         return None, "BadResponse"
-    return details, str(status)
+    return root, str(status)
+
+
+def fetch_reset_credit_details(
+    auth_path: Path,
+    rec: Dict[str, Any],
+    timeout: int = 20,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    root, status = fetch_account_json(reset_credits_endpoint(), auth_path, rec, timeout)
+    if root is None:
+        return None, status
+    details = parse_reset_credit_details_response(root)
+    return (details, status) if details is not None else (None, "BadResponse")
 
 
 def refresh_reset_credit_details(
@@ -1175,6 +1189,102 @@ def cmd_resets(args: argparse.Namespace) -> int:
         ]
         cache_note = "；已继续显示上次成功数据，UPDATED 后的 ! 表示本次刷新失败" if cached_failed else ""
         eprint(f"warning: reset-credit refresh failed: {summary}{cache_note}。可稍后重试 ca resets，或用 ca resets --cached 仅查看缓存。")
+    return 0
+
+
+def fmt_token_total(value: Any) -> str:
+    if type(value) is not int or value < 0:
+        return "?"
+    for unit, suffix in ((100_000_000, "亿"), (10_000, "万")):
+        if value >= unit:
+            number = (Decimal(value) / unit).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            return format(number, "f").removesuffix(".0") + suffix
+    return str(value)
+
+
+def cmd_tokens(args: argparse.Namespace) -> int:
+    reg = load_registry()
+    accounts = reg.get("accounts", {})
+    if not accounts:
+        print("暂无账号。先执行：codex-ac add <alias> 或 codex-ac import-codex-auth")
+        return 0
+    requested = list(dict.fromkeys(args.aliases))
+    for alias in requested:
+        if alias not in accounts:
+            raise SystemExit(f"账号别名不存在：{alias}")
+    active = detect_current_alias(reg, DEFAULT_CODEX_HOME) or reg.get("active_alias")
+    aliases = requested or sorted(accounts, key=lambda alias: (0 if alias == active else 1, alias))
+    failures: Dict[str, str] = {}
+    if not args.cached:
+        endpoint = "https://chatgpt.com/backend-api/wham/profiles/me"
+        if os.environ.get("NODE_ENV") == "test":
+            endpoint = os.environ.get("CODEX_AC_TEST_PROFILE_URL") or endpoint
+
+        def fetch_one(alias: str) -> Tuple[Optional[Dict[str, Any]], str]:
+            try:
+                auth_path = account_auth_file(alias, reg)
+            except SystemExit:
+                return None, "MissingAuth"
+            root, status = fetch_account_json(endpoint, auth_path, accounts[alias])
+            if root is None:
+                return None, status
+            if "stats" not in root:
+                return None, "BadResponse"
+            stats = root.get("stats")
+            if stats is None:
+                return {"lifetime_tokens": None, "peak_daily_tokens": None}, status
+            if not isinstance(stats, dict):
+                return None, "BadResponse"
+            totals = {key: stats.get(key) for key in ("lifetime_tokens", "peak_daily_tokens")}
+            if any(value is not None and (type(value) is not int or value < 0) for value in totals.values()):
+                return None, "BadResponse"
+            return totals, status
+
+        live = [alias for alias in aliases if accounts[alias].get("kind") != "api"]
+        if live:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(live))) as pool:
+                jobs = {alias: pool.submit(fetch_one, alias) for alias in live}
+                refreshed_at = int(time.time())
+                for alias in live:
+                    try:
+                        totals, status = jobs[alias].result()
+                    except Exception as exc:
+                        totals, status = None, exc.__class__.__name__
+                    rec = accounts[alias]
+                    if totals is None:
+                        rec["last_token_totals_error"] = status
+                        failures[alias] = status
+                    else:
+                        rec["token_totals"] = totals
+                        rec["last_token_totals_at"] = refreshed_at
+                        rec.pop("last_token_totals_error", None)
+            save_registry(reg)
+
+    rows = []
+    for alias in aliases:
+        rec = accounts[alias]
+        account = first_str(rec.get("email"), rec.get("email_masked")) or "<unknown>"
+        totals = rec.get("token_totals") if isinstance(rec.get("token_totals"), dict) else {}
+        at = _as_int(rec.get("last_token_totals_at"))
+        updated = fmt_last_activity(at) if at else "-"
+        if rec.get("last_token_totals_error"):
+            updated += "!"
+        total, peak = (fmt_token_total(totals.get(key)) for key in ("lifetime_tokens", "peak_daily_tokens"))
+        if rec.get("kind") == "api":
+            account = "api:" + str(rec.get("base_url") or rec.get("provider_id") or alias).removeprefix("https://").removeprefix("http://")
+            total = peak = updated = "-"
+        rows.append(("*" if alias == active else " ", alias, account, total, peak, updated))
+    headers = ("ALIAS", "ACCOUNT", "TOTAL TOKENS", "PEAK/DAY", "UPDATED")
+    # Wide CJK units occupy two terminal cells; account identifiers remain ASCII.
+    def width(text: str) -> int:
+        return len(text) + text.count("亿") + text.count("万")
+    widths = [max(width(value) for value in column) for column in zip(headers, *(row[1:] for row in rows))]
+    print("  " + "  ".join(value + " " * (size - width(value)) for value, size in zip(headers, widths)))
+    for marker, *values in rows:
+        print(marker + " " + "  ".join(value + " " * (size - width(value)) for value, size in zip(values, widths)))
+    if failures:
+        summary = ", ".join(f"{alias} ({reset_credit_error_label(status)})" for alias, status in failures.items())
+        eprint(f"warning: token usage refresh failed: {summary}；保留上次成功数据，UPDATED 后的 ! 表示刷新失败。")
     return 0
 
 
@@ -2627,6 +2737,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("aliases", nargs="*", help="只查询指定账号；默认查询全部")
     sp.add_argument("--cached", action="store_true", help="只读上次成功缓存，不发起网络请求")
     sp.set_defaults(func=cmd_resets, account_lock=True)
+
+    sp = sub.add_parser("tokens", help="查看各账号累计 Token 数和历史单日峰值")
+    sp.add_argument("aliases", nargs="*", help="只查询指定账号；默认查询全部")
+    sp.add_argument("--cached", action="store_true", help="只读上次成功缓存，不发起网络请求")
+    sp.set_defaults(func=cmd_tokens, account_lock=True)
 
     sp = sub.add_parser("refresh", help="刷新账号 5H/Weekly 用量；默认走 codex-auth API 路径")
     sp.add_argument("aliases", nargs="*")

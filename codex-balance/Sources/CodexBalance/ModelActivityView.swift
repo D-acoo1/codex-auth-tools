@@ -115,6 +115,12 @@ final class ModelActivityView: NSView {
             status.stringValue = chinese
                 ? "\(row.tasks) 任务 · " + (row.generating == 0 ? "工具等待" : "\(row.generating) 生成中")
                 : "\(row.tasks) task\(row.tasks == 1 ? "" : "s") · " + (row.generating == 0 ? "tools" : "\(row.generating) generating")
+            if row.subagentTasks > 0 {
+                let main = row.tasks - row.subagentTasks
+                status.stringValue = chinese
+                    ? "\(main) 任务 + \(row.subagentTasks) 子任务"
+                    : "\(main) chats + \(row.subagentTasks) agents"
+            }
             if row.tasks == 0 {
                 status.stringValue = chinese ? "近期均值 · 当前无任务" : "Recent average · idle"
             } else if row.quietTasks == row.tasks {
