@@ -42,6 +42,20 @@ The final `Total tokens: …` line sums the selected ChatGPT accounts' raw lifet
 
 Before `ca s <alias>` replaces the active ChatGPT account, it identity-checks `~/.codex/auth.json` and saves it back to the outgoing account when Codex has rotated that login to a newer credential. A stale live file never overwrites a fresher saved snapshot, and the switch stops instead of discarding a newer credential if that save cannot be completed.
 
+### Share desktop projects between ChatGPT accounts
+
+```bash
+ca local-data share                 # use the current local project organization
+ca local-data share --from personal # recover a saved account's local projects first
+ca local-data status
+ca s work                          # carry the latest local data into the next account
+ca local-data separate             # stop sharing; keep the existing projects
+```
+
+Sharing is opt-in. It carries local projects, folder paths, project/chat membership, local pins, ordering and local chat UI metadata through `ca` ChatGPT-account switches. Current local data is authoritative on each switch, including removals; an old account cache cannot restore deleted projects. Recovery with `--from` preserves additions made in the current login. Conversation files and SQLite databases remain in place and are not copied.
+
+On the default macOS Codex home, an open Codex/ChatGPT desktop app is closed before reading its final saved state and reopened after switching. Finish active turns before running the switch. A failed app quit stops the operation before login or desktop-state writes. The app bundle and its signature are unchanged. Cloud project caches, OAuth state and remote-control permissions are not copied between accounts. This mode applies to switches made through `ca`, not direct sign-in changes inside the desktop app or API/relay profiles.
+
 CLI refresh uses `CODEX_AC_USAGE_PROXY`, then `HTTPS_PROXY`, then `https_proxy` when set. Python's networking layer can also honor platform proxy configuration. Check both environment variables and macOS proxy settings when investigating unexpected traffic.
 
 ## Automatic keepalive

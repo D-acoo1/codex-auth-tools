@@ -166,6 +166,8 @@ ca s personal
 ca keepalive --dry-run
 ```
 
+To keep one local project organization across ChatGPT accounts, enable `ca local-data share` once, then switch with `ca s <alias>`. If projects are saved under another account, recover them with `ca local-data share --from <alias>`. An open desktop app is closed and reopened during these switches; finish active turns first. Cloud account data remains separate. See [shared desktop data](docs/codex-auth.md#share-desktop-projects-between-chatgpt-accounts).
+
 API and relay profiles are supported too:
 
 ```bash
@@ -444,6 +446,8 @@ ca tokens
 ca s personal
 ca keepalive --dry-run
 ```
+
+本地项目、置顶和聊天归属需要在 ChatGPT 账号间共用时，先执行一次 `ca local-data share`，之后继续用 `ca s <别名>` 切号。已有项目保存在其他账号时，用 `ca local-data share --from <别名>` 恢复。切号会关闭并重新打开正在运行的桌面 App，请先结束活动任务；云端账号数据仍分别保存。详见[本地数据共用](docs/codex-auth.md#share-desktop-projects-between-chatgpt-accounts)。
 
 API 与中转账号示例：
 

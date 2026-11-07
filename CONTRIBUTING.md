@@ -49,6 +49,7 @@ Run the checks relevant to the changed files. A normal full verification is:
 ```bash
 swift build --package-path codex-balance
 python3 tests/keepalive-auth.py
+python3 tests/local-data.py
 bash tests/blackbox-ca-balance.sh
 bash tests/model-activity.sh
 git diff --check
@@ -132,6 +133,7 @@ Do not open a public issue containing a workable exploit or secret. Use GitHub [
 ```bash
 swift build --package-path codex-balance
 python3 tests/keepalive-auth.py
+python3 tests/local-data.py
 bash tests/blackbox-ca-balance.sh
 bash tests/model-activity.sh
 git diff --check

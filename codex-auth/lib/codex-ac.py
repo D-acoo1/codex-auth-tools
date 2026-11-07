@@ -8,12 +8,14 @@ import argparse
 import base64
 import concurrent.futures
 import contextlib
+import copy
 import datetime as _dt
 import fcntl
 import getpass
 import hashlib
 import json
 import os
+import plistlib
 import re
 import select
 import shlex
@@ -29,7 +31,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.8"
+VERSION = "0.8.9"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
@@ -37,6 +39,209 @@ ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 RESERVED = set()
 KEEPALIVE_THRESHOLD_SECONDS = 3 * 24 * 60 * 60
 KEEPALIVE_REFRESH_TIMEOUT_SECONDS = 45
+DESKTOP_STATE_KEY = "electron-account-renderer-state-v1"
+LOCAL_DATA_KEYS = (
+    "active-workspace-roots", "electron-saved-workspace-roots", "electron-workspace-root-labels",
+    "local-projects", "app-server-project-id-by-legacy-project-id-by-host",
+    "app-server-projects-migration-by-host", "selected-project", "project-appearances",
+    "pinned-thread-ids", "app-server-migrated-pinned-thread-ids-by-host", "pinned-project-ids",
+    "sidebar-project-thread-orders", "thread-project-assignments", "thread-project-membership-host-ids",
+    "thread-writable-roots", "thread-workspace-root-hints", "thread-projectless-output-directories",
+    "projectless-thread-ids", "project-order",
+)
+LOCAL_ORDER_ATOMS = ("unified-sidebar-pinned-order-v1", "unified-sidebar-project-order-v1")
+
+
+def local_data_atom(key: str) -> bool:
+    return key.startswith(("sidebar-project-expanded-v1-codex:", "thread-workspace-state-v1:", "thread-client-id-v1:",
+                           "thread-tab-routes-v1:", "codex-writing-block-deleted-thread-v1:",
+                           "composer-prompt-drafts-v")) or key in {
+        "sidebar-collapsed-groups", "sidebar-collapsed-sections-v1", "sidebar-width", "sidebar-project-list-expanded-v1",
+        "flat-project-sidebar-preferences-v1", "thread-descriptions-v1", "client-thread-bindings-v1",
+        "thread-user-activity-times-v1", "prompt-history",
+    }
+
+
+def read_desktop_state() -> Dict[str, Any]:
+    path = DEFAULT_CODEX_HOME / ".codex-global-state.json"
+    with path.open("rb") as stream:
+        raw = stream.read(16 * 1024 * 1024 + 1)
+    if len(raw) > 16 * 1024 * 1024:
+        raise SystemExit("Codex 本地状态超过 16 MiB，未修改。")
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        raise SystemExit("Codex 本地状态无法解析，未修改。") from exc
+    if not isinstance(data, dict):
+        raise SystemExit("Codex 本地状态不是对象，未修改。")
+    if not isinstance(data.get("electron-persisted-atom-state", {}), dict):
+        raise SystemExit("Codex 本地界面状态格式不兼容，未修改。")
+    marker = data.get(DESKTOP_STATE_KEY)
+    if marker is not None and (not isinstance(marker, dict) or not isinstance(marker.get("inactive"), dict)):
+        raise SystemExit("Codex 账号状态格式不兼容，未修改。")
+    return data
+
+
+def desktop_owner(info: Dict[str, Any]) -> str:
+    identity = [info.get("chatgpt_user_id"), info.get("chatgpt_account_id")]
+    if not all(isinstance(value, str) and value for value in identity):
+        raise SystemExit("账号缺少 Codex 本地状态身份，未修改。")
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def mirror_local_data(state: Dict[str, Any], target_owner: str) -> None:
+    marker = state.get(DESKTOP_STATE_KEY)
+    if marker is None or marker.get("owner") == target_owner:
+        return
+    target = marker["inactive"].setdefault(target_owner, {"atoms": {}, "globals": {}})
+    if not isinstance(target, dict) or not isinstance(target.get("atoms"), dict) or not isinstance(target.get("globals"), dict):
+        raise SystemExit("目标账号本地状态格式不兼容，未修改。")
+    for key in LOCAL_DATA_KEYS:
+        target["globals"].pop(key, None)
+        if key in state:
+            target["globals"][key] = state[key]
+    atoms = state.get("electron-persisted-atom-state", {})
+    if not isinstance(atoms, dict):
+        raise SystemExit("Codex 本地界面状态格式不兼容，未修改。")
+    for key in list(target["atoms"]):
+        if local_data_atom(key):
+            del target["atoms"][key]
+    target["atoms"].update({key: value for key, value in atoms.items() if local_data_atom(key)})
+    for key in LOCAL_ORDER_ATOMS:
+        local = [value for value in atoms.get(key, []) if isinstance(value, str) and value.startswith("codex:")]
+        cloud = [value for value in target["atoms"].get(key, []) if isinstance(value, str) and not value.startswith("codex:")]
+        target["atoms"][key] = local + cloud
+
+
+def restore_local_data(state: Dict[str, Any], source_owner: str) -> None:
+    marker = state.get(DESKTOP_STATE_KEY)
+    source = marker.get("inactive", {}).get(source_owner) if isinstance(marker, dict) else None
+    if marker is not None and marker.get("owner") == source_owner:
+        return
+    if not isinstance(source, dict) or not isinstance(source.get("globals"), dict) or not isinstance(source.get("atoms"), dict):
+        raise SystemExit("没有找到该账号保存的本地项目记录，未修改。")
+    source = copy.deepcopy(source)
+    for key in LOCAL_DATA_KEYS:
+        if key not in source["globals"]:
+            continue
+        saved, current = source["globals"][key], state.get(key)
+        if isinstance(saved, dict) and isinstance(current, dict):
+            merged = {**saved, **current}
+            if key.endswith("-by-host"):
+                for host in saved.keys() & current.keys():
+                    if isinstance(saved[host], dict) and isinstance(current[host], dict):
+                        merged[host] = {**saved[host], **current[host]}
+            state[key] = merged
+        elif isinstance(saved, list) and isinstance(current, list):
+            state[key] = saved + [value for value in current if value not in saved]
+        elif key not in state:
+            state[key] = saved
+    atoms = state.setdefault("electron-persisted-atom-state", {})
+    for key, saved in source["atoms"].items():
+        if local_data_atom(key):
+            current = atoms.get(key)
+            atoms[key] = {**saved, **current} if isinstance(saved, dict) and isinstance(current, dict) else current if key in atoms else saved
+    for key in LOCAL_ORDER_ATOMS:
+        saved = [value for value in source["atoms"].get(key, []) if isinstance(value, str) and value.startswith("codex:")]
+        current = atoms.get(key, [])
+        atoms[key] = saved + [value for value in current if value not in saved]
+    for migration in state.get("app-server-projects-migration-by-host", {}).values():
+        migration["threadAssignmentsMigrated"] = False
+        migration["threadAssignmentsReadMigrated"] = False
+
+
+def desktop_app() -> Tuple[Optional[int], Optional[Path]]:
+    if sys.platform != "darwin" or DEFAULT_CODEX_HOME.resolve() != (Path.home() / ".codex").resolve():
+        return None, None
+    result = subprocess.run(["/bin/ps", "-axo", "pid=,comm="], capture_output=True, text=True, check=True)
+    candidates = []
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) == 2 and fields[1].endswith(("/Contents/MacOS/Codex", "/Contents/MacOS/ChatGPT")):
+            candidates.append((int(fields[0]), Path(fields[1]).parents[2]))
+    candidates.extend((None, Path(path)) for path in ("/Applications/ChatGPT.app", "/Applications/Codex.app"))
+    for pid, app in candidates:
+        try:
+            with (app / "Contents/Info.plist").open("rb") as stream:
+                info = plistlib.load(stream)
+            if info.get("CFBundleIdentifier") == "com.openai.codex":
+                return pid, app
+        except (OSError, ValueError):
+            continue
+    return None, None
+
+
+def stop_desktop_app() -> Optional[Path]:
+    pid, app = desktop_app()
+    if pid is None:
+        return None
+    print("正在关闭 Codex App，保存本地项目状态...")
+    subprocess.run(["osascript", "-e", 'tell application id "com.openai.codex" to quit'],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return app
+        time.sleep(0.1)
+    raise SystemExit("Codex App 尚未退出，本地数据和登录态未修改。")
+
+
+@contextlib.contextmanager
+def shared_local_data_switch(reg: Dict[str, Any], rec: Dict[str, Any]):
+    if not reg.get("shared_local_data") or rec.get("kind") == "api":
+        yield False
+        return
+    app = stop_desktop_app()
+    try:
+        state = read_desktop_state()
+        target = desktop_owner(rec) if rec.get("kind") != "api" else None
+        if target is not None:
+            mirror_local_data(state, target)
+        write_private((json.dumps(state, ensure_ascii=False, separators=(",", ":")) + "\n").encode(),
+                      DEFAULT_CODEX_HOME / ".codex-global-state.json")
+        yield app is not None
+    finally:
+        if app is not None:
+            subprocess.run(["open", "-a", str(app)], check=True)
+
+
+def cmd_local_data(args: argparse.Namespace) -> int:
+    reg = load_registry()
+    if args.from_alias and args.action != "share":
+        raise SystemExit("--from 只用于 local-data share。")
+    if args.action == "status":
+        print("本地数据：" + ("共用（通过 ca 切号）" if reg.get("shared_local_data") else "按 Codex App 默认行为"))
+        return 0
+    if args.action == "separate":
+        reg.pop("shared_local_data", None)
+        save_registry(reg)
+        print("已关闭 ca 本地数据共用，现有项目保留。")
+        return 0
+    source_owner = None
+    if args.from_alias:
+        alias = validate_alias(args.from_alias)
+        rec = reg.get("accounts", {}).get(alias)
+        if not rec or rec.get("kind") == "api":
+            raise SystemExit("恢复来源必须是已保存的 ChatGPT 账号别名。")
+        source_owner = desktop_owner(rec)
+    app = stop_desktop_app()
+    try:
+        state = read_desktop_state()
+        if source_owner is not None:
+            restore_local_data(state, source_owner)
+        current = desktop_owner(auth_info(DEFAULT_CODEX_HOME / "auth.json"))
+        mirror_local_data(state, current)
+        write_private((json.dumps(state, ensure_ascii=False, separators=(",", ":")) + "\n").encode(),
+                      DEFAULT_CODEX_HOME / ".codex-global-state.json")
+        reg["shared_local_data"] = True
+        save_registry(reg)
+        print(f"已启用本地数据共用：{len(state.get('local-projects', {}))} 个项目；之后使用 ca s <别名>。")
+    finally:
+        if app is not None:
+            subprocess.run(["open", "-a", str(app)], check=True)
+    return 0
 
 
 class AccountStoreBusy(RuntimeError):
@@ -1848,6 +2053,16 @@ def cmd_switch(args: argparse.Namespace) -> int:
     rec = reg.get("accounts", {}).get(alias)
     if not rec:
         raise SystemExit(f"账号别名不存在：{alias}")
+    if rec.get("kind") != "api":
+        reg = ensure_chatgpt_auth_fresh_for_switch(alias, reg, args)
+        rec = reg.get("accounts", {}).get(alias)
+        if not rec or rec.get("kind") == "api":
+            raise SystemExit(f"账号 {alias} 重新登录后记录异常，请检查 registry。")
+    with shared_local_data_switch(reg, rec) as app_stopped:
+        return apply_account_switch(args, alias, reg, rec, restart_app=args.restart_app and not app_stopped)
+
+
+def apply_account_switch(args: argparse.Namespace, alias: str, reg: Dict[str, Any], rec: Dict[str, Any], *, restart_app: bool) -> int:
 
     if rec.get("kind") == "api":
         reg = sync_current_chatgpt_auth_before_switch(reg)
@@ -1861,11 +2076,10 @@ def cmd_switch(args: argparse.Namespace) -> int:
         if bak:
             print(f"已备份 config：{bak}")
         print("Start a new Codex session for the change to take effect.")
-        if args.restart_app:
+        if restart_app:
             restart_codex_app()
         return 0
 
-    reg = ensure_chatgpt_auth_fresh_for_switch(alias, reg, args)
     reg = sync_current_chatgpt_auth_before_switch(reg)
     rec = reg.get("accounts", {}).get(alias)
     if not rec or rec.get("kind") == "api":
@@ -1887,6 +2101,8 @@ def cmd_switch(args: argparse.Namespace) -> int:
         if config_bak:
             print(f"已清理 API provider 配置，备份 config：{config_bak}")
         refresh_remote_control_after_switch()
+        if restart_app:
+            restart_codex_app()
         return 0
 
     bak = None if args.no_backup else backup_current_auth("switch")
@@ -1918,7 +2134,7 @@ def cmd_switch(args: argparse.Namespace) -> int:
     if config_bak:
         print(f"已清理 API provider 配置，备份 config：{config_bak}")
     refresh_remote_control_after_switch()
-    if args.restart_app:
+    if restart_app:
         restart_codex_app()
     return 0
 
@@ -1927,9 +2143,11 @@ def restart_codex_app() -> None:
         eprint("--restart-app 目前只在 macOS 上处理。")
         return
     print("正在重启 Codex App...")
-    subprocess.run(["osascript", "-e", 'tell application "Codex" to quit'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1.5)
-    subprocess.run(["open", "-a", "Codex"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _, installed = desktop_app()
+    app = stop_desktop_app() or installed
+    if app is None:
+        raise SystemExit("未找到 Codex / ChatGPT 桌面 App。")
+    subprocess.run(["open", "-a", str(app)], check=True)
 
 
 def remote_control_configured() -> bool:
@@ -2821,6 +3039,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--skip-expiry-check", action="store_true", help="跳过切换前过期检测")
     sp.add_argument("--keep-tmp", action="store_true", help="自动重登时保留临时 CODEX_HOME，调试用")
     sp.set_defaults(func=cmd_switch, account_lock=True)
+
+    sp = sub.add_parser("local-data", help="本地项目、置顶和聊天归属在 ca 切号时共用")
+    sp.add_argument("action", choices=["status", "share", "separate"])
+    sp.add_argument("--from", dest="from_alias", help="share 时从指定账号恢复已有本地记录")
+    sp.set_defaults(func=cmd_local_data, account_lock=True)
 
     sp = sub.add_parser("rename", help="重命名账号别名")
     sp.add_argument("old_alias")
