@@ -224,7 +224,7 @@ async function fetchWhamUsageViaCurl(rec, token, timeoutMs=30000) {
     `url = "${q(whamUsageUrl)}"`,
     `header = "Authorization: Bearer ${q(token)}"`,
     'header = "Accept: application/json"',
-    'header = "User-Agent: codex-ac-list/0.8.9"',
+    'header = "User-Agent: codex-ac-list/0.8.10"',
     'header = "OpenAI-Beta: codex_cli_beta"',
     `header = "chatgpt-account-id: ${q(rec?.chatgpt_account_id || '')}"`,
     `write-out = "\\n${statusMarker}%{http_code}"`,
@@ -296,7 +296,7 @@ async function fetchWhamUsageWithToken(rec, token, timeoutMs=30000) {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json',
-          'User-Agent': 'codex-ac-list/0.8.9',
+          'User-Agent': 'codex-ac-list/0.8.10',
           'OpenAI-Beta': 'codex_cli_beta',
           'chatgpt-account-id': rec?.chatgpt_account_id || '',
         },
@@ -444,10 +444,11 @@ function syncFromCodexAuth(reg) {
     if (!srcRec) continue;
     const srcUsageAt = Number.isFinite(Number(srcRec.last_usage_at)) ? Number(srcRec.last_usage_at) : 0;
     const dstUsageAt = Number.isFinite(Number(dst.last_usage_at)) ? Number(dst.last_usage_at) : 0;
-    const acceptSourceUsage = srcRec.last_usage !== undefined
+    const sourceUsage = srcRec.last_usage;
+    const acceptSourceUsage = sourceUsage && typeof sourceUsage === 'object' && !Array.isArray(sourceUsage)
       && (!dst.last_usage || srcUsageAt >= dstUsageAt);
     if (acceptSourceUsage) {
-      const mergedUsage = mergeUsageSnapshots(dst.last_usage, srcRec.last_usage);
+      const mergedUsage = mergeUsageSnapshots(dst.last_usage, sourceUsage);
       if (JSON.stringify(dst.last_usage) !== JSON.stringify(mergedUsage)) { dst.last_usage = mergedUsage; changed = true; }
       if (Object.prototype.hasOwnProperty.call(srcRec.last_usage || {}, 'reset_credits_available')
           && srcRec.last_reset_credits_at === undefined && srcRec.last_usage_at !== undefined
@@ -470,7 +471,12 @@ function syncFromCodexAuth(reg) {
     for (const k of ['last_local_rollout','last_used_at']) {
       if (srcRec[k] !== undefined && JSON.stringify(dst[k]) !== JSON.stringify(srcRec[k])) { dst[k] = srcRec[k]; changed = true; }
     }
-    if (srcRec.plan && dst.plan !== srcRec.plan) { dst.plan = srcRec.plan; changed = true; }
+    // Keep the plan tied to the accepted snapshot rather than an older native record.
+    if (acceptSourceUsage || !dst.plan) {
+      const usagePlan = acceptSourceUsage ? sourceUsage.plan_type : null;
+      const plan = typeof usagePlan === 'string' && usagePlan ? usagePlan : srcRec.plan;
+      if (typeof plan === 'string' && plan && dst.plan !== plan) { dst.plan = plan; changed = true; }
+    }
     if (acceptSourceUsage && dst.last_usage_error !== undefined) { delete dst.last_usage_error; changed = true; }
   }
   if (changed) { reg.updated_at = new Date().toISOString(); writeJsonPrivate(path.join(acHome, 'registry.json'), reg); }
@@ -579,9 +585,16 @@ if (Object.keys(accounts).length === 0) { console.log('暂无账号。先执行�
 const active = currentAlias(reg) || reg.active_alias;
 const sorted = Object.entries(accounts).sort(([a],[b]) => (a===active?0:1)-(b===active?0:1) || a.localeCompare(b));
 const idxWidth = Math.max(2, String(sorted.length).length);
+const planLabels = new Map([
+  ['plus', 'Plus'],
+  ['prolite', 'Pro 100'],
+  ['pro', 'Pro 200'],
+  ['promax', 'Pro 500'],
+]);
 const rows = sorted.map(([alias,rec], i) => {
   const usage = rec.last_usage || null;
   const isApi = rec.kind === 'api';
+  const rawPlan = typeof rec.plan === 'string' ? rec.plan.trim() : '';
   const email = isApi
     ? `api:${(rec.base_url || rec.provider_id || alias).replace(/^https?:\/\//,'')}`
     : (maskAccount ? (rec.email_masked || maskEmail(rec.email)) : (rec.email || rec.email_masked || '<unknown>'));
@@ -590,7 +603,7 @@ const rows = sorted.map(([alias,rec], i) => {
     num: String(i + 1).padStart(idxWidth, '0'),
     alias,
     account: email,
-    plan: isApi ? 'API' : (rec.plan ? String(rec.plan)[0].toUpperCase()+String(rec.plan).slice(1) : '-'),
+    plan: isApi ? 'API' : (planLabels.get(rawPlan.toLowerCase()) ?? (rawPlan ? rawPlan[0].toUpperCase() + rawPlan.slice(1) : '-')),
     h5: isApi ? '-' : usageCell(rec, usage,300,true),
     weekly: isApi ? '-' : usageCell(rec, usage,10080,false),
     credits: isApi ? '-' : creditsCell(rec),

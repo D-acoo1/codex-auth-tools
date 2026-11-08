@@ -31,7 +31,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.9"
+VERSION = "0.8.10"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
@@ -1108,11 +1108,12 @@ def sync_usage_from_codex_auth_registry(reg: Dict[str, Any]) -> bool:
             continue
         src_usage_at = _as_int(src_rec.get("last_usage_at")) or 0
         dst_usage_at = _as_int(dst.get("last_usage_at")) or 0
-        accept_source_usage = src_rec.get("last_usage") is not None and (
+        source_usage = src_rec.get("last_usage")
+        accept_source_usage = isinstance(source_usage, dict) and (
             not isinstance(dst.get("last_usage"), dict) or src_usage_at >= dst_usage_at
         )
         if accept_source_usage:
-            merged_usage = merge_usage_snapshots(dst.get("last_usage"), src_rec.get("last_usage"))
+            merged_usage = merge_usage_snapshots(dst.get("last_usage"), source_usage)
             if dst.get("last_usage") != merged_usage:
                 dst["last_usage"] = merged_usage
                 changed = True
@@ -1143,9 +1144,11 @@ def sync_usage_from_codex_auth_registry(reg: Dict[str, Any]) -> bool:
             if src_rec.get(k) is not None and dst.get(k) != src_rec.get(k):
                 dst[k] = src_rec.get(k)
                 changed = True
-        if src_rec.get("plan") and dst.get("plan") != src_rec.get("plan"):
-            dst["plan"] = src_rec.get("plan")
-            changed = True
+        if accept_source_usage or not dst.get("plan"):
+            plan = first_str(source_usage.get("plan_type") if accept_source_usage else None, src_rec.get("plan"))
+            if plan and dst.get("plan") != plan:
+                dst["plan"] = plan
+                changed = True
         if accept_source_usage and dst.pop("last_usage_error", None) is not None:
             changed = True
     return changed
@@ -1195,6 +1198,14 @@ def fmt_credits(usage: Any) -> str:
         return "?"
 
 
+LIST_PLAN_LABELS = {
+    "plus": "Plus",
+    "prolite": "Pro 100",
+    "pro": "Pro 200",
+    "promax": "Pro 500",
+}
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     reg = load_registry()
     accounts = reg.get("accounts", {})
@@ -1214,10 +1225,11 @@ def cmd_list(args: argparse.Namespace) -> int:
         rec = accounts[alias]
         marker = "*" if alias == active else " "
         email = rec.get("email_masked") or mask_email(rec.get("email"))
-        plan = (rec.get("plan") or "-").capitalize() if isinstance(rec.get("plan"), str) else "-"
         usage = rec.get("last_usage") if isinstance(rec.get("last_usage"), dict) else None
         err = rec.get("last_usage_error")
         is_api = rec.get("kind") == "api"
+        raw_plan = (first_str(rec.get("plan")) or "").strip()
+        plan = "API" if is_api else LIST_PLAN_LABELS.get(raw_plan.lower(), raw_plan.capitalize() or "-")
         h5 = "-" if is_api else fmt_usage(usage, 300, True, err)
         weekly = "-" if is_api else fmt_usage(usage, 10080, False, err)
         credits = "-" if is_api else fmt_credits(usage)

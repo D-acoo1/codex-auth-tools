@@ -137,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             body = {
-                "plan_type": "pro",
+                "plan_type": "pro" if account_id == "acct-demo" else "prolite",
                 "rate_limit_reset_credits": {
                     "available_count": 2 if account_id == "acct-demo" else 0,
                 },
@@ -594,12 +594,12 @@ WHAM_TEST_URL="${USAGE_BASE_URL%/v1}/wham/usage"
 env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
   "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-no-native-registry.txt"
-[[ "$(grep -Ec 'Pro +∞ +51%' "$TMP/list-no-native-registry.txt")" == "2" ]]
-assert_matches "$TMP/list-no-native-registry.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
-assert_matches "$TMP/list-no-native-registry.txt" 'other@example.com +Pro +∞ +51% .* +0 +Now'
+[[ "$(grep -Ec 'Pro (100|200) +∞ +51%' "$TMP/list-no-native-registry.txt")" == "2" ]]
+assert_matches "$TMP/list-no-native-registry.txt" 'demo@example.com +Pro 200 +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-no-native-registry.txt" 'other@example.com +Pro 100 +∞ +51% .* +0 +Now'
 assert_contains "$TMP/list-no-native-registry.txt" 'RESET'
 assert_contains "$TMP/list-no-native-registry.txt" 'CREDITS'
-assert_matches "$TMP/list-no-native-registry.txt" 'demo@example.com +Pro +∞ +51% .* +12,345\.68 +2 +Now'
+assert_matches "$TMP/list-no-native-registry.txt" 'demo@example.com +Pro 200 +∞ +51% .* +12,345\.68 +2 +Now'
 assert_contains "$TMP/list-no-native-registry.txt" 'UPDATED'
 assert_not_contains "$TMP/list-no-native-registry.txt" 'LAST ACTIVITY'
 assert_not_contains "$TMP/list-no-native-registry.txt" 'fake-access-token'
@@ -613,20 +613,24 @@ for alias in ["fox", "other"]:
     assert rec.get("last_usage_at", 0) > 0, (alias, rec)
     assert rec.get("last_reset_credits_at", 0) > 0, (alias, rec)
     assert rec.get("last_usage_error") is None, (alias, rec)
+assert obj["accounts"]["fox"]["plan"] == obj["accounts"]["fox"]["last_usage"]["plan_type"] == "pro"
+assert obj["accounts"]["other"]["plan"] == obj["accounts"]["other"]["last_usage"]["plan_type"] == "prolite"
 assert obj["accounts"]["fox"]["last_usage"].get("reset_credits_available") == 2, obj
 assert obj["accounts"]["other"]["last_usage"].get("reset_credits_available") == 0, obj
 PY
 run_ca_no_security list --cached > "$TMP/list-reset-python.txt"
 assert_contains "$TMP/list-reset-python.txt" 'RESET'
 assert_contains "$TMP/list-reset-python.txt" 'CREDITS'
-assert_matches "$TMP/list-reset-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +12,345\.68 +2 +Now'
+assert_matches "$TMP/list-reset-python.txt" 'fox +d\*\*\*o@example.com +Pro 200 +∞ +51% .* +12,345\.68 +2 +Now'
 assert_contains "$TMP/list-reset-python.txt" 'UPDATED'
 assert_not_contains "$TMP/list-reset-python.txt" 'LAST ACTIVITY'
-assert_matches "$TMP/list-reset-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +2 +Now'
-assert_matches "$TMP/list-reset-python.txt" 'other +o\*\*\*r@example.com +Pro +∞ +51% .* +0 +Now'
+assert_matches "$TMP/list-reset-python.txt" 'fox +d\*\*\*o@example.com +Pro 200 +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-reset-python.txt" 'other +o\*\*\*r@example.com +Pro 100 +∞ +51% .* +0 +Now'
 
 # Syncing a newer native usage snapshot that does not know about reset credits
 # must not erase the count already captured from the raw usage response.
+# The newer snapshot also reports a plan change, while the separate plan field
+# still contains the older subscription.
 mkdir -p "$CODEX_HOME/accounts"
 "$PYTHON_BIN" - "$CODEX_HOME/accounts/registry.json" <<'PY'
 import json, sys, time
@@ -637,6 +641,7 @@ payload = {
             "chatgpt_account_id": "acct-demo",
             "plan": "pro",
             "last_usage": {
+                "plan_type": "promax",
                 "primary": {"used_percent": 49, "window_minutes": 10080, "resets_at": int(time.time()) + 604800},
                 "secondary": None,
             },
@@ -651,8 +656,8 @@ PY
 env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
   "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-native-merge.txt"
-assert_matches "$TMP/list-native-merge.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
-assert_matches "$TMP/list-native-merge.txt" 'demo@example.com +Pro +∞ +51% .* +12,345\.68 +2 +Now'
+assert_matches "$TMP/list-native-merge.txt" 'demo@example.com +Pro 500 +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-native-merge.txt" 'demo@example.com +Pro 500 +∞ +51% .* +12,345\.68 +2 +Now'
 "$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" <<'PY'
 import json, sys
 obj = json.load(open(sys.argv[1]))
@@ -668,6 +673,8 @@ path = sys.argv[1]
 obj = json.load(open(path))
 rec = obj["accounts"][0]
 rec["last_usage"]["primary"]["used_percent"] = 10
+rec["last_usage"]["plan_type"] = "prolite"
+rec["plan"] = "prolite"
 rec["last_usage_at"] = int(time.time()) - 600
 with open(path, "w", encoding="utf-8") as f:
     json.dump(obj, f, indent=2)
@@ -676,10 +683,10 @@ PY
 env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
   "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-stale-native-merge.txt"
-assert_matches "$TMP/list-stale-native-merge.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-stale-native-merge.txt" 'demo@example.com +Pro 500 +∞ +51% .* +2 +Now'
 assert_not_contains "$TMP/list-stale-native-merge.txt" '90%'
 run_ca_no_security list --skip-api > "$TMP/list-stale-native-merge-python.txt"
-assert_matches "$TMP/list-stale-native-merge-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-stale-native-merge-python.txt" 'fox +d\*\*\*o@example.com +Pro 500 +∞ +51% .* +2 +Now'
 assert_not_contains "$TMP/list-stale-native-merge-python.txt" '90%'
 
 # Unknown data remains explicit, while API profiles use a dash because reset
@@ -695,7 +702,7 @@ with open(path, "w", encoding="utf-8") as f:
     f.write("\n")
 PY
 run_ca ll --cached --alias --no-color > "$TMP/list-reset-unknown.txt"
-assert_matches "$TMP/list-reset-unknown.txt" 'other@example.com +Pro +∞ +51% .* +\? +Now'
+assert_matches "$TMP/list-reset-unknown.txt" 'other@example.com +Pro 100 +∞ +51% .* +\? +Now'
 assert_matches "$TMP/list-reset-unknown.txt" 'api:127\.0\.0\.1:.* +API +- +- +- +- +switched'
 
 # A reset-count-only refresh failure must keep all valid cached values visible,
@@ -715,12 +722,12 @@ PY
 env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="${USAGE_BASE_URL%/v1}/missing" PATH="$SAFE_PATH" \
   "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-reset-refresh-failed.txt" 2> "$TMP/list-reset-refresh-failed.err"
-assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now!'
-assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +12,345\.68 +2 +Now!'
+assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro 500 +∞ +51% .* +2 +Now!'
+assert_matches "$TMP/list-reset-refresh-failed.txt" 'demo@example.com +Pro 500 +∞ +51% .* +12,345\.68 +2 +Now!'
 assert_contains "$TMP/list-reset-refresh-failed.err" '已继续显示上次成功数据'
 assert_contains "$TMP/list-reset-refresh-failed.err" 'UPDATED 后的 ! 表示本次刷新失败'
 run_ca ll --cached --alias --no-color > "$TMP/list-reset-cached.txt"
-assert_matches "$TMP/list-reset-cached.txt" 'demo@example.com +Pro +∞ +51% .* +2 +Now'
+assert_matches "$TMP/list-reset-cached.txt" 'demo@example.com +Pro 500 +∞ +51% .* +2 +Now'
 assert_not_contains "$TMP/list-reset-cached.txt" 'Now!'
 
 # A full usage refresh failure follows the same fallback: cached quota and
@@ -739,12 +746,12 @@ PY
 env CODEX_HOME="$CODEX_HOME" CODEX_AC_HOME="$CODEX_AC_HOME" CODEX_AC_LIB="$CODEX_AC_LIB" \
   NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="${USAGE_BASE_URL%/v1}/missing" PATH="$SAFE_PATH" \
   "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-usage-refresh-failed.txt" 2> "$TMP/list-usage-refresh-failed.err"
-assert_matches "$TMP/list-usage-refresh-failed.txt" 'demo@example.com +Pro +∞ +51% .* +2 +[34]m ago!'
+assert_matches "$TMP/list-usage-refresh-failed.txt" 'demo@example.com +Pro 500 +∞ +51% .* +2 +[34]m ago!'
 assert_not_contains "$TMP/list-usage-refresh-failed.txt" '刷新失败'
 assert_contains "$TMP/list-usage-refresh-failed.err" 'usage refresh failed'
 assert_matches "$TMP/list-usage-refresh-failed.err" '上次成功 [34]m ago'
 run_ca_no_security list --skip-api > "$TMP/list-usage-refresh-failed-python.txt" 2> "$TMP/list-usage-refresh-failed-python.err"
-assert_matches "$TMP/list-usage-refresh-failed-python.txt" 'fox +d\*\*\*o@example.com +Pro +∞ +51% .* +2 +[34]m ago!'
+assert_matches "$TMP/list-usage-refresh-failed-python.txt" 'fox +d\*\*\*o@example.com +Pro 500 +∞ +51% .* +2 +[34]m ago!'
 assert_not_contains "$TMP/list-usage-refresh-failed-python.txt" '刷新失败'
 assert_contains "$TMP/list-usage-refresh-failed-python.err" '已继续显示上次成功数据'
 
@@ -765,8 +772,8 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 run_ca ll --cached --alias --no-color > "$TMP/list-weekly-only-node.txt"
 run_ca_no_security list --cached > "$TMP/list-weekly-only-python.txt"
-assert_matches "$TMP/list-weekly-only-node.txt" 'Pro +∞ +51%'
-assert_matches "$TMP/list-weekly-only-python.txt" 'Pro +∞ +51%'
+assert_matches "$TMP/list-weekly-only-node.txt" 'Pro 500 +∞ +51%'
+assert_matches "$TMP/list-weekly-only-python.txt" 'Pro 500 +∞ +51%'
 
 # Duration, not API field order, identifies each window. This also proves a
 # future restored 5-hour window automatically returns to percentage display.
@@ -784,8 +791,8 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 run_ca ll --cached --alias --no-color > "$TMP/list-reordered-node.txt"
 run_ca_no_security list --cached > "$TMP/list-reordered-python.txt"
-assert_matches "$TMP/list-reordered-node.txt" 'Pro +80% .* +40%'
-assert_matches "$TMP/list-reordered-python.txt" 'Pro +80% .* +40%'
+assert_matches "$TMP/list-reordered-node.txt" 'Pro 500 +80% .* +40%'
+assert_matches "$TMP/list-reordered-python.txt" 'Pro 500 +80% .* +40%'
 
 bash "$ROOT/tests/balance-account-context.sh"
 CODEX_AUTH_TEST_TMPDIR="$TMP" "$NODE_EXE" "$ROOT/tests/list-credits.mjs"
