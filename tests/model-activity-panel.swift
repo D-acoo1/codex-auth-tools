@@ -146,16 +146,16 @@ let statusSummary = try readmeSampleSummary()
 let statusButton = statusDelegate.readmeSampleStatusButton(for: statusSummary, activity: activity(86.4))!
 check(statusText(statusButton).hasSuffix("86 TPS"), "menu bar uses only a whole number and uppercase TPS")
 check(!statusButton.attributedTitle.string.contains("≈") && !statusButton.attributedTitle.string.contains("model-a"), "no extra prefix, icon or model name in the numeric readout")
-check(statusButton.toolTip!.contains("model-a: 86 TPS"), "model detail is in the hover tooltip")
+check(statusButton.toolTip == nil, "the menu bar button does not show a hover tooltip")
 
 check(statusText(statusButton).hasPrefix("\u{FFFC} 85% \u{FFFC}") && !statusText(statusButton).contains("∞") && !statusText(statusButton).contains("/"), "subscription status begins with weekly quota, not the 5-hour value or separator")
 check(statusButton.attributedTitle.string.filter { $0 == "\u{FFFC}" }.count == 2, "only the weekly icon and task-light attachment remain")
-check(statusButton.toolTip!.contains(L10n.shared.t("primaryRemaining")), "hover details retain the 5-hour information")
 for (rawTitle, weekly) in [("5h 12% / 7d 73%", "73%"), ("5h … / 7d …", "…"), ("5h ? / 7d ?", "?"), ("5h 37%", "?")] {
     var summary = statusSummary
     summary.title = rawTitle
     let button = statusDelegate.readmeSampleStatusButton(for: summary, activity: activity(86.4))!
     check(statusText(button).hasPrefix("\u{FFFC} \(weekly) \u{FFFC}") && !statusText(button).contains("/"), "weekly-only rendering handles finite/loading/error/missing-weekly titles: \(rawTitle)")
+    check(button.toolTip == nil, "quota state does not create a menu bar tooltip")
 }
 _ = statusDelegate.readmeSampleStatusButton(for: statusSummary, activity: activity(86.4))
 
@@ -165,7 +165,7 @@ statusDelegate.updateModelActivity(activity(98.4, modelValue: 99))
 let unchangedTitle = statusButton.attributedTitle
 statusDelegate.updateModelActivity(activity(98.49, modelValue: 101))
 check(unchangedTitle.isEqual(to: statusButton.attributedTitle), "same rounded TPS does not rebuild the status title")
-check(statusButton.toolTip!.contains("model-a: 101 TPS"), "model tooltip stays fresh even without a title redraw")
+check(statusButton.toolTip == nil, "model activity updates do not create a menu bar tooltip")
 var widths: [CGFloat] = []
 var numberOffsets: [CGFloat] = []
 for value in [8.0, 86, 186] {
@@ -182,7 +182,7 @@ check(statusText(statusButton).hasSuffix("— TPS"), "no sample is unknown, neve
 statusDelegate.updateModelActivity(activity(0))
 check(statusText(statusButton).hasSuffix("0 TPS"), "a measured zero remains distinct from missing data")
 statusDelegate.updateModelActivity(activity(86.4, tasks: 0))
-check(statusText(statusButton).hasSuffix("86 TPS") && statusButton.toolTip!.contains(chinese ? "（近期）" : "(recent)"), "recent idle means remain visible and identified in the tooltip")
+check(statusText(statusButton).hasSuffix("86 TPS"), "recent idle means remain visible in the menu bar")
 statusDelegate.updateModelActivity(activity(86.4))
 let styledTitle = statusButton.attributedTitle
 let numberRange = (styledTitle.string as NSString).range(of: "86 TPS", options: .backwards)
@@ -218,8 +218,9 @@ apiSummary.kind = "api"
 apiSummary.apiUsage = APIUsageSummary(unit: "USD", remaining: 12, todayTokens: 3200)
 let apiButton = statusDelegate.readmeSampleStatusButton(for: apiSummary, activity: activity(86.4))!
 check(apiButton === statusButton && statusText(apiButton).hasSuffix("86 TPS"), "API status uses the same item and numeric TPS suffix")
+check(apiButton.toolTip == nil, "API status has no menu bar tooltip")
 statusDelegate.updateModelActivity(activity(99))
 check(apiButton.attributedTitle.string.contains("T ") && statusText(apiButton).hasSuffix("99 TPS"), "API TPS updates independently without replacing its balance/token display")
 statusDelegate.updateModelActivity(ModelActivitySnapshot(availability: .unavailable))
-check(statusText(apiButton).hasSuffix("— TPS") && apiButton.toolTip!.contains(chinese ? "暂时无法发现" : "discovery is unavailable"), "discovery failure is unknown and explained, not a fake zero or idle")
+check(statusText(apiButton).hasSuffix("— TPS") && apiButton.toolTip == nil, "unavailable activity stays unknown without a menu bar tooltip")
 print("model-activity-panel (\(L10n.shared.effectiveCode)): \(checks) assertions passed")

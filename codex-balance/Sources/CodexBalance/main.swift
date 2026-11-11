@@ -2881,15 +2881,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             if hasRunning { parts.append("running") }
             return parts.isEmpty ? "idle" : parts.joined(separator: "+")
         }
-
-        var tooltipText: String {
-            switch (hasUnread, hasRunning) {
-            case (true, true): return "任务：有未读 · 正在执行"
-            case (true, false): return "任务：有未读"
-            case (false, true): return "任务：正在执行"
-            case (false, false): return "任务：当前无任务"
-            }
-        }
     }
 
     private static let trainStyleIndexKey = "CodexBalance.trainStyleIndex"
@@ -2956,7 +2947,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         NSApp.setActivationPolicy(.accessory)
         taskLightState = readManualTaskLightState(requireOverride: true) ?? .idle
         updateStatusButton(title: "5h … / 7d …")
-        updateStatusTooltip()
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover(_:))
         popover.behavior = .applicationDefined
@@ -3010,7 +3000,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
                         delegate.updateStatusButton(title: "5h ? / 7d ?")
                     }
                 }
-                delegate.updateStatusTooltip()
                 if delegate.popover.isShown == true {
                     if delegate.animationSettingsPopover.isShown {
                         delegate.animationSettingsNeedsPanelRefresh = true
@@ -3256,7 +3245,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         } else {
             updateStatusButton(title: "5h … / 7d …")
         }
-        updateStatusTooltip()
         updatePopoverContent()
     }
 
@@ -3281,7 +3269,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         modelActivity = activity
         taskLightState = TaskLightState(hasUnread: activity.hasUnread, hasRunning: activity.hasRunning)
         updateStatusButton(summary: summary)
-        updateStatusTooltip()
         return statusItem.button
     }
 
@@ -3409,26 +3396,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
             if let summary = lastSummary { updateStatusButton(summary: summary) }
             else { updateStatusButton(title: lastError == nil ? "5h … / 7d …" : "5h ? / 7d ?") }
         }
-        updateStatusTooltip()
-    }
-
-    private func updateStatusTooltip() {
-        let chinese = L10n.shared.effectiveCode.hasPrefix("zh")
-        let base: String
-        if let lastError { base = L10n.shared.t("fetchFailed") + ": " + lastError + "\n" + taskLightState.tooltipText }
-        else if let lastSummary { base = tooltip(for: lastSummary) }
-        else { base = L10n.shared.t("title") + "\n" + taskLightState.tooltipText }
-        let heading = (chinese ? "本机全部模型 · 近1分钟加权平均：" : "All local models · 1-minute weighted average: ") + modelTPSReadout(modelActivity.overallTPS)
-        var lines = [base, heading]
-        if modelActivity.availability == .unavailable {
-            lines.append(chinese ? "暂时无法发现 Codex 活动，已有样本仍按60秒窗口失效。" : "Codex activity discovery is unavailable; observed samples still expire after 60s.")
-        }
-        for row in modelActivity.rows {
-            let recent = row.tasks == 0 ? (chinese ? "（近期）" : " (recent)") : ""
-            lines.append(row.model + ": " + modelTPSReadout(row.outputTPS) + recent)
-        }
-        let next = lines.joined(separator: "\n")
-        if statusItem.button?.toolTip != next { statusItem.button?.toolTip = next }
     }
 
     private func appendTaskLight(to result: NSMutableAttributedString) {
@@ -3659,31 +3626,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
 
     private func timeString(_ date: Date) -> String {
         L10n.shared.timeString(date)
-    }
-
-    private func tooltip(for summary: CodexUsageSummary) -> String {
-        let l = L10n.shared
-        if summary.isAPIAccount {
-            var lines = [l.t("title"), l.t("apiRelayAccount")]
-            if let alias = summary.alias { lines.append(alias) }
-            if let baseURL = summary.baseURL { lines.append(baseURL) }
-            if let usage = summary.apiUsage, usage.error == nil {
-                lines.append(l.t("balance") + ": \(apiAmount(usage.displayRemaining, unit: usage.unit))")
-                lines.append(l.t("todayCost") + ": \(apiAmount(usage.displayTodayCost, unit: usage.unit))")
-                lines.append(l.t("todayTokens") + ": \(compactNumber(usage.todayTokens))")
-            }
-            lines.append(taskLightState.tooltipText)
-            return lines.joined(separator: "\n")
-        }
-        var lines = [l.t("title"), summary.email]
-        if summary.primaryUnlimited {
-            lines.append(l.t("primaryRemaining") + ": " + l.t("unlimited"))
-        } else if let p = summary.primaryRemaining {
-            lines.append(l.t("primaryRemaining") + ": \(p)%")
-        }
-        if let s = summary.secondaryRemaining { lines.append(l.t("secondaryRemaining") + ": \(s)%") }
-        lines.append(taskLightState.tooltipText)
-        return lines.joined(separator: "\n")
     }
 
     @objc private func openUsagePage() {

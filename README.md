@@ -58,7 +58,7 @@ It is **not** a team credential vault, a cloud account-sync service, or a replac
 
 - reads the active Codex login from `~/.codex/auth.json`;
 - classifies quota windows by duration instead of API field order;
-- keeps the ChatGPT menu bar compact with weekly quota, task lights, and TPS; 5-hour details remain in the popover and hover tooltip;
+- keeps the ChatGPT menu bar compact with weekly quota, task lights, and TPS; 5-hour details remain in the popover;
 - shows a missing 5-hour limit as unlimited in the popover without copying the weekly value;
 - displays 5-hour, weekly, Credits, Spark, reset time, plan, account, and availability data;
 - displays balance, cost, token usage, and request totals for supported relay endpoints;
@@ -83,7 +83,7 @@ Red and yellow are independent, so both can be lit when one result is waiting wh
 
 #### Local model activity
 
-The menu bar also shows a compact **`86 TPS`** readout beside the quota/task lights, without a model name, extra icon, or approximation prefix. The bold purple number sits close to the lights, with a smaller, quieter TPS unit. It is the duration-weighted average across **all** observed local models in the same 60-second response window: total output tokens divided by total model-generation seconds, not an average of per-model averages. Hover for the calculation label and each model's value. It updates independently of quota or light changes; `— TPS` means no valid sample, not zero.
+The menu bar also shows a compact **`86 TPS`** readout beside the quota/task lights, without a model name, extra icon, or approximation prefix. The bold purple number sits close to the lights, with a smaller, quieter TPS unit. It is the duration-weighted average across **all** observed local models in the same 60-second response window: total output tokens divided by total model-generation seconds, not an average of per-model averages. Click the menu bar item to see per-model details in the popover. It updates independently of quota or light changes; `— TPS` means no valid sample, not zero.
 
 The popover groups observed Codex App/CLI sessions in the current `CODEX_HOME` by model, including subagents. **The prominent readout, such as `≈ 86 TPS`, is a duration-weighted average of valid responses settled in the last 60 seconds: total output tokens divided by total model-generation seconds.** Same-model concurrent responses contribute to the average, not a sum of speeds. Whole-number TPS avoids decimal jitter; waiting for tools or finishing a task no longer immediately clears a recent mean. When no task is open, its retained row says **Recent average · idle**; it disappears when all samples expire. The smaller `Input` amount is each open task's latest input-token count, not input TPS; its `[1/3]` marker means one of three open tasks has a recent input count. Hover the TPS value for valid-response and contributing-session counts. Reasoning is counted once and tool waits are excluded. Any missing/invalid model-item timing excludes that whole response without erasing valid recent history; no valid sample shows `— TPS`, not a guessed speed. Native accounting takes precedence over legacy mirrors, while legacy-only turns remain supported. Open tasks are matched to live Codex rollout writers, including silent long-running tasks after a Balance restart. Parent tasks and subagents have separate counts; completed turns are not reopened by late log records. If process inspection is unavailable, log-only activity becomes **quiet / waiting for updates** after 75 seconds. Other AI apps and separate Codex homes are not monitored. See [measurement details and limitations](docs/codex-balance.md#local-model-activity).
 
@@ -339,7 +339,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 - 从 `~/.codex/auth.json` 读取当前 Codex 登录；
 - 按额度窗口真实周期分类，不依赖接口字段顺序；
-- ChatGPT 账号状态栏只展示周额度、任务灯与 TPS，5 小时信息保留在展开面板和悬停详情中；
+- ChatGPT 账号状态栏只展示周额度、任务灯与 TPS，5 小时信息保留在点击展开的面板中；
 - 5 小时限制暂时消失时，面板显示“无限”，不会错误复制周额度；
 - 展示 5 小时、周额度、Credits、Spark、重置时间、套餐、账号和可用状态；
 - 对支持的中转接口展示余额、费用、token 用量和请求数；
@@ -364,7 +364,7 @@ Codex 会把当前登录状态保存在本机，但多账号或 API 中转用户
 
 #### 本机模型活动
 
-顶部菜单栏在额度与任务灯旁直接显示 **`86 TPS`**，不带模型名、额外图标或近似符号。紫色加粗数字紧邻任务灯，TPS单位使用更小的次要样式。该值是近60秒有效响应的**全部本机模型加权平均**：所有输出 token 总数 ÷ 所有模型生成秒数，不是各模型均值再做简单平均。悬停可看计算口径与各模型明细；数值独立更新，不必等额度或红绿灯变化。`— TPS` 表示没有有效样本，不是0。
+顶部菜单栏在额度与任务灯旁直接显示 **`86 TPS`**，不带模型名、额外图标或近似符号。紫色加粗数字紧邻任务灯，TPS单位使用更小的次要样式。该值是近60秒有效响应的**全部本机模型加权平均**：所有输出 token 总数 ÷ 所有模型生成秒数，不是各模型均值再做简单平均。点击控件打开面板查看各模型明细；数值独立更新，不必等额度或红绿灯变化。`— TPS` 表示没有有效样本，不是0。
 
 面板按模型汇总当前 `CODEX_HOME` 下已观察到的 Codex App/CLI 会话，包含 subagent。**大号读数如 `≈ 86 TPS`，是近60秒内结算的有效响应按生成时长加权的平均值：总输出 token 数 ÷ 总模型生成秒数。** 同模型并发响应合并算平均速度，不再直接相加；TPS取整，减少小数位抖动。工具等待或任务结束不会立即清空近期均值；当前没有开放任务时标为**近期均值 · 当前无任务**，所有样本过期后移除该行。较小的“输入”是开放任务最近一次响应的输入量，不是输入 TPS；其 `[1/3]` 仅表示三个开放任务中一个有近期输入计数。悬停TPS可查看有效响应数和贡献会话数。推理 token 只计一次，模型时间不含工具等待；任一模型item计时缺失或非法都会排除整次响应，不清空近期有效均值；没有有效样本时显示 `— TPS`，不会猜测速度。原生计数优先于旧版镜像，同时兼容只有旧版计数的turn。任务同时匹配正在运行的 Codex 进程持有的日志，因此重启控件后也能发现长时间无日志的任务；主任务与子任务分别计数，迟到记录不会重新打开已结束任务。只有进程检查不可用时，才在75秒无日志后标为**等待更新**；不监测其他 AI 应用或独立 Codex Home。详见[计算口径与限制](docs/codex-balance.md#local-model-activity)。
 
