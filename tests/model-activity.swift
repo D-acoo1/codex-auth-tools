@@ -314,6 +314,90 @@ func unread(_ ids: [String]) {
 }
 unread(["a", "b", "archived"])
 let now = epoch + 10
+// TPS eligibility is per live task, not per model. Other tasks of the same
+// model can be waiting, finished or orphaned without affecting its rate.
+let eligibilityHome = root.appendingPathComponent("eligibility-home", isDirectory: true)
+try! FileManager.default.createDirectory(at: eligibilityHome, withIntermediateDirectories: true)
+var eligibilityDB: OpaquePointer?
+expect(sqlite3_open(eligibilityHome.appendingPathComponent("state_5.sqlite").path, &eligibilityDB) == SQLITE_OK, "open eligibility database")
+expect(sqlite3_exec(eligibilityDB, "CREATE TABLE threads (id TEXT, updated_at INTEGER, rollout_path TEXT, archived INTEGER, model TEXT, thread_source TEXT)", nil, nil, nil) == SQLITE_OK, "create eligibility table")
+@MainActor func eligibilityFile(_ id: String, model: String = "model-a", output: Int, seconds: Double, terminal: String? = nil) -> URL {
+    let url = eligibilityHome.appendingPathComponent(id + ".jsonl")
+    var data = line("turn_context", ["model": model, "turn_id": id], at: 0)
+        + line("event_msg", ["type": "item_completed", "item": ["type": "Reasoning"],
+            "started_at_ms": epoch * 1000, "completed_at_ms": (epoch + seconds) * 1000], at: seconds)
+        + line("token_usage_record", ["response_id": id, "usage": ["output_tokens": output]], at: 8)
+    if let terminal { data += line("event_msg", ["type": terminal], at: 9) }
+    try! data.write(to: url)
+    expect(sqlite3_exec(eligibilityDB, "INSERT INTO threads VALUES ('\(id)', \(Int(now)), '\(url.path)', 0, '\(model)', 'user')", nil, nil, nil) == SQLITE_OK, "insert eligibility task")
+    return url
+}
+@MainActor func appendEligibility(_ url: URL, _ data: Data) {
+    let h = try! FileHandle(forWritingTo: url)
+    try! h.seekToEnd(); try! h.write(contentsOf: data); try! h.close()
+}
+let generatingFile = eligibilityFile("generating", output: 400, seconds: 4)
+let waitingFile = eligibilityFile("waiting", output: 1800, seconds: 2)
+appendEligibility(waitingFile, line("response_item", ["type": "function_call", "call_id": "approval"], at: 9))
+let finishedFile = eligibilityFile("finished", output: 10000, seconds: 1, terminal: "task_complete")
+let orphanFile = eligibilityFile("orphan", output: 16000, seconds: 1)
+let otherGenerating = eligibilityFile("other-generating", model: "model-b", output: 600, seconds: 3)
+let stoppedModel = eligibilityFile("stopped-model", model: "model-c", output: 9000, seconds: 1, terminal: "turn_aborted")
+let eligiblePaths: Set<String> = [generatingFile.path, waitingFile.path, finishedFile.path, otherGenerating.path, stoppedModel.path]
+let eligibility = ModelActivityMonitor(home: eligibilityHome, openRollouts: { eligiblePaths }, onUpdate: { _ in })
+let eligible = eligibility.collectOnce(now: now)
+expect(eligible.rows.map(\.model) == ["model-a", "model-b"], "finished-only models disappear immediately, not after the average window")
+let eligibleA = eligible.rows[0]
+expect(eligibleA.tasks == 2 && eligibleA.generating == 1, "same-model waiting task remains visible but is not generating")
+expect(eligibleA.outputTPS == 100 && eligibleA.responseSamples == 1 && eligibleA.measuredTasks == 1,
+    "same-model waiting, finished and orphan samples never contribute to TPS")
+expect(abs(eligible.overallTPS! - 1000.0 / 7) < 0.001,
+    "only generating tasks contribute output and duration to the cross-model weighted mean")
+appendEligibility(generatingFile, line("event_msg", ["type": "item_completed", "item": ["type": "AgentMessage"],
+    "started_at_ms": (epoch + 8) * 1000, "completed_at_ms": (epoch + 9) * 1000], at: 9)
+    + line("token_usage_record", ["response_id": "weighted", "usage": ["output_tokens": 300]], at: 10))
+let weightedEligible = eligibility.collectOnce(now: now)
+expect(weightedEligible.rows.map(\.outputTPS) == [140, 200], "per-model means use only their generating tasks and retain unequal response durations")
+expect(weightedEligible.overallTPS == 162.5, "overall TPS is (700+600)/(5+3), not the mean or sum of model means")
+appendEligibility(generatingFile, line("response_item", ["type": "custom_tool_call", "call_id": "parallel-a"], at: 11)
+    + line("response_item", ["type": "custom_tool_call", "call_id": "parallel-b"], at: 11))
+let toolWait = eligibility.collectOnce(now: epoch + 11)
+expect(toolWait.rows[0].generating == 0 && toolWait.rows[0].outputTPS == nil && toolWait.rows[0].responseSamples == 0,
+    "tool execution or approval removes a task's speed without discarding its task row")
+expect(toolWait.overallTPS == 200, "one model waiting cannot dilute the other generating model")
+appendEligibility(generatingFile, line("response_item", ["type": "custom_tool_call_output", "call_id": "parallel-a"], at: 12))
+expect(eligibility.collectOnce(now: epoch + 12).rows[0].outputTPS == nil, "one outstanding parallel tool keeps the task out of TPS")
+appendEligibility(generatingFile, line("response_item", ["type": "custom_tool_call_output", "call_id": "parallel-b"], at: 13))
+expect(eligibility.collectOnce(now: epoch + 13).rows[0].outputTPS == 140,
+    "resuming generation reuses that task's recent valid mean without inventing a zero")
+appendEligibility(generatingFile, line("event_msg", ["type": "task_complete"], at: 14))
+let onlyWaiting = eligibility.collectOnce(now: epoch + 14)
+expect(onlyWaiting.rows[0].tasks == 1 && onlyWaiting.rows[0].generating == 0 && onlyWaiting.rows[0].outputTPS == nil,
+    "completion removes the finished task immediately even when the model still has a waiting task")
+appendEligibility(otherGenerating, line("event_msg", ["type": "task_failed"], at: 14))
+expect(eligibility.collectOnce(now: epoch + 14).overallTPS == nil, "no generating task produces unknown overall TPS, not a retained mean or fake zero")
+appendEligibility(waitingFile, line("event_msg", ["type": "turn_aborted"], at: 15))
+expect(eligibility.collectOnce(now: epoch + 15).rows.isEmpty, "all terminated tasks leave no stale model rows")
+appendEligibility(generatingFile, line("turn_context", ["turn_id": "switched", "model": "model-z"], at: 16))
+let switchedEligibility = eligibility.collectOnce(now: epoch + 16)
+expect(switchedEligibility.rows.map(\.model) == ["model-z"] && switchedEligibility.overallTPS == nil,
+    "a generating task on a new model cannot inherit another model's recent samples")
+appendEligibility(generatingFile, line("token_usage_record", ["response_id": "switched-boundary", "usage": ["output_tokens": 50]], at: 16)
+    + line("event_msg", ["type": "item_completed", "item": ["type": "AgentMessage"],
+    "started_at_ms": (epoch + 16) * 1000, "completed_at_ms": (epoch + 18) * 1000], at: 18)
+    + line("token_usage_record", ["response_id": "measured-zero", "usage": ["output_tokens": 0]], at: 18))
+expect(eligibility.collectOnce(now: epoch + 18).overallTPS == 0, "a valid zero-output response is still a real zero")
+let quietEligibility = ModelActivityMonitor(home: eligibilityHome, openRollouts: { nil }, onUpdate: { _ in })
+_ = quietEligibility.collectOnce(now: epoch + 18)
+for url in [generatingFile, orphanFile] {
+    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: epoch - 1000)], ofItemAtPath: url.path)
+}
+// The actual monitor can retain an already observed silent turn when process
+// inspection is unavailable, but it must not treat it as currently generating.
+let quietSnapshot = quietEligibility.collectOnce(now: epoch + 30)
+expect(!quietSnapshot.rows.isEmpty && quietSnapshot.rows.allSatisfy { $0.quietTasks == $0.tasks && $0.generating == 0 && $0.outputTPS == nil }
+    && quietSnapshot.overallTPS == nil, "quiet log-only tasks cannot carry a live speed even before their samples expire")
+sqlite3_close(eligibilityDB)
 var snapshot = monitor.collectOnce(now: now)
 expect(snapshot.availability == .ready && snapshot.rows.count == 2, "same model grouped, different models separated")
 let group = snapshot.rows[0]
@@ -358,31 +442,21 @@ expect(averageRows(12).rows.first?.responseSamples == 2, "polling does not multi
 appendAverage(line("turn_context", ["model": "model-a", "turn_id": "next-turn"], at: 13))
 expect(averageRows(13).rows.first?.outputTPS == 140, "starting another turn does not blank the average")
 appendAverage(line("response_item", ["type": "custom_tool_call", "call_id": "tool"], at: 13))
-expect(averageRows(13).rows.first?.generating == 0 && averageRows(13).rows.first?.outputTPS == 140, "tool wait keeps the mean but changes current activity")
+expect(averageRows(13).rows.first?.generating == 0 && averageRows(13).rows.first?.outputTPS == nil, "tool wait excludes all samples from the displayed mean")
 appendAverage(line("event_msg", ["type": "task_complete"], at: 14))
 let completed = averageRows(14)
-expect(completed.rows.first?.tasks == 0 && completed.rows.first?.outputTPS == 140, "completed task leaves a recent average instead of removing its row")
-expect(!completed.hasRunning, "a retained average does not light the running indicator")
+expect(completed.rows.isEmpty && completed.overallTPS == nil, "completed tasks leave neither a stale row nor a recent overall speed")
+expect(!completed.hasRunning, "completed tasks do not light the running indicator")
 appendAverage(line("turn_context", ["model": "model-b", "turn_id": "other-model"], at: 15))
 let switched = averageRows(15)
-expect(switched.rows.count == 2 && switched.rows[0].tasks == 0 && switched.rows[1].outputTPS == nil, "old model average never becomes the new model's speed")
+expect(switched.rows.map(\.model) == ["model-b"] && switched.rows[0].outputTPS == nil, "old model average never becomes the new model's speed or an idle row")
 appendAverage(line("event_msg", ["type": "turn_aborted"], at: 16))
-expect(averageRows(26).rows.first?.outputTPS == 140, "turn termination does not clear the recent mean")
+expect(averageRows(26).rows.isEmpty, "turn termination immediately clears displayed rates")
+appendAverage(line("turn_context", ["model": "model-a", "turn_id": "resumed"], at: 27))
+expect(averageRows(27).rows.first?.outputTPS == 140, "same-model generation can resume using its own unexpired history")
 expect(averageRows(69).rows.first?.outputTPS == 300 && averageRows(69).rows.first?.responseSamples == 1, "window expiry removes only expired responses")
-expect(averageRows(73).rows.isEmpty && !averageRows(73).hasRunning, "idle model is removed after all recent samples expire")
+expect(averageRows(73).rows.first?.tasks == 1 && averageRows(73).rows.first?.outputTPS == nil, "an active model with expired samples stays visible without a stale speed")
 expect(averageRows(73).overallTPS == nil, "no valid sample means an unknown overall speed, not zero")
-
-let extraModel = averageHome.appendingPathComponent("extra-model.jsonl")
-try! (line("turn_context", ["model": "model-c", "turn_id": "extra"])
-    + line("event_msg", ["type": "item_completed", "item": ["type": "Reasoning"],
-        "started_at_ms": epoch * 1000, "completed_at_ms": (epoch + 3) * 1000])
-    + line("token_usage_record", ["response_id": "extra", "usage": ["input_tokens": 1000, "output_tokens": 600]])).write(to: extraModel)
-expect(sqlite3_open(averageHome.appendingPathComponent("state_5.sqlite").path, &averageDB) == SQLITE_OK, "reopen cross-model fixture")
-expect(sqlite3_exec(averageDB, "INSERT INTO threads VALUES ('extra', \(Int(now)), '\(extraModel.path)', 0, 'model-c', 'user', '')", nil, nil, nil) == SQLITE_OK, "insert another measured model")
-sqlite3_close(averageDB)
-let combined = ModelActivityMonitor(home: averageHome, openRollouts: { nil }, onUpdate: { _ in }).collectOnce(now: epoch + 16)
-expect(combined.rows.map(\.outputTPS) == [140, 200], "per-model means remain independent")
-expect(combined.overallTPS == 162.5, "overall TPS is (700+600)/(5+3), not the mean or sum of model means")
 
 // The real append reader/monitor must retain a valid mean through an incomplete
 // response, then resume measurements without carrying its partial intervals.
@@ -424,7 +498,7 @@ expect(longTask.rows.first?.subagentTasks == 1,
 let orphan = ModelActivityMonitor(home: home, openRollouts: { [] }, onUpdate: { _ in }).collectOnce(now: epoch + 16)
 expect(orphan.rows.allSatisfy { $0.tasks == 0 } && !orphan.hasRunning,
     "fresh orphan logs cannot claim a live task when no Codex process owns them")
-expect(orphan.overallTPS == 120, "writer ownership does not erase recent valid TPS samples")
+expect(orphan.rows.isEmpty && orphan.overallTPS == nil, "unowned sessions contribute neither rows nor historical TPS")
 try! FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: second.path)
 for terminal in ["task_complete", "turn_aborted", "task_failed"] {
     var ended = ModelActivitySession(model: "model-a")
@@ -444,18 +518,27 @@ expect(!finalAnswer.isOpen, "final-answer accounting order never reopens a finis
 expect(finalAnswer.recentSamples.count == 2, "finished response accounting may still update the recent average")
 
 // A fresh append after attach must be visible without rereading the history.
+try! (line("turn_context", ["model": "model-a", "turn_id": "live"])
+    + line("event_msg", ["type": "item_completed", "item": ["type": "Reasoning"],
+        "started_at_ms": epoch * 1000, "completed_at_ms": (epoch + 4) * 1000])
+    + line("token_usage_record", ["response_id": "live", "usage": ["output_tokens": 800]])).write(to: first)
 var observed: [ModelActivitySnapshot] = []
 let live = ModelActivityMonitor(home: home, openRollouts: { nil }) { observed.append($0) }
 live.start()
 let started = Date()
 while observed.isEmpty && Date().timeIntervalSince(started) < 3 { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
 expect(observed.last?.rows.first?.tasks == 3, "background collector initial delivery")
-let file = try! FileHandle(forWritingTo: second)
+expect(observed.last?.overallTPS == 150, "background collector begins with both generating sessions' unequal speeds")
+let file = try! FileHandle(forWritingTo: third)
 try! file.seekToEnd(); try! file.write(contentsOf: line("event_msg", ["type": "task_complete"]))
 try! file.close()
 let changed = Date()
 while observed.last?.rows.first?.tasks == 3 && Date().timeIntervalSince(changed) < 2.8 { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
 expect(observed.last?.rows.first?.tasks == 2, "vnode append notification removes completed task")
+expect(observed.last?.rows.first?.measuredTasks == 1 && observed.last?.rows.first?.responseSamples == 1,
+    "vnode completion removes finished samples: measured=\(observed.last!.rows[0].measuredTasks), samples=\(observed.last!.rows[0].responseSamples), TPS=\(String(describing: observed.last!.overallTPS))")
+expect(observed.last!.overallTPS == 200,
+    "event-driven overall TPS keeps only the other generating session's weighted mean")
 expect(Date().timeIntervalSince(changed) < 1, "known-file update is event-driven, not waiting for discovery")
 live.stop()
 RunLoop.current.run(until: Date().addingTimeInterval(0.2))

@@ -560,30 +560,33 @@ final class ModelActivityMonitor: @unchecked Sendable {
         let active = files.filter { path, file in
             file.session.isOpen && (writerPaths?.contains(path) ?? true)
         }
-        let grouped = Dictionary(grouping: active.values) { $0.session.model }
+        let grouped = Dictionary(grouping: active) { $0.value.session.model }
         let subagentPaths = Set(threads.filter { !$0.userVisible }.map(\.path))
-        let recent = Dictionary(grouping: files.flatMap { path, file in
-            file.session.recentSamples.filter { now >= $0.at }.map { (path, $0) }
-        }) { $0.1.model }
         var totalOutput = 0.0, totalDuration = 0.0
-        let rows = Set(grouped.keys).union(recent.keys).map { model -> ModelActivityRow in
-            let members = grouped[model] ?? []
-            let samples = members.compactMap(\.session.sample).filter { now >= $0.at && now - $0.at <= Self.sampleSeconds }
+        let rows = grouped.map { model, members -> ModelActivityRow in
+            let generating = members.filter {
+                !$0.value.session.isWaiting && (writerPaths != nil || now - $0.value.modifiedAt <= Self.activeSeconds)
+            }
+            let samples = members.compactMap(\.value.session.sample).filter { now >= $0.at && now - $0.at <= Self.sampleSeconds }
             let inputs = samples.compactMap(\.input)
-            let responses = recent[model] ?? []
+            // Retain smoothing history, but only the current model of a task
+            // that is generating now may contribute to either TPS readout.
+            let responses = generating.flatMap { member in
+                member.value.session.recentSamples.filter { $0.model == model && now >= $0.at }.map { (member.key, $0) }
+            }
             let duration = responses.reduce(0.0) { $0 + ($1.1.duration ?? 0) }
             let output = responses.reduce(0.0) { $0 + Double($1.1.output) }
             totalOutput += output
             totalDuration += duration
             return ModelActivityRow(model: model.isEmpty ? "Codex" : model, tasks: members.count,
-                generating: members.filter { !$0.session.isWaiting && (writerPaths != nil || now - $0.modifiedAt <= Self.activeSeconds) }.count,
+                generating: generating.count,
                 inputTokens: inputs.isEmpty ? nil : inputs.reduce(0, +),
                 inputTasks: inputs.count,
                 outputTPS: duration > 0 ? output / duration : nil,
                 measuredTasks: Set(responses.map { $0.0 }).count,
-                quietTasks: writerPaths == nil ? members.filter { now - $0.modifiedAt > Self.activeSeconds }.count : 0,
+                quietTasks: writerPaths == nil ? members.filter { now - $0.value.modifiedAt > Self.activeSeconds }.count : 0,
                 responseSamples: responses.count,
-                subagentTasks: active.filter { subagentPaths.contains($0.key) && $0.value.session.model == model }.count)
+                subagentTasks: members.filter { subagentPaths.contains($0.key) }.count)
         }.sorted { $0.model.localizedStandardCompare($1.model) == .orderedAscending }
         let hasUnread = (!available && threads.isEmpty && !unread.isEmpty)
             || threads.contains { $0.userVisible && unread.contains($0.id) && now >= $0.updatedAt && now - $0.updatedAt <= 86_400 }

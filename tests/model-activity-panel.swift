@@ -57,7 +57,7 @@ let chinese = L10n.shared.effectiveCode.hasPrefix("zh")
 
 let samples = (0..<8).map { index in
     ModelActivityRow(model: index == 0 ? "a-very-long-model-name-that-needs-truncation" : "model-\(index)",
-        tasks: 3, generating: index % 2, inputTokens: 24000, inputTasks: 2, outputTPS: index == 1 ? nil : 123.4, measuredTasks: index == 1 ? 0 : 2, responseSamples: index == 1 ? 0 : 8)
+        tasks: 3, generating: index % 2 == 0 ? 2 : 0, inputTokens: 24000, inputTasks: 2, outputTPS: index % 2 == 0 ? 123.4 : nil, measuredTasks: index % 2 == 0 ? 2 : 0, responseSamples: index % 2 == 0 ? 8 : 0)
 }
 for mode in [CardThemeMode.dark, .light] {
     try checkNativePopoverCorners(mode)
@@ -96,7 +96,7 @@ for mode in [CardThemeMode.dark, .light] {
     controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: samples))
     check(rowIdentities == allViews(activity).filter { $0 is NSTextField }.map(ObjectIdentifier.init), "unchanged update reuses labels")
     var changed = samples
-    changed[0] = ModelActivityRow(model: samples[0].model, tasks: 4, generating: 3, inputTokens: 48200, inputTasks: 4, outputTPS: 198.2, measuredTasks: 4, responseSamples: 12, subagentTasks: 2)
+    changed[0] = ModelActivityRow(model: samples[0].model, tasks: 4, generating: 3, inputTokens: 48200, inputTasks: 4, outputTPS: 198.2, measuredTasks: 3, responseSamples: 12, subagentTasks: 2)
     controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: changed))
     let childStatus = allViews(activity).compactMap { $0 as? NSTextField }.first {
         $0.stringValue == (chinese ? "2 任务 + 2 子任务" : "2 chats + 2 agents")
@@ -123,13 +123,13 @@ for mode in [CardThemeMode.dark, .light] {
     check(allViews(activity).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains(chinese ? "等待更新" : "quiet") }, "quiet tasks are not called generating or complete")
     try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("quiet-\(mode.rawValue).png"))
     controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: [
-        ModelActivityRow(model: "recent-model", tasks: 0, generating: 0, inputTokens: nil, inputTasks: 0,
-            outputTPS: 86.4, measuredTasks: 2, responseSamples: 8)
+        ModelActivityRow(model: "waiting-model", tasks: 2, generating: 0, inputTokens: nil, inputTasks: 0,
+            outputTPS: nil, measuredTasks: 0)
     ]))
-    let recentLabels = allViews(activity).compactMap { $0 as? NSTextField }
-    check(recentLabels.contains { $0.stringValue == (chinese ? "近期均值 · 当前无任务" : "Recent average · idle") }, "recent mean does not imply an active task")
-    check(recentLabels.contains { $0.stringValue == "≈ 86 TPS" }, "completion retains a readable numeric mean")
-    try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("recent-\(mode.rawValue).png"))
+    let waitingLabels = allViews(activity).compactMap { $0 as? NSTextField }
+    check(waitingLabels.contains { $0.stringValue == (chinese ? "2 任务 · 工具等待" : "2 tasks · tools") }, "waiting tasks keep their state visible")
+    check(waitingLabels.contains { $0.stringValue == "— TPS" } && !waitingLabels.contains { $0.stringValue.contains("≈") }, "waiting tasks have no retained speed")
+    try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("waiting-\(mode.rawValue).png"))
 }
 let statusDelegate = AppDelegate()
 defer { statusDelegate.removeReadmeSampleStatusItem() }
@@ -181,8 +181,8 @@ statusDelegate.updateModelActivity(activity(nil))
 check(statusText(statusButton).hasSuffix("— TPS"), "no sample is unknown, never a fabricated zero")
 statusDelegate.updateModelActivity(activity(0))
 check(statusText(statusButton).hasSuffix("0 TPS"), "a measured zero remains distinct from missing data")
-statusDelegate.updateModelActivity(activity(86.4, tasks: 0))
-check(statusText(statusButton).hasSuffix("86 TPS"), "recent idle means remain visible in the menu bar")
+statusDelegate.updateModelActivity(ModelActivitySnapshot(availability: .ready))
+check(statusText(statusButton).hasSuffix("— TPS"), "idle menu bar has no retained speed")
 statusDelegate.updateModelActivity(activity(86.4))
 let styledTitle = statusButton.attributedTitle
 let numberRange = (styledTitle.string as NSString).range(of: "86 TPS", options: .backwards)

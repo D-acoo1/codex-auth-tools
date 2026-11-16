@@ -23,9 +23,6 @@ final class ModelActivityView: NSView {
         addSubview(separator)
         addSubview(field(chinese ? "本机模型 TPS" : "Local model TPS", frame: NSRect(x: 0, y: 89, width: 170, height: 16), weight: .semibold))
         let hint = field(chinese ? "近1分钟平均" : "1-minute average", frame: NSRect(x: 180, y: 89, width: bounds.width - 180, height: 16), color: secondary, alignment: .right)
-        hint.toolTip = chinese
-            ? "仅观察本机 Codex 会话，不额外调用模型。TPS 为近60秒有效响应的总输出 token 数 ÷ 总模型生成秒数，按生成时长加权，同模型并发取平均而非速度相加；包含推理、不含工具等待。每会话最多保留128次有效响应，不是逐 token 实时测速。工具等待或结束后保留近期均值，60秒无有效样本显示 —。输入量不是输入 TPS；方括号仅表示输入覆盖数。"
-            : "Observes local Codex sessions without calling a model. TPS = total output tokens / total model seconds of valid responses settled in the last 60s: a duration-weighted average, not summed concurrent speeds. Includes reasoning, excludes tool waits; at most 128 valid responses per session. Not per-token live telemetry. Recent averages survive waits and completion; no valid sample for 60s shows —. Input is not input TPS; brackets show input coverage only."
         addSubview(hint)
         samplingHint = hint
         scroll.frame = NSRect(x: 0, y: 19, width: bounds.width, height: 68)
@@ -121,9 +118,7 @@ final class ModelActivityView: NSView {
                     ? "\(main) 任务 + \(row.subagentTasks) 子任务"
                     : "\(main) chats + \(row.subagentTasks) agents"
             }
-            if row.tasks == 0 {
-                status.stringValue = chinese ? "近期均值 · 当前无任务" : "Recent average · idle"
-            } else if row.quietTasks == row.tasks {
+            if row.quietTasks == row.tasks {
                 status.stringValue = chinese ? "\(row.tasks) 任务 · 等待更新" : "\(row.tasks) tasks · quiet"
             } else if row.quietTasks > 0 {
                 status.stringValue += chinese ? " · \(row.quietTasks) 待确认" : " · \(row.quietTasks) quiet"
@@ -134,8 +129,8 @@ final class ModelActivityView: NSView {
             input.toolTip = row.inputTokens.map { chinese ? "\($0) 个输入 token（非 TPS）" : "\($0) input tokens (not TPS)" }
             output.stringValue = (row.outputTPS.map { "≈ " + String(format: "%.0f", $0) } ?? "—") + " TPS"
             output.toolTip = chinese
-                ? "近60秒内 \(row.responseSamples) 次有效响应，来自 \(row.measuredTasks) 个会话；按生成时长加权，非并发总吞吐量，也不代表所有任务均可测量。"
-                : "\(row.responseSamples) valid responses from \(row.measuredTasks) sessions in the last 60s; duration-weighted average, not total concurrent throughput or proof of complete task coverage."
+                ? "\(row.responseSamples) 次有效响应 · \(row.measuredTasks) 个生成中任务"
+                : "\(row.responseSamples) valid responses · \(row.measuredTasks) generating tasks"
             output.textColor = row.outputTPS == nil || row.generating == 0 ? secondary : outputTint
             needsLayout = true
         }
