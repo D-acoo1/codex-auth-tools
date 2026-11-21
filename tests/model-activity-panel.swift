@@ -234,4 +234,43 @@ statusDelegate.updateModelActivity(activity(99))
 check(apiButton.attributedTitle.string.contains("T ") && statusText(apiButton).hasSuffix("99 TPS"), "API TPS updates independently without replacing its balance/token display")
 statusDelegate.updateModelActivity(ModelActivitySnapshot(availability: .unavailable))
 check(statusText(apiButton).hasSuffix("— TPS") && apiButton.toolTip == nil, "unavailable activity stays unknown without a menu bar tooltip")
+// Drive the real status item through gaps; the collector snapshot remains unmodified.
+let taskA = UUID(), taskB = UUID()
+@MainActor func scoped(_ speed: Double?, _ open: Set<UUID>, _ measured: Set<UUID> = []) {
+    var state = activity(speed)
+    state.openScopes = open; state.measuredScopes = measured
+    statusDelegate.updateModelActivity(state)
+}
+@MainActor func digitsColor(_ text: String) -> NSColor {
+    let title = statusButton.attributedTitle
+    let range = (title.string as NSString).range(of: text, options: .backwards)
+    return title.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as! NSColor
+}
+scoped(68, [taskA, taskB], [taskA, taskB])
+scoped(nil, [taskA, taskB])
+check(statusText(statusButton).hasSuffix("68 TPS") && digitsColor("68 TPS") == .secondaryLabelColor,
+    "a gap keeps the same digits in the secondary color")
+scoped(68, [taskB], [taskB])
+check(statusText(statusButton).hasSuffix("68 TPS") && digitsColor("68 TPS") != .secondaryLabelColor,
+    "fresh output immediately restores the accent even at the same rounded rate")
+scoped(nil, [taskB])
+scoped(nil, [taskA])
+check(statusText(statusButton).hasSuffix("— TPS"), "an unrelated open task cannot keep the readout alive")
+scoped(100, [taskA, taskB], [taskA, taskB])
+scoped(nil, [taskA])
+check(statusText(statusButton).hasSuffix("— TPS"), "never keep a mixed rate when even one contributor has finished")
+scoped(0, [taskA], [taskA])
+scoped(nil, [taskA])
+check(statusText(statusButton).hasSuffix("0 TPS") && digitsColor("0 TPS") == .secondaryLabelColor, "a measured zero also survives a brief gap")
+RunLoop.current.run(until: Date().addingTimeInterval(3))
+scoped(nil, [taskA, taskB])
+check(statusText(statusButton).hasSuffix("0 TPS"), "a short gap does not blank the menu")
+RunLoop.current.run(until: Date().addingTimeInterval(2.3))
+check(statusText(statusButton).hasSuffix("— TPS"), "five seconds expire without new events; repeated updates do not extend the hold")
+scoped(nil, [taskA])
+check(statusText(statusButton).hasSuffix("— TPS"), "no late update resurrects expired digits")
+scoped(52, [taskA], [taskA])
+scoped(nil, [taskA])
+statusDelegate.updateModelActivity(ModelActivitySnapshot(availability: .unavailable))
+check(statusText(statusButton).hasSuffix("— TPS"), "losing monitoring clears a held number")
 print("model-activity-panel (\(L10n.shared.effectiveCode)): \(checks) assertions passed")

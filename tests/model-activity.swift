@@ -388,6 +388,8 @@ let eligiblePaths: Set<String> = [generatingFile.path, waitingFile.path, finishe
 let eligibility = ModelActivityMonitor(home: eligibilityHome, openRollouts: { eligiblePaths }, onUpdate: { _ in })
 let eligible = eligibility.collectOnce(now: now)
 expect(eligible.rows.map(\.model) == ["model-a", "model-b"], "finished-only models disappear immediately, not after the average window")
+expect(eligible.openScopes.count == 3 && eligible.measuredScopes.count == 2 &&
+    eligible.measuredScopes.isSubset(of: eligible.openScopes), "only distinct owned tasks with measured output supply menu contributors")
 let eligibleA = eligible.rows[0]
 expect(eligibleA.tasks == 2 && eligibleA.generating == 1, "same-model waiting task remains visible but is not generating")
 expect(eligibleA.outputTPS == 100 && eligibleA.responseSamples == 1 && eligibleA.measuredTasks == 1,
@@ -405,6 +407,8 @@ appendEligibility(generatingFile, line("response_item", ["type": "custom_tool_ca
 let toolWait = eligibility.collectOnce(now: epoch + 11)
 expect(toolWait.rows[0].generating == 0 && toolWait.rows[0].outputTPS == nil && toolWait.rows[0].responseSamples == 0,
     "tool execution or approval removes a task's speed without discarding its task row")
+expect(toolWait.openScopes == eligible.openScopes && toolWait.measuredScopes.count == 1 &&
+    toolWait.measuredScopes.isSubset(of: eligible.measuredScopes), "a tool wait preserves task identity but stops supplying measurements")
 expect(toolWait.overallTPS == 200, "one model waiting cannot dilute the other generating model")
 appendEligibility(generatingFile, line("response_item", ["type": "custom_tool_call_output", "call_id": "parallel-a"], at: 12))
 expect(eligibility.collectOnce(now: epoch + 12).rows[0].outputTPS == nil, "one outstanding parallel tool keeps the task out of TPS")
@@ -423,6 +427,19 @@ appendEligibility(waitingFile, line("event_msg", ["type": "turn_aborted"], at: 1
 expect(eligibility.collectOnce(now: epoch + 15).rows.isEmpty, "all terminated tasks leave no stale model rows")
 appendEligibility(generatingFile, line("turn_context", ["turn_id": "switched", "model": "model-z"], at: 16))
 let switchedEligibility = eligibility.collectOnce(now: epoch + 16)
+expect(switchedEligibility.openScopes.count == 1 && switchedEligibility.openScopes.isDisjoint(with: eligible.openScopes),
+    "a new turn on a reused rollout cannot inherit the menu display")
+var menuScope = ModelActivitySession(model: "model-a")
+menuScope.consume(start()); let firstScope = menuScope.scope
+menuScope.consume(record("turn_context", ["model": "model-b"]))
+expect(menuScope.scope != firstScope, "a model switch invalidates the old display scope within the same turn")
+let secondScope = menuScope.scope
+menuScope.consume(start("next-turn"))
+expect(menuScope.scope != secondScope, "a different turn on the same rollout has its own display scope")
+let thirdScope = menuScope.scope
+menuScope.consume(record("event_msg", ["type": "task_complete"]))
+menuScope.consume(record("turn_context", [:]))
+expect(menuScope.isOpen && menuScope.scope != thirdScope, "a legacy restart without a turn ID cannot retain a completed readout")
 expect(switchedEligibility.rows.map(\.model) == ["model-z"] && switchedEligibility.overallTPS == nil,
     "a generating task on a new model cannot inherit another model's recent samples")
 appendEligibility(generatingFile, line("token_usage_record", ["response_id": "switched-boundary", "usage": ["output_tokens": 50]], at: 16)

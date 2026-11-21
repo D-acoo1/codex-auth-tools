@@ -2928,7 +2928,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     private var timer: Timer?
     private var taskLightTimer: Timer?
     private var modelActivity = ModelActivitySnapshot()
-    private var displayedTPSReadout = ""
+    private var displayedTPSReadout = (text: "", live: false)
+    private var heldTPS: (value: Double, scopes: Set<UUID>, expiry: DispatchWorkItem)?
     private var activityMonitor: ModelActivityMonitor?
     private var outsideClickMonitor: Any?
     private var lastSummary: CodexUsageSummary?
@@ -3253,20 +3254,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         guard let button = statusItem.button else { return }
         button.image = nil
         button.attributedTitle = statusAttributedTitle(from: title)
-        displayedTPSReadout = modelTPSReadout(modelActivity.overallTPS)
+        displayedTPSReadout = menuTPSReadout
     }
 
     private func updateStatusButton(summary: CodexUsageSummary) {
         guard let button = statusItem.button else { return }
         button.image = nil
         button.attributedTitle = summary.isAPIAccount ? apiStatusAttributedTitle(summary) : statusAttributedTitle(from: summary.title)
-        displayedTPSReadout = modelTPSReadout(modelActivity.overallTPS)
+        displayedTPSReadout = menuTPSReadout
     }
 
     fileprivate func readmeSampleStatusButton(for summary: CodexUsageSummary, activity: ModelActivitySnapshot) -> NSStatusBarButton? {
         lastSummary = summary
         lastError = nil
-        modelActivity = activity
+        updateModelActivity(activity)
         taskLightState = TaskLightState(hasUnread: activity.hasUnread, hasRunning: activity.hasRunning)
         updateStatusButton(summary: summary)
         return statusItem.button
@@ -3300,12 +3301,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
         return result
     }
 
-    private func modelTPSReadout(_ value: Double?) -> String {
-        (value.map { String(format: "%.0f", $0) } ?? "—") + " TPS"
+    private var menuTPSReadout: (text: String, live: Bool) {
+        let value = modelActivity.overallTPS ?? heldTPS?.value
+        return ((value.map { String(format: "%.0f", $0) } ?? "—") + " TPS", modelActivity.overallTPS != nil)
     }
 
     private func appendModelTPS(to result: NSMutableAttributedString) {
-        let readout = modelTPSReadout(modelActivity.overallTPS)
+        let readout = menuTPSReadout.text
         let digits = readout.count - " TPS".count
         let numberFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .bold)
         let numberColor = NSColor(name: nil) { appearance in
@@ -3381,6 +3383,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
     }
 
     fileprivate func updateModelActivity(_ snapshot: ModelActivitySnapshot) {
+        // Bridge only a display gap, never feed a held number back into a sample.
+        let scopes = heldTPS?.scopes ?? modelActivity.measuredScopes
+        if snapshot.overallTPS != nil || snapshot.availability != .ready || !scopes.isSubset(of: snapshot.openScopes) {
+            heldTPS?.expiry.cancel()
+            heldTPS = nil
+        } else if heldTPS == nil, !scopes.isEmpty, let value = modelActivity.overallTPS {
+            let expiry = DispatchWorkItem { [weak self] in
+                self?.heldTPS = nil
+                self?.refreshActivityStatus()
+            }
+            heldTPS = (value, scopes, expiry)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: expiry)
+        }
         modelActivity = snapshot
         refreshActivityStatus()
         if popover.isShown {
@@ -3390,7 +3405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @un
 
     private func refreshActivityStatus() {
         let nextState = readTaskLightState()
-        let needsTitle = nextState != taskLightState || modelTPSReadout(modelActivity.overallTPS) != displayedTPSReadout
+        let needsTitle = nextState != taskLightState || menuTPSReadout != displayedTPSReadout
         taskLightState = nextState
         if needsTitle {
             if let summary = lastSummary { updateStatusButton(summary: summary) }

@@ -70,6 +70,8 @@ struct ModelActivitySnapshot: Equatable, Sendable {
     var rows: [ModelActivityRow] = []
     var hasUnread = false
     var overallTPS: Double?
+    var openScopes: Set<UUID> = []
+    var measuredScopes: Set<UUID> = []
     var hasRunning: Bool { rows.contains { $0.tasks > $0.quietTasks } }
 }
 
@@ -105,7 +107,11 @@ struct ModelActivitySession {
     private var hasAccountingBoundary = false
     private var pendingCalls = Set<String>()
     private var timingComplete = true
-    private var ended = false
+    // Ephemeral identity for one open task/model; never exported by diagnostics.
+    private(set) var scope = UUID()
+    private var ended = false {
+        didSet { if ended && !oldValue { scope = UUID() } }
+    }
 
     init(model: String) { self.model = model }
 
@@ -129,6 +135,7 @@ struct ModelActivitySession {
             return
         }
         if let id = p.turn_id, id != turnID {
+            scope = UUID()
             turnID = id
             isWaiting = false
             lastOutputAt = nil
@@ -150,6 +157,7 @@ struct ModelActivitySession {
         let at = record.type == "token_usage_record" || p.type == "token_count" || p.type == "item_completed"
             ? record.date : nil
         if let nextModel = p.model, !nextModel.isEmpty, nextModel != model {
+            scope = UUID()
             model = nextModel
             sample = nil
             invalidateTiming()
@@ -611,6 +619,7 @@ final class ModelActivityMonitor: @unchecked Sendable {
         let grouped = Dictionary(grouping: active) { $0.value.session.model }
         let subagentPaths = Set(threads.filter { !$0.userVisible }.map(\.path))
         var totalOutput = 0.0, totalDuration = 0.0
+        var measuredScopes = Set<UUID>()
         let rows = grouped.map { model, members -> ModelActivityRow in
             let generating = members.filter {
                 guard !$0.value.session.isWaiting, let at = $0.value.session.lastOutputAt,
@@ -622,10 +631,12 @@ final class ModelActivityMonitor: @unchecked Sendable {
             // Retain smoothing history, but only the current model of a task
             // that is generating now may contribute to either TPS readout.
             let responses = generating.flatMap { member in
-                member.value.session.recentSamples.filter { $0.model == model && now >= $0.at }.map { (member.key, $0) }
+                member.value.session.recentSamples.filter { $0.model == model && now >= $0.at }.map { (member.value.session.scope, $0) }
             }
             let duration = responses.reduce(0.0) { $0 + ($1.1.duration ?? 0) }
             let output = responses.reduce(0.0) { $0 + Double($1.1.output) }
+            let contributors = Set(responses.map { $0.0 })
+            measuredScopes.formUnion(contributors)
             totalOutput += output
             totalDuration += duration
             return ModelActivityRow(model: model.isEmpty ? "Codex" : model, tasks: members.count,
@@ -633,7 +644,7 @@ final class ModelActivityMonitor: @unchecked Sendable {
                 inputTokens: inputs.isEmpty ? nil : inputs.reduce(0, +),
                 inputTasks: inputs.count,
                 outputTPS: duration > 0 ? output / duration : nil,
-                measuredTasks: Set(responses.map { $0.0 }).count,
+                measuredTasks: contributors.count,
                 quietTasks: writerPaths == nil ? members.filter { now - $0.value.modifiedAt > Self.activeSeconds }.count : 0,
                 responseSamples: responses.count,
                 subagentTasks: members.filter { subagentPaths.contains($0.key) }.count,
@@ -642,7 +653,8 @@ final class ModelActivityMonitor: @unchecked Sendable {
         let hasUnread = (!available && threads.isEmpty && !unread.isEmpty)
             || threads.contains { $0.userVisible && unread.contains($0.id) && now >= $0.updatedAt && now - $0.updatedAt <= 86_400 }
         return ModelActivitySnapshot(availability: available ? .ready : .unavailable, rows: rows, hasUnread: hasUnread,
-            overallTPS: totalDuration > 0 ? totalOutput / totalDuration : nil)
+            overallTPS: totalDuration > 0 ? totalOutput / totalDuration : nil,
+            openScopes: Set(active.values.map { $0.session.scope }), measuredScopes: measuredScopes)
     }
 
     private func publish(now: TimeInterval) {
