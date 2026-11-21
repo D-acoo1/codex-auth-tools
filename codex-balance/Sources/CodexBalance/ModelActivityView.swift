@@ -110,8 +110,8 @@ final class ModelActivityView: NSView {
             name.stringValue = row.model
             name.toolTip = row.model
             status.stringValue = chinese
-                ? "\(row.tasks) 任务 · " + (row.generating == 0 ? "工具等待" : "\(row.generating) 生成中")
-                : "\(row.tasks) task\(row.tasks == 1 ? "" : "s") · " + (row.generating == 0 ? "tools" : "\(row.generating) generating")
+                ? "\(row.tasks) 任务 · " + (row.generating == 0 ? (row.toolWaitingTasks == row.tasks ? "工具等待" : "等待输出") : "\(row.generating) 生成中")
+                : "\(row.tasks) task\(row.tasks == 1 ? "" : "s") · " + (row.generating == 0 ? (row.toolWaitingTasks == row.tasks ? "tools" : "awaiting output") : "\(row.generating) generating")
             if row.subagentTasks > 0 {
                 let main = row.tasks - row.subagentTasks
                 status.stringValue = chinese

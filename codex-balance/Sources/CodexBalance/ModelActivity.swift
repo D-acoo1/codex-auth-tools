@@ -12,6 +12,7 @@ struct ActivityRecord: Decodable {
     struct Usage: Decodable {
         let input_tokens: Int?
         let output_tokens: Int?
+        let reasoning_output_tokens: Int?
     }
     struct Info: Decodable {
         let last_token_usage: Usage?
@@ -60,6 +61,7 @@ struct ModelActivityRow: Equatable, Sendable {
     var quietTasks: Int = 0
     var responseSamples: Int = 0
     var subagentTasks: Int = 0
+    var toolWaitingTasks: Int = 0
 }
 
 struct ModelActivitySnapshot: Equatable, Sendable {
@@ -92,7 +94,11 @@ struct ModelActivitySession {
     var sample: Sample?
     private(set) var recentSamples: [Sample] = []
     private var turnID: String?
-    private var intervals: [(Double, Double)] = []
+    private var intervals: [(start: Double, end: Double, reasoning: Bool)] = []
+    private var hasOtherOutput = false
+    private var reasoningItems = 0
+    private var textItems = 0
+    private(set) var lastOutputAt: TimeInterval?
     private var lastLegacyUsageKey: String?
     private var usesNativeUsage = false
     private var responseIDs: [String] = []
@@ -109,12 +115,13 @@ struct ModelActivitySession {
 
     mutating func invalidateTiming() {
         intervals.removeAll(keepingCapacity: true)
+        lastOutputAt = nil
         timingComplete = false
     }
 
     mutating func consume(_ record: ActivityRecord) {
         guard let p = record.payload else {
-            if record.type == "turn_context" { isOpen = true; ended = false }
+            if record.type == "turn_context" { isOpen = true; ended = false; lastOutputAt = nil }
             else if record.type == "token_usage_record" {
                 invalidateTiming()
                 hasAccountingBoundary = false
@@ -123,6 +130,10 @@ struct ModelActivitySession {
         }
         if let id = p.turn_id, id != turnID {
             turnID = id
+            isWaiting = false
+            lastOutputAt = nil
+            hasOtherOutput = false
+            reasoningItems = 0; textItems = 0
             intervals.removeAll(keepingCapacity: true)
             sample = nil
             lastLegacyUsageKey = nil
@@ -145,7 +156,8 @@ struct ModelActivitySession {
         }
         if record.type == "turn_context" || (record.type == "event_msg" && p.type == "task_started") {
             isOpen = true
-            isWaiting = false
+            lastOutputAt = nil
+            isWaiting = !pendingCalls.isEmpty
             ended = false
             // A complete turn start establishes the first request boundary.
             hasAccountingBoundary = true
@@ -156,14 +168,15 @@ struct ModelActivitySession {
                 isOpen = false
                 isWaiting = false
                 ended = true
+                lastOutputAt = nil
                 pendingCalls.removeAll(keepingCapacity: true)
             case "item_completed":
                 if ["Reasoning", "AgentMessage", "Plan"].contains(p.item?.type ?? "") {
                     if !ended { isOpen = true }
-                    isWaiting = false
                     if let start = p.started_at_ms, let end = p.completed_at_ms,
                        start > 0, end > start, let at, end / 1000 <= at + 5, intervals.count < 128 {
-                        intervals.append((start / 1000, end / 1000))
+                        intervals.append((start / 1000, end / 1000, p.item?.type == "Reasoning"))
+                        if !ended && !isWaiting { lastOutputAt = end / 1000 }
                     } else { invalidateTiming() }
                 } else if p.item?.type == "ContextCompaction" {
                     invalidateTiming()
@@ -174,6 +187,8 @@ struct ModelActivitySession {
         if record.type == "response_item" {
             switch p.type {
             case "function_call", "custom_tool_call", "tool_search_call":
+                hasOtherOutput = true
+                lastOutputAt = nil
                 if !ended {
                     isOpen = true
                     isWaiting = true
@@ -181,17 +196,28 @@ struct ModelActivitySession {
                 }
             case "function_call_output", "custom_tool_call_output", "tool_search_output":
                 if !ended { isOpen = true }
+                lastOutputAt = nil
                 if let id = p.call_id { pendingCalls.remove(id) }
                 isWaiting = !pendingCalls.isEmpty
             case "reasoning":
-                if !ended { isOpen = true }
-                isWaiting = false
-            default: break
+                reasoningItems += 1
+                if !ended && !isWaiting { isOpen = true; lastOutputAt = record.date }
+            case "message":
+                if p.role == "assistant" {
+                    textItems += 1
+                    if !ended && !isWaiting { isOpen = true; lastOutputAt = record.date }
+                }
+            default:
+                // Unsupported output (e.g. a hosted tool) has no measured text interval.
+                hasOtherOutput = true
+                lastOutputAt = nil
             }
         }
+        if record.type == "event_msg", p.type == "agent_message", !ended, !isWaiting { lastOutputAt = record.date }
         if p.type == "agent_message" || (record.type == "response_item" && p.type == "message") {
             if p.phase == "final_answer", p.role == nil || p.role == "assistant" {
                 isOpen = false; isWaiting = false; ended = true
+                lastOutputAt = nil
                 pendingCalls.removeAll(keepingCapacity: true)
             }
         }
@@ -235,10 +261,30 @@ struct ModelActivitySession {
             if key == lastLegacyUsageKey, total != nil || intervals.isEmpty { return }
             lastLegacyUsageKey = key
         }
-        let duration = Self.unionDuration(intervals)
+        // Settle accounting separately from lifecycle: a completed response does
+        // not prove the next request has started producing output.
+        lastOutputAt = nil
+        let reasoning = intervals.filter { $0.reasoning }
+        let textCount = intervals.count - reasoning.count
+        var measured = output
+        var duration: Double = 0
+        if hasAccountingBoundary, timingComplete, let r = usage.reasoning_output_tokens,
+           (0...output).contains(r), reasoningItems <= reasoning.count {
+            // Never charge tool arguments or untimed text to a reasoning span.
+            // If only the reasoning bucket is attributable, use its counter AND
+            // its intervals; do not mix a partial denominator with full output.
+            if !hasOtherOutput && textItems <= textCount && (r == 0 || !reasoning.isEmpty)
+                && (output == r || textCount > 0) {
+                let matched = intervals.filter { output == 0 || ($0.reasoning ? r > 0 : output > r) }
+                duration = Self.unionDuration(matched.map { ($0.start, $0.end) })
+            } else if r > 0 {
+                measured = r
+                duration = Self.unionDuration(reasoning.map { ($0.start, $0.end) })
+            }
+        }
         let measurement = Sample(at: at, model: model,
-            input: usage.input_tokens.flatMap { $0 >= 0 ? $0 : nil }, output: output,
-            duration: hasAccountingBoundary && timingComplete && duration > 0 ? duration : nil)
+            input: usage.input_tokens.flatMap { $0 >= 0 ? $0 : nil }, output: measured,
+            duration: duration > 0 ? duration : nil)
         sample = measurement
         pruneSamples(now: at)
         if measurement.duration != nil {
@@ -246,6 +292,8 @@ struct ModelActivitySession {
             if recentSamples.count > Self.maximumSamples { recentSamples.removeFirst() }
         }
         intervals.removeAll(keepingCapacity: true)
+        hasOtherOutput = false
+        reasoningItems = 0; textItems = 0
         hasAccountingBoundary = true
         timingComplete = true
     }
@@ -565,7 +613,9 @@ final class ModelActivityMonitor: @unchecked Sendable {
         var totalOutput = 0.0, totalDuration = 0.0
         let rows = grouped.map { model, members -> ModelActivityRow in
             let generating = members.filter {
-                !$0.value.session.isWaiting && (writerPaths != nil || now - $0.value.modifiedAt <= Self.activeSeconds)
+                guard !$0.value.session.isWaiting, let at = $0.value.session.lastOutputAt,
+                      now >= at, now - at <= Self.sampleSeconds else { return false }
+                return writerPaths != nil || now - $0.value.modifiedAt <= Self.activeSeconds
             }
             let samples = members.compactMap(\.value.session.sample).filter { now >= $0.at && now - $0.at <= Self.sampleSeconds }
             let inputs = samples.compactMap(\.input)
@@ -586,7 +636,8 @@ final class ModelActivityMonitor: @unchecked Sendable {
                 measuredTasks: Set(responses.map { $0.0 }).count,
                 quietTasks: writerPaths == nil ? members.filter { now - $0.value.modifiedAt > Self.activeSeconds }.count : 0,
                 responseSamples: responses.count,
-                subagentTasks: members.filter { subagentPaths.contains($0.key) }.count)
+                subagentTasks: members.filter { subagentPaths.contains($0.key) }.count,
+                toolWaitingTasks: members.filter { $0.value.session.isWaiting }.count)
         }.sorted { $0.model.localizedStandardCompare($1.model) == .orderedAscending }
         let hasUnread = (!available && threads.isEmpty && !unread.isEmpty)
             || threads.contains { $0.userVisible && unread.contains($0.id) && now >= $0.updatedAt && now - $0.updatedAt <= 86_400 }

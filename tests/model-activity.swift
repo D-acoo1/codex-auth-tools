@@ -25,8 +25,8 @@ formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     record("event_msg", ["type": "item_completed", "item": ["type": type],
         "started_at_ms": (epoch + from) * 1000, "completed_at_ms": (epoch + to) * 1000])
 }
-@MainActor func usage(total: Int = 1400, output: Int = 1400, response: String = "response-a", legacy: Bool = false, at: Double = 8) -> ActivityRecord {
-    let last = ["input_tokens": 24000, "cached_input_tokens": 22000, "output_tokens": output, "reasoning_output_tokens": 1200]
+@MainActor func usage(total: Int = 1400, output: Int = 1400, reasoning: Int? = nil, response: String = "response-a", legacy: Bool = false, at: Double = 8) -> ActivityRecord {
+    let last = ["input_tokens": 24000, "cached_input_tokens": 22000, "output_tokens": output, "reasoning_output_tokens": reasoning ?? output]
     let all = ["output_tokens": total, "input_tokens": total + 50000]
     return legacy
         ? record("event_msg", ["type": "token_count", "info": ["last_token_usage": last, "total_token_usage": all]], at: at)
@@ -35,7 +35,7 @@ formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 @MainActor func measuredSession() -> ModelActivitySession {
     var s = ModelActivitySession(model: "model-a")
     s.consume(start()); s.consume(item(from: 0, to: 4))
-    s.consume(item("AgentMessage", from: 5, to: 8)); s.consume(usage())
+    s.consume(item("AgentMessage", from: 5, to: 8)); s.consume(usage(reasoning: 1200))
     return s
 }
 
@@ -128,6 +128,42 @@ overflow.consume(item(from: 1, to: 4))
 overflow.consume(usage(total: 2200, output: 800, response: "overflow"))
 expect(overflow.sample?.tps == nil && overflow.recentSamples.count == 1,
     "item overflow stays invalid and preserves earlier valid history")
+
+// Tool responses may have a timed reasoning item but no timing for the generated
+// call arguments. Test both accounting carriers with the same response shape.
+for legacy in [false, true] {
+    for (reasoning, expected) in [(0, Double?.none), (460, 115.0), (990, nil)] {
+        var mixed = ModelActivitySession(model: "model-a")
+        mixed.consume(start())
+        mixed.consume(item(from: 0, to: 4))
+        mixed.consume(item("AgentMessage", from: 4, to: 8))
+        mixed.consume(record("response_item", ["type": "custom_tool_call", "call_id": "a"]))
+        mixed.consume(usage(output: 989, reasoning: reasoning, legacy: legacy))
+        expect(mixed.sample?.tps == expected, "mixed scopes never inflate TPS; invalid breakdowns are rejected")
+        expect(mixed.sample?.input == 24000, "unmeasured output does not discard input counters")
+        expect(mixed.lastOutputAt == nil, "accounting cannot signal generation")
+        mixed.consume(record("response_item", ["type": "reasoning"]))
+        expect(mixed.isWaiting && mixed.lastOutputAt == nil, "late output cannot bypass a pending call")
+        mixed.consume(record("response_item", ["type": "custom_tool_call_output", "call_id": "a"]))
+        expect(!mixed.isWaiting && mixed.lastOutputAt == nil, "tool return alone has no output evidence")
+    }
+}
+var mismatch = ModelActivitySession(model: "model-a")
+mismatch.consume(start())
+mismatch.consume(item(from: 0, to: 6.464))
+mismatch.consume(usage(output: 989, reasoning: 0))
+expect(mismatch.recentSamples.isEmpty, "989 non-reasoning tokens cannot be divided by 6.464 seconds of reasoning")
+mismatch.consume(item(from: 0, to: 4))
+mismatch.consume(record("token_usage_record", ["response_id": "no-split", "usage": ["output_tokens": 989]]))
+expect(mismatch.recentSamples.isEmpty, "a missing counter is not zero or evidence of a matching scope")
+mismatch.consume(item("AgentMessage", from: 4, to: 6))
+mismatch.consume(usage(output: 200, reasoning: 0, response: "text-only"))
+expect(mismatch.sample?.tps == 100, "complete text-only output recovers at the next boundary")
+mismatch.consume(item(from: 0, to: 2))
+mismatch.consume(record("response_item", ["type": "reasoning"]))
+mismatch.consume(record("response_item", ["type": "reasoning"]))
+mismatch.consume(usage(output: 300, response: "missing-item"))
+expect(mismatch.sample?.tps == nil, "an untimed reasoning item invalidates the bucket")
 
 // Cumulative native and legacy totals are different namespaces. A mirror may
 // arrive after timing for the next response, so comparing those totals is unsafe.
@@ -292,9 +328,13 @@ var db: OpaquePointer?
 expect(sqlite3_open(dbURL.path, &db) == SQLITE_OK, "create fixture database")
 @MainActor func sql(_ value: String) { expect(sqlite3_exec(db, value, nil, nil, nil) == SQLITE_OK, "SQL fixture") }
 sql("CREATE TABLE threads (id TEXT, updated_at INTEGER, rollout_path TEXT, archived INTEGER, model TEXT, thread_source TEXT, agent_role TEXT)")
+@MainActor func evidence(_ seconds: Double) -> Data {
+    line("event_msg", ["type": "agent_message", "phase": "commentary"], at: seconds)
+}
 var synthetic = line("turn_context", ["model": "model-a", "turn_id": "fixture-turn"])
 synthetic += line("event_msg", ["type": "item_completed", "item": ["type": "Reasoning"], "started_at_ms": epoch * 1000, "completed_at_ms": (epoch + 4) * 1000])
-synthetic += line("token_usage_record", ["response_id": "r", "usage": ["input_tokens": 24000, "output_tokens": 400], "thread_token_usage": ["input_tokens": 24000, "output_tokens": 400]])
+synthetic += line("token_usage_record", ["response_id": "r", "usage": ["reasoning_output_tokens": 400, "input_tokens": 24000, "output_tokens": 400], "thread_token_usage": ["input_tokens": 24000, "output_tokens": 400]])
+synthetic += evidence(8)
 let first = home.appendingPathComponent("first.jsonl")
 try! synthetic.write(to: first)
 let second = home.appendingPathComponent("second.jsonl")
@@ -326,7 +366,8 @@ expect(sqlite3_exec(eligibilityDB, "CREATE TABLE threads (id TEXT, updated_at IN
     var data = line("turn_context", ["model": model, "turn_id": id], at: 0)
         + line("event_msg", ["type": "item_completed", "item": ["type": "Reasoning"],
             "started_at_ms": epoch * 1000, "completed_at_ms": (epoch + seconds) * 1000], at: seconds)
-        + line("token_usage_record", ["response_id": id, "usage": ["output_tokens": output]], at: 8)
+        + line("token_usage_record", ["response_id": id, "usage": ["reasoning_output_tokens": output, "output_tokens": output]], at: 8)
+    data += evidence(8)
     if let terminal { data += line("event_msg", ["type": terminal], at: 9) }
     try! data.write(to: url)
     expect(sqlite3_exec(eligibilityDB, "INSERT INTO threads VALUES ('\(id)', \(Int(now)), '\(url.path)', 0, '\(model)', 'user')", nil, nil, nil) == SQLITE_OK, "insert eligibility task")
@@ -355,7 +396,7 @@ expect(abs(eligible.overallTPS! - 1000.0 / 7) < 0.001,
     "only generating tasks contribute output and duration to the cross-model weighted mean")
 appendEligibility(generatingFile, line("event_msg", ["type": "item_completed", "item": ["type": "AgentMessage"],
     "started_at_ms": (epoch + 8) * 1000, "completed_at_ms": (epoch + 9) * 1000], at: 9)
-    + line("token_usage_record", ["response_id": "weighted", "usage": ["output_tokens": 300]], at: 10))
+    + line("token_usage_record", ["response_id": "weighted", "usage": ["reasoning_output_tokens": 0, "output_tokens": 300]], at: 10) + evidence(10))
 let weightedEligible = eligibility.collectOnce(now: now)
 expect(weightedEligible.rows.map(\.outputTPS) == [140, 200], "per-model means use only their generating tasks and retain unequal response durations")
 expect(weightedEligible.overallTPS == 162.5, "overall TPS is (700+600)/(5+3), not the mean or sum of model means")
@@ -368,6 +409,8 @@ expect(toolWait.overallTPS == 200, "one model waiting cannot dilute the other ge
 appendEligibility(generatingFile, line("response_item", ["type": "custom_tool_call_output", "call_id": "parallel-a"], at: 12))
 expect(eligibility.collectOnce(now: epoch + 12).rows[0].outputTPS == nil, "one outstanding parallel tool keeps the task out of TPS")
 appendEligibility(generatingFile, line("response_item", ["type": "custom_tool_call_output", "call_id": "parallel-b"], at: 13))
+expect(eligibility.collectOnce(now: epoch + 13).rows[0].outputTPS == nil, "the last tool returning is not generation")
+appendEligibility(generatingFile, evidence(13))
 expect(eligibility.collectOnce(now: epoch + 13).rows[0].outputTPS == 140,
     "resuming generation reuses that task's recent valid mean without inventing a zero")
 appendEligibility(generatingFile, line("event_msg", ["type": "task_complete"], at: 14))
@@ -385,7 +428,7 @@ expect(switchedEligibility.rows.map(\.model) == ["model-z"] && switchedEligibili
 appendEligibility(generatingFile, line("token_usage_record", ["response_id": "switched-boundary", "usage": ["output_tokens": 50]], at: 16)
     + line("event_msg", ["type": "item_completed", "item": ["type": "AgentMessage"],
     "started_at_ms": (epoch + 16) * 1000, "completed_at_ms": (epoch + 18) * 1000], at: 18)
-    + line("token_usage_record", ["response_id": "measured-zero", "usage": ["output_tokens": 0]], at: 18))
+    + line("token_usage_record", ["response_id": "measured-zero", "usage": ["reasoning_output_tokens": 0, "output_tokens": 0]], at: 18) + evidence(18))
 expect(eligibility.collectOnce(now: epoch + 18).overallTPS == 0, "a valid zero-output response is still a real zero")
 let quietEligibility = ModelActivityMonitor(home: eligibilityHome, openRollouts: { nil }, onUpdate: { _ in })
 _ = quietEligibility.collectOnce(now: epoch + 18)
@@ -435,12 +478,12 @@ let averageMonitor = ModelActivityMonitor(home: averageHome, openRollouts: { nil
 expect(averageRows(10).rows.first?.outputTPS == 100, "first valid response is immediately available")
 appendAverage(line("event_msg", ["type": "item_completed", "item": ["type": "AgentMessage"],
     "started_at_ms": (epoch + 8) * 1000, "completed_at_ms": (epoch + 9) * 1000], at: 9)
-    + line("token_usage_record", ["response_id": "weighted", "usage": ["input_tokens": 1000, "output_tokens": 300],
-        "thread_token_usage": ["input_tokens": 25000, "output_tokens": 700]], at: 12))
+    + line("token_usage_record", ["response_id": "weighted", "usage": ["reasoning_output_tokens": 0, "input_tokens": 1000, "output_tokens": 300],
+        "thread_token_usage": ["input_tokens": 25000, "output_tokens": 700]], at: 12) + evidence(12))
 expect(averageRows(12).rows.first?.outputTPS == 140, "duration-weighted average is (400+300)/(4+1), not (100+300)/2")
 expect(averageRows(12).rows.first?.responseSamples == 2, "polling does not multiply responses")
 appendAverage(line("turn_context", ["model": "model-a", "turn_id": "next-turn"], at: 13))
-expect(averageRows(13).rows.first?.outputTPS == 140, "starting another turn does not blank the average")
+expect(averageRows(13).rows.first?.outputTPS == nil, "opening a new turn does not prove output")
 appendAverage(line("response_item", ["type": "custom_tool_call", "call_id": "tool"], at: 13))
 expect(averageRows(13).rows.first?.generating == 0 && averageRows(13).rows.first?.outputTPS == nil, "tool wait excludes all samples from the displayed mean")
 appendAverage(line("event_msg", ["type": "task_complete"], at: 14))
@@ -453,6 +496,8 @@ expect(switched.rows.map(\.model) == ["model-b"] && switched.rows[0].outputTPS =
 appendAverage(line("event_msg", ["type": "turn_aborted"], at: 16))
 expect(averageRows(26).rows.isEmpty, "turn termination immediately clears displayed rates")
 appendAverage(line("turn_context", ["model": "model-a", "turn_id": "resumed"], at: 27))
+expect(averageRows(27).rows.first?.outputTPS == nil, "old history stays hidden before fresh output")
+appendAverage(evidence(27))
 expect(averageRows(27).rows.first?.outputTPS == 140, "same-model generation can resume using its own unexpired history")
 expect(averageRows(69).rows.first?.outputTPS == 300 && averageRows(69).rows.first?.responseSamples == 1, "window expiry removes only expired responses")
 expect(averageRows(73).rows.first?.tasks == 1 && averageRows(73).rows.first?.outputTPS == nil, "an active model with expired samples stays visible without a stale speed")
@@ -469,7 +514,7 @@ try! amended.write(contentsOf: line("event_msg", ["type": "item_completed", "ite
     "started_at_ms": (epoch + 10) * 1000, "completed_at_ms": (epoch + 12) * 1000], at: 14)
     + line("event_msg", ["type": "item_completed", "item": ["type": "AgentMessage"],
         "completed_at_ms": (epoch + 13) * 1000], at: 14)
-    + line("token_usage_record", ["response_id": "partial", "usage": ["output_tokens": 800]], at: 14))
+    + line("token_usage_record", ["response_id": "partial", "usage": ["output_tokens": 800]], at: 14) + evidence(14))
 let partialMean = integrityMonitor.collectOnce(now: epoch + 14)
 expect(partialMean.rows.first?.outputTPS == 100 && partialMean.rows.first?.responseSamples == 2,
     "an invalid response leaves the observed monitor's prior weighted mean intact")
@@ -477,7 +522,7 @@ try! amended.write(contentsOf: line("event_msg", ["type": "item_completed", "ite
     "started_at_ms": (epoch + 14) * 1000, "completed_at_ms": (epoch + 16) * 1000], at: 16)
     + line("event_msg", ["type": "token_count", "info": ["last_token_usage": ["output_tokens": 800],
         "total_token_usage": ["output_tokens": 1200]]], at: 16)
-    + line("token_usage_record", ["response_id": "recovered", "usage": ["output_tokens": 400]], at: 16))
+    + line("token_usage_record", ["response_id": "recovered", "usage": ["reasoning_output_tokens": 0, "output_tokens": 400]], at: 16) + evidence(16))
 try! amended.close()
 let recoveredMean = integrityMonitor.collectOnce(now: epoch + 16)
 expect(recoveredMean.rows.first?.outputTPS == 120 && recoveredMean.rows.first?.responseSamples == 3,
@@ -513,7 +558,7 @@ for terminal in ["task_complete", "turn_aborted", "task_failed"] {
 var finalAnswer = measuredSession()
 finalAnswer.consume(record("response_item", ["type": "message", "role": "assistant", "phase": "final_answer"]))
 finalAnswer.consume(item("AgentMessage", from: 5, to: 8))
-finalAnswer.consume(usage(total: 1600, output: 200, response: "late-accounting"))
+finalAnswer.consume(usage(total: 1600, output: 200, reasoning: 0, response: "late-accounting"))
 expect(!finalAnswer.isOpen, "final-answer accounting order never reopens a finished task")
 expect(finalAnswer.recentSamples.count == 2, "finished response accounting may still update the recent average")
 
@@ -521,7 +566,7 @@ expect(finalAnswer.recentSamples.count == 2, "finished response accounting may s
 try! (line("turn_context", ["model": "model-a", "turn_id": "live"])
     + line("event_msg", ["type": "item_completed", "item": ["type": "Reasoning"],
         "started_at_ms": epoch * 1000, "completed_at_ms": (epoch + 4) * 1000])
-    + line("token_usage_record", ["response_id": "live", "usage": ["output_tokens": 800]])).write(to: first)
+    + line("token_usage_record", ["response_id": "live", "usage": ["reasoning_output_tokens": 800, "output_tokens": 800]]) + evidence(8)).write(to: first)
 var observed: [ModelActivitySnapshot] = []
 let live = ModelActivityMonitor(home: home, openRollouts: { nil }) { observed.append($0) }
 live.start()

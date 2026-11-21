@@ -43,7 +43,11 @@ let chinese = L10n.shared.effectiveCode.hasPrefix("zh")
     try bitmap.representation(using: .png, properties: [:])!.write(
         to: output.appendingPathComponent("native-corners-\(mode.rawValue).png"))
     let scale = CGFloat(image.width) / window.frame.width
-    let expected: [CGFloat] = mode == .light ? [0.970, 0.950, 0.910] : [0.07, 0.07, 0.07]
+    // Compare the captured pixels and the calibrated AppKit fill in the same color space.
+    let fill = mode == .light ? NSColor(calibratedRed: 0.970, green: 0.950, blue: 0.910, alpha: 1)
+                              : NSColor(calibratedWhite: 0.07, alpha: 1)
+    let reference = fill.usingColorSpace(.sRGB)!
+    let expected = [reference.redComponent, reference.greenComponent, reference.blueComponent]
     for point in [NSPoint(x: 8, y: 8), NSPoint(x: 402, y: 8),
                   NSPoint(x: 8, y: 516), NSPoint(x: 402, y: 516)] {
         let p = surface.convert(point, to: nil)
@@ -124,12 +128,19 @@ for mode in [CardThemeMode.dark, .light] {
     try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("quiet-\(mode.rawValue).png"))
     controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: [
         ModelActivityRow(model: "waiting-model", tasks: 2, generating: 0, inputTokens: nil, inputTasks: 0,
-            outputTPS: nil, measuredTasks: 0)
+            outputTPS: nil, measuredTasks: 0, toolWaitingTasks: 2)
     ]))
     let waitingLabels = allViews(activity).compactMap { $0 as? NSTextField }
     check(waitingLabels.contains { $0.stringValue == (chinese ? "2 任务 · 工具等待" : "2 tasks · tools") }, "waiting tasks keep their state visible")
     check(waitingLabels.contains { $0.stringValue == "— TPS" } && !waitingLabels.contains { $0.stringValue.contains("≈") }, "waiting tasks have no retained speed")
     try writeReadmeSamplePNG(view: root, to: output.appendingPathComponent("waiting-\(mode.rawValue).png"))
+    controller.updateModelActivity(ModelActivitySnapshot(availability: .ready, rows: [
+        ModelActivityRow(model: "between-requests", tasks: 1, generating: 0, inputTokens: nil,
+            inputTasks: 0, outputTPS: nil, measuredTasks: 0)
+    ]))
+    check(allViews(activity).compactMap { $0 as? NSTextField }.contains {
+        $0.stringValue.contains(chinese ? "等待输出" : "awaiting output")
+    }, "an open turn without output is not called a tool wait")
 }
 let statusDelegate = AppDelegate()
 defer { statusDelegate.removeReadmeSampleStatusItem() }
