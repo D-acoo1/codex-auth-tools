@@ -457,6 +457,46 @@ for url in [generatingFile, orphanFile] {
 let quietSnapshot = quietEligibility.collectOnce(now: epoch + 30)
 expect(!quietSnapshot.rows.isEmpty && quietSnapshot.rows.allSatisfy { $0.quietTasks == $0.tasks && $0.generating == 0 && $0.outputTPS == nil }
     && quietSnapshot.overallTPS == nil, "quiet log-only tasks cannot carry a live speed even before their samples expire")
+// A live stream may be halfway through a response with nothing new in the rollout.
+let streamFile = eligibilityFile("stream", output: 400, seconds: 4)
+appendEligibility(streamFile, line("response_item", ["type":"custom_tool_call_output", "call_id":"prior-tool"], at: 10))
+let streamPath = streamFile.path
+let streamMonitor = ModelActivityMonitor(home: eligibilityHome, openRollouts: { [streamPath] }, onUpdate: { _ in })
+@MainActor func stream(_ t: Double) -> ModelActivitySnapshot { streamMonitor.collectOnce(now: epoch + t) }
+expect(stream(11).overallTPS == nil, "a tool return with a recent sample is not generation")
+let traceURL = eligibilityHome.appendingPathComponent("logs_2.sqlite")
+expect(!FileManager.default.fileExists(atPath: traceURL.path), "optional read does not create a trace database")
+var logs: OpaquePointer?
+expect(sqlite3_open(traceURL.path, &logs) == SQLITE_OK, "open synthetic trace")
+expect(sqlite3_exec(logs, "CREATE TABLE logs(id INTEGER PRIMARY KEY, ts INTEGER, ts_nanos INTEGER, thread_id TEXT, target TEXT, feedback_log_body TEXT); CREATE INDEX idx_logs_thread_id_ts ON logs(thread_id,ts DESC,ts_nanos DESC,id DESC)", nil, nil, nil) == SQLITE_OK, "create indexed trace")
+@MainActor func mark(_ t: Int, _ kind: String = "reasoning", thread: String = "stream", turn: String = "stream", model: String = "model-a", done: Bool = false) {
+    let phase = done ? ":receiving_stream:handle_responses{from=\"output_item_done\"}:handle_output_item_done" : ""
+    let body = "run:try_run_sampling_request{turn_id=\(turn) model=\(model)}\(phase): Output item item_type=\"\(kind)\" item_id=\"synthetic\""
+    expect(sqlite3_exec(logs, "INSERT INTO logs(ts,ts_nanos,thread_id,target,feedback_log_body) VALUES(\(Int(epoch)+t),0,'\(thread)','codex_core::stream_events_utils','\(body)')", nil, nil, nil) == SQLITE_OK, "append trace metadata")
+}
+mark(9); expect(stream(11).overallTPS == nil, "a stale start cannot cross the tool-return boundary")
+mark(11, thread: "another"); mark(11, turn: "different"); mark(11, model: "different")
+expect(stream(12).overallTPS == nil, "only this thread, turn and model can reactivate its own samples")
+mark(12)
+let early = stream(13)
+expect(early.rows.first?.generating == 1 && early.rows.first?.responseSamples == 1 && early.overallTPS == 100,
+    "the open reasoning item shows the existing 400/4 average before it finishes or settles")
+mark(14, done: true); expect(stream(15).overallTPS == nil, "an output_item_done trace is not another start")
+mark(15,"message"); expect(stream(16).overallTPS == 100, "assistant text starts work just like reasoning")
+mark(16,"custom_tool_call"); expect(stream(17).overallTPS == nil, "tool argument generation cannot revive a model speed")
+mark(17); appendEligibility(streamFile, line("response_item", ["type":"function_call","call_id":"wait"], at: 18))
+mark(19); expect(stream(20).rows.first?.generating == 0, "a trace cannot override a tool wait")
+appendEligibility(streamFile, line("response_item", ["type":"function_call_output","call_id":"wait"], at: 21))
+expect(stream(22).overallTPS == nil, "returning from the tool cannot replay the preceding start")
+mark(22)
+expect(stream(23).overallTPS == 100, "new output after tool return restores the eligible mean")
+expect(stream(90).rows.first?.generating == 0 && stream(90).overallTPS == nil, "an unmatched start expires with the observation window")
+mark(91); let unmeasuredStream = stream(92)
+expect(unmeasuredStream.rows.first?.generating == 1 && unmeasuredStream.overallTPS == nil,
+    "a real stream without a measurement is not zero and cannot invent TPS")
+appendEligibility(streamFile, line("event_msg", ["type":"task_complete"], at: 93)); mark(94)
+expect(stream(95).rows.isEmpty, "late stream events cannot reopen a completed task")
+sqlite3_close(logs)
 sqlite3_close(eligibilityDB)
 var snapshot = monitor.collectOnce(now: now)
 expect(snapshot.availability == .ready && snapshot.rows.count == 2, "same model grouped, different models separated")

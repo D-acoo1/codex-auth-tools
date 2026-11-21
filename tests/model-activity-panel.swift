@@ -1,3 +1,4 @@
+import SQLite3
 
 // Synthetic, production-view acceptance. Requires a graphical macOS session.
 _ = NSApplication.shared
@@ -273,4 +274,45 @@ scoped(52, [taskA], [taskA])
 scoped(nil, [taskA])
 statusDelegate.updateModelActivity(ModelActivitySnapshot(availability: .unavailable))
 check(statusText(statusButton).hasSuffix("— TPS"), "losing monitoring clears a held number")
+// Exercise the full collector -> menu callback while the rollout stays unchanged.
+@MainActor func checkStreamingMenu() throws {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(at: home, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: home) }
+    func sql(_ file: String, _ statement: String) {
+        var db: OpaquePointer?
+        check(sqlite3_open(home.appendingPathComponent(file).path, &db) == SQLITE_OK, "open synthetic activity fixture")
+        defer { sqlite3_close(db) }
+        check(sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK, "write synthetic activity fixture")
+    }
+    let path = home.appendingPathComponent("task.jsonl").resolvingSymlinksInPath().path
+    let base = Int(Date().timeIntervalSince1970) - 12
+    func event(_ sec: Int, _ type: String, _ payload: [String: Any]) throws -> Data {
+        let stamp = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(base + sec)))
+        return try JSONSerialization.data(withJSONObject: ["timestamp":stamp, "type":type, "payload":payload]) + Data([10])
+    }
+    let rollout = try event(0, "turn_context", ["turn_id":"turn", "model":"demo"])
+        + event(4, "event_msg", ["type":"item_completed", "item":["type":"Reasoning"],
+            "started_at_ms":base * 1000, "completed_at_ms":(base+4) * 1000])
+        + event(5, "token_usage_record", ["response_id":"previous", "usage":["output_tokens":400, "reasoning_output_tokens":400]])
+    try rollout.write(to: URL(fileURLWithPath: path))
+    sql("state_5.sqlite", "CREATE TABLE threads(id,updated_at,rollout_path,model); INSERT INTO threads VALUES('chat',\(base),'\(path.replacingOccurrences(of: "'", with: "''"))','demo')")
+    sql("logs_2.sqlite", "CREATE TABLE logs(id INTEGER PRIMARY KEY, ts, ts_nanos, target, thread_id, feedback_log_body); CREATE INDEX idx_logs_thread_id_ts ON logs(thread_id,ts DESC,ts_nanos DESC,id DESC)")
+    let collector = ModelActivityMonitor(home: home, openRollouts: { [path] }) { statusDelegate.updateModelActivity($0) }
+    statusDelegate.updateModelActivity(collector.collectOnce())
+    check(statusText(statusButton).hasSuffix("— TPS"), "before an output start the measured task is not displayed")
+    collector.start()
+    defer { collector.stop() }
+    sql("logs_2.sqlite", "INSERT INTO logs VALUES(1,\(base+10),0,'codex_core::stream_events_utils','chat','run:try_run_sampling_request{turn_id=turn model=demo}: Output item item_type=\"reasoning\" item_id=\"one\"')")
+    let timeout = Date().addingTimeInterval(5)
+    while !statusText(statusButton).hasSuffix("100 TPS") && Date() < timeout {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
+    check(statusText(statusButton).hasSuffix("100 TPS") && digitsColor("100 TPS") != .secondaryLabelColor,
+        "an actual menu button lights up before the rollout records the current item's completion")
+    let unchanged = try Data(contentsOf: URL(fileURLWithPath: path))
+    check(unchanged == rollout, "no new rollout output or settlement was needed to restore the number")
+}
+try checkStreamingMenu()
 print("model-activity-panel (\(L10n.shared.effectiveCode)): \(checks) assertions passed")

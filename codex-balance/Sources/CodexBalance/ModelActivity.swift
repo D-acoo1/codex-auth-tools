@@ -95,7 +95,8 @@ struct ModelActivitySession {
     var isWaiting = false
     var sample: Sample?
     private(set) var recentSamples: [Sample] = []
-    private var turnID: String?
+    private(set) var turnID: String?
+    private(set) var streamBoundaryAt: TimeInterval?
     private var intervals: [(start: Double, end: Double, reasoning: Bool)] = []
     private var hasOtherOutput = false
     private var reasoningItems = 0
@@ -119,15 +120,20 @@ struct ModelActivitySession {
         recentSamples.removeAll { now - $0.at > Self.averageSeconds }
     }
 
+    private mutating func endOutput(at boundary: TimeInterval?) {
+        lastOutputAt = nil
+        streamBoundaryAt = boundary
+    }
+
     mutating func invalidateTiming() {
         intervals.removeAll(keepingCapacity: true)
-        lastOutputAt = nil
+        endOutput(at: nil)
         timingComplete = false
     }
 
     mutating func consume(_ record: ActivityRecord) {
         guard let p = record.payload else {
-            if record.type == "turn_context" { isOpen = true; ended = false; lastOutputAt = nil }
+            if record.type == "turn_context" { isOpen = true; ended = false; endOutput(at: record.date) }
             else if record.type == "token_usage_record" {
                 invalidateTiming()
                 hasAccountingBoundary = false
@@ -138,7 +144,7 @@ struct ModelActivitySession {
             scope = UUID()
             turnID = id
             isWaiting = false
-            lastOutputAt = nil
+            endOutput(at: record.date)
             hasOtherOutput = false
             reasoningItems = 0; textItems = 0
             intervals.removeAll(keepingCapacity: true)
@@ -164,7 +170,7 @@ struct ModelActivitySession {
         }
         if record.type == "turn_context" || (record.type == "event_msg" && p.type == "task_started") {
             isOpen = true
-            lastOutputAt = nil
+            endOutput(at: record.date)
             isWaiting = !pendingCalls.isEmpty
             ended = false
             // A complete turn start establishes the first request boundary.
@@ -176,7 +182,7 @@ struct ModelActivitySession {
                 isOpen = false
                 isWaiting = false
                 ended = true
-                lastOutputAt = nil
+                endOutput(at: record.date)
                 pendingCalls.removeAll(keepingCapacity: true)
             case "item_completed":
                 if ["Reasoning", "AgentMessage", "Plan"].contains(p.item?.type ?? "") {
@@ -196,7 +202,7 @@ struct ModelActivitySession {
             switch p.type {
             case "function_call", "custom_tool_call", "tool_search_call":
                 hasOtherOutput = true
-                lastOutputAt = nil
+                endOutput(at: record.date)
                 if !ended {
                     isOpen = true
                     isWaiting = true
@@ -204,7 +210,7 @@ struct ModelActivitySession {
                 }
             case "function_call_output", "custom_tool_call_output", "tool_search_output":
                 if !ended { isOpen = true }
-                lastOutputAt = nil
+                endOutput(at: record.date)
                 if let id = p.call_id { pendingCalls.remove(id) }
                 isWaiting = !pendingCalls.isEmpty
             case "reasoning":
@@ -218,14 +224,14 @@ struct ModelActivitySession {
             default:
                 // Unsupported output (e.g. a hosted tool) has no measured text interval.
                 hasOtherOutput = true
-                lastOutputAt = nil
+                endOutput(at: record.date)
             }
         }
         if record.type == "event_msg", p.type == "agent_message", !ended, !isWaiting { lastOutputAt = record.date }
         if p.type == "agent_message" || (record.type == "response_item" && p.type == "message") {
             if p.phase == "final_answer", p.role == nil || p.role == "assistant" {
                 isOpen = false; isWaiting = false; ended = true
-                lastOutputAt = nil
+                endOutput(at: record.date)
                 pendingCalls.removeAll(keepingCapacity: true)
             }
         }
@@ -271,7 +277,7 @@ struct ModelActivitySession {
         }
         // Settle accounting separately from lifecycle: a completed response does
         // not prove the next request has started producing output.
-        lastOutputAt = nil
+        endOutput(at: at)
         let reasoning = intervals.filter { $0.reasoning }
         let textCount = intervals.count - reasoning.count
         var measured = output
@@ -501,6 +507,7 @@ final class ModelActivityMonitor: @unchecked Sendable {
     private var stopped = true
     private var flushScheduled = false
     private var lastSnapshot: ModelActivitySnapshot?
+    private var streamStarts: [UUID: TimeInterval] = [:]
     private let onUpdate: @MainActor @Sendable (ModelActivitySnapshot) -> Void
     private let openRollouts: @Sendable () -> Set<String>?
 
@@ -570,7 +577,52 @@ final class ModelActivityMonitor: @unchecked Sendable {
             }
         }
         drain()
+        refreshStreamStarts(now: now)
         if watch { publish(now: now) }
+    }
+
+    /// Rollouts can first mention reasoning/text when the item is already complete.
+    /// Recognize an open item in this turn's native trace without extracting its body.
+    private func refreshStreamStarts(now: TimeInterval) {
+        streamStarts.removeAll(keepingCapacity: true)
+        let candidates = threads.compactMap { thread -> (ActivityThread, ActivityRollout)? in
+            guard let file = files[thread.path], file.session.isOpen, !file.session.isWaiting,
+                  (writerPaths?.contains(thread.path) ?? true) else { return nil }
+            return (thread, file)
+        }
+        guard !candidates.isEmpty else { return }
+        var db: OpaquePointer?
+        defer { if let db { sqlite3_close(db) } }
+        let url = home.appendingPathComponent("logs_2.sqlite")
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else { return }
+        // The per-thread index and inner LIMIT bound the work even with noisy debug logs.
+        // Inspect the latest item (including ends/tools), not the latest matching start.
+        let sql = """
+        SELECT ts + ts_nanos / 1000000000.0,
+               NOT instr(body, ': ToolCall:') AND (instr(body, ?3 || 'reasoning" item_id="') OR instr(body, ?3 || 'message" item_id="'))
+          FROM (SELECT id, ts, ts_nanos, CASE WHEN target = 'codex_core::stream_events_utils'
+                    THEN substr(feedback_log_body, 1, 4096) END AS body
+                  FROM logs INDEXED BY idx_logs_thread_id_ts
+                 WHERE thread_id = ?1 AND ts >= ?2
+                 ORDER BY ts DESC, ts_nanos DESC, id DESC LIMIT 96)
+         WHERE instr(body, ': Output item item_type=') OR instr(body, ': ToolCall:')
+         ORDER BY ts DESC, ts_nanos DESC, id DESC LIMIT 1
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (thread, file) in candidates {
+            guard let turn = file.session.turnID else { continue }
+            let start = ":try_run_sampling_request{turn_id=\(turn) model=\(file.session.model)}: Output item item_type=\""
+            sqlite3_reset(stmt)
+            sqlite3_bind_text(stmt, 1, thread.id, -1, transient)
+            sqlite3_bind_int64(stmt, 2, Int64(now - Self.sampleSeconds))
+            sqlite3_bind_text(stmt, 3, start, -1, transient)
+            if sqlite3_step(stmt) == SQLITE_ROW, sqlite3_column_int(stmt, 1) != 0 {
+                streamStarts[file.session.scope] = sqlite3_column_double(stmt, 0)
+            }
+        }
     }
 
     private func scheduleFlush() {
@@ -622,7 +674,12 @@ final class ModelActivityMonitor: @unchecked Sendable {
         var measuredScopes = Set<UUID>()
         let rows = grouped.map { model, members -> ModelActivityRow in
             let generating = members.filter {
-                guard !$0.value.session.isWaiting, let at = $0.value.session.lastOutputAt,
+                let session = $0.value.session
+                let start = streamStarts[session.scope].flatMap { ts in
+                    ts > (session.streamBoundaryAt ?? .infinity) ? ts : nil
+                }
+                let at = max(start ?? -.infinity, session.lastOutputAt ?? -.infinity)
+                guard !session.isWaiting,
                       now >= at, now - at <= Self.sampleSeconds else { return false }
                 return writerPaths != nil || now - $0.value.modifiedAt <= Self.activeSeconds
             }
