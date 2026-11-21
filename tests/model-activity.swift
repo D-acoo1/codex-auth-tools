@@ -295,6 +295,33 @@ let unicode = line("turn_context", ["model": "模型-🚀"])
 for byte in unicode { reader.ingest(Data([byte])) }
 expect(reader.session.model == "模型-🚀", "split UTF-8 is decoded only at record boundaries")
 
+// Warm attachment: a call is already pending when its multi-batch return arrives.
+let returnStamp = formatter.string(from: Date(timeIntervalSince1970: epoch + 8))
+@MainActor func largeReturn(_ type: String, id: String, kib: Int, carrier: String = "response_item") -> Data {
+    let header = #"{"timestamp":"\#(returnStamp)","ordinal":9,"type":"\#(carrier)","payload":{"type":"\#(type)","id":"item","call_id":"\#(id)", "output" :""#
+    return Data(header.utf8) + Data(repeating: 120, count: kib * 1024) + Data("\"},\"metadata\":{}}\n".utf8)
+}
+reader.session = measuredSession()
+reader.ingest(line("response_item", ["type":"function_call", "call_id":"a"]))
+reader.ingest(line("response_item", ["type":"custom_tool_call", "call_id":"b"]))
+reader.ingest(largeReturn("custom_tool_call_output", id: "a", kib: 305, carrier: "event_msg"))
+reader.ingest(largeReturn("custom_tool_call_output", id: "unrelated", kib: 305))
+reader.ingest(largeReturn("custom_tool_call_output", id: "b", kib: 1247))
+expect(reader.session.isWaiting, "only the matched parallel call finishes; unknown calls and other carriers cannot release a wait")
+let splitReturn = largeReturn("function_call_output", id: "a", kib: 305)
+for chunk in stride(from: 0, to: splitReturn.count - 1, by: 8191) {
+    reader.ingest(splitReturn[chunk..<min(chunk + 8191, splitReturn.count - 1)])
+}
+expect(reader.session.isWaiting, "an unterminated oversized result does not finish its call")
+reader.ingest(Data([10]))
+expect(!reader.session.isWaiting && reader.session.lastOutputAt == nil, "large results end the wait without starting generation")
+expect(reader.session.recentSamples.count == 1, "tool results neither erase settled samples nor create new ones")
+reader.ingest(line("response_item", ["type":"reasoning"]))
+expect(reader.session.lastOutputAt != nil, "the next genuine output is visible after both large returns")
+reader.ingest(line("response_item", ["type":"tool_search_call", "call_id":"s"]))
+reader.ingest(largeReturn("tool_search_output", id: "s", kib: 300))
+expect(!reader.session.isWaiting, "a matching search-tool output envelope is recognized too")
+
 // Initial attachment may see only a settlement after a tool record larger than
 // the tail window. Recover lifecycle without reading that tool payload.
 for legacy in [false, true] {

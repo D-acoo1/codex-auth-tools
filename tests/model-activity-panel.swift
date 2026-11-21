@@ -274,7 +274,7 @@ scoped(52, [taskA], [taskA])
 scoped(nil, [taskA])
 statusDelegate.updateModelActivity(ModelActivitySnapshot(availability: .unavailable))
 check(statusText(statusButton).hasSuffix("— TPS"), "losing monitoring clears a held number")
-// Exercise the full collector -> menu callback while the rollout stays unchanged.
+// Exercise a warm collector through a large tool return and a native stream start.
 @MainActor func checkStreamingMenu() throws {
     let fm = FileManager.default
     let home = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -296,6 +296,7 @@ check(statusText(statusButton).hasSuffix("— TPS"), "losing monitoring clears a
         + event(4, "event_msg", ["type":"item_completed", "item":["type":"Reasoning"],
             "started_at_ms":base * 1000, "completed_at_ms":(base+4) * 1000])
         + event(5, "token_usage_record", ["response_id":"previous", "usage":["output_tokens":400, "reasoning_output_tokens":400]])
+        + event(7, "response_item", ["type":"custom_tool_call", "call_id":"large"])
     try rollout.write(to: URL(fileURLWithPath: path))
     sql("state_5.sqlite", "CREATE TABLE threads(id,updated_at,rollout_path,model); INSERT INTO threads VALUES('chat',\(base),'\(path.replacingOccurrences(of: "'", with: "''"))','demo')")
     sql("logs_2.sqlite", "CREATE TABLE logs(id INTEGER PRIMARY KEY, ts, ts_nanos, target, thread_id, feedback_log_body); CREATE INDEX idx_logs_thread_id_ts ON logs(thread_id,ts DESC,ts_nanos DESC,id DESC)")
@@ -304,15 +305,20 @@ check(statusText(statusButton).hasSuffix("— TPS"), "losing monitoring clears a
     check(statusText(statusButton).hasSuffix("— TPS"), "before an output start the measured task is not displayed")
     collector.start()
     defer { collector.stop() }
+    let stamp = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(base + 8)))
+    let header = #"{"timestamp":"\#(stamp)","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"large","output":""#
+    let returned = Data(header.utf8) + Data(repeating: 120, count: 1247 * 1024) + Data("\"}}\n".utf8)
+    let writer = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+    try writer.seekToEnd(); try writer.write(contentsOf: returned); try writer.close()
     sql("logs_2.sqlite", "INSERT INTO logs VALUES(1,\(base+10),0,'codex_core::stream_events_utils','chat','run:try_run_sampling_request{turn_id=turn model=demo}: Output item item_type=\"reasoning\" item_id=\"one\"')")
-    let timeout = Date().addingTimeInterval(5)
+    let timeout = Date().addingTimeInterval(8)
     while !statusText(statusButton).hasSuffix("100 TPS") && Date() < timeout {
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
     }
     check(statusText(statusButton).hasSuffix("100 TPS") && digitsColor("100 TPS") != .secondaryLabelColor,
-        "an actual menu button lights up before the rollout records the current item's completion")
+        "an actual menu button lights up during the next generation after a multi-batch tool return")
     let unchanged = try Data(contentsOf: URL(fileURLWithPath: path))
-    check(unchanged == rollout, "no new rollout output or settlement was needed to restore the number")
+    check(unchanged == rollout + returned, "no new rollout output or settlement was needed to restore the number")
 }
 try checkStreamingMenu()
 print("model-activity-panel (\(L10n.shared.effectiveCode)): \(checks) assertions passed")

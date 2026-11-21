@@ -106,7 +106,7 @@ struct ModelActivitySession {
     private var usesNativeUsage = false
     private var responseIDs: [String] = []
     private var hasAccountingBoundary = false
-    private var pendingCalls = Set<String>()
+    fileprivate private(set) var pendingCalls = Set<String>()
     private var timingComplete = true
     // Ephemeral identity for one open task/model; never exported by diagnostics.
     private(set) var scope = UUID()
@@ -129,6 +129,13 @@ struct ModelActivitySession {
         intervals.removeAll(keepingCapacity: true)
         endOutput(at: nil)
         timingComplete = false
+    }
+
+    fileprivate mutating func finishToolCall(_ id: String?, at time: TimeInterval?) {
+        if !ended { isOpen = true }
+        endOutput(at: time)
+        if let id { pendingCalls.remove(id) }
+        isWaiting = !pendingCalls.isEmpty
     }
 
     mutating func consume(_ record: ActivityRecord) {
@@ -209,10 +216,7 @@ struct ModelActivitySession {
                     if let id = p.call_id { pendingCalls.insert(id) }
                 }
             case "function_call_output", "custom_tool_call_output", "tool_search_output":
-                if !ended { isOpen = true }
-                endOutput(at: record.date)
-                if let id = p.call_id { pendingCalls.remove(id) }
-                isWaiting = !pendingCalls.isEmpty
+                finishToolCall(p.call_id, at: record.date)
             case "reasoning":
                 reasoningItems += 1
                 if !ended && !isWaiting { isOpen = true; lastOutputAt = record.date }
@@ -427,6 +431,7 @@ final class ActivityRollout {
     var source: DispatchSourceFileSystemObject?
     private var pending = Data()
     private var skippingLine = false
+    private var oversizedReturn: (id: String, at: TimeInterval)?
     private let decoder = JSONDecoder()
 
     init?(path: String, model: String) {
@@ -452,6 +457,7 @@ final class ActivityRollout {
         modifiedAt = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
         if info.st_size < offset {
             offset = 0; pending.removeAll(keepingCapacity: true); skippingLine = false
+            oversizedReturn = nil
             session = ModelActivitySession(model: session.model)
         }
         let target = min(info.st_size, offset + Int64(Self.tailBytes))
@@ -466,6 +472,22 @@ final class ActivityRollout {
         return offset < info.st_size
     }
 
+    // Native tool returns put their lifecycle metadata before the output body.
+    // Decode only that envelope; never search the result text for a call ID.
+    private func toolReturnHeader(_ chunk: Data.SubSequence) -> (String, TimeInterval)? {
+        guard !session.pendingCalls.isEmpty else { return nil }
+        var prefix = Data(pending.prefix(2048))
+        prefix.append(chunk.prefix(2048 - prefix.count))
+        let text = String(decoding: prefix, as: UTF8.self)
+        guard let field = text.range(of: #",\s*"output"\s*:"#, options: .regularExpression),
+              let record = try? decoder.decode(ActivityRecord.self, from: Data((text[..<field.lowerBound] + "}}").utf8)),
+              record.type == "response_item", let p = record.payload,
+              ["function_call_output", "custom_tool_call_output", "tool_search_output"].contains(p.type),
+              p.turn_id == nil || p.turn_id == session.turnID,
+              let id = p.call_id, session.pendingCalls.contains(id), let at = record.date else { return nil }
+        return (id, at)
+    }
+
     func ingest(_ bytes: Data) {
         var start = bytes.startIndex
         while start < bytes.endIndex {
@@ -473,12 +495,16 @@ final class ActivityRollout {
             if !skippingLine {
                 if pending.count + end - start <= Self.maximumLineBytes { pending.append(bytes[start..<end]) }
                 else {
+                    oversizedReturn = toolReturnHeader(bytes[start..<end])
                     pending = Data(); skippingLine = true
-                    session.invalidateTiming()
+                    if oversizedReturn == nil { session.invalidateTiming() }
                 }
             }
             if end == bytes.endIndex { break }
-            if !skippingLine, !pending.isEmpty {
+            if let result = oversizedReturn {
+                session.finishToolCall(result.id, at: result.at)
+                oversizedReturn = nil
+            } else if !skippingLine, !pending.isEmpty {
                 if let record = try? decoder.decode(ActivityRecord.self, from: pending) { session.consume(record) }
                 else { session.invalidateTiming() }
             }
