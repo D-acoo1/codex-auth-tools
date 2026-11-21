@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,6 +9,18 @@ import { fileURLToPath } from 'node:url';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const temp = fs.mkdtempSync(path.join(process.env.CODEX_AUTH_TEST_TMPDIR || os.tmpdir(), 'ca-credits-'));
 try {
+  const claimCases = [
+    // alias, cached plan, latest usage plan, login claim, expected label
+    ['max-saved', 'unknown', ' UnKnOwN ', 'promax', 'Pro 500'],
+    ['upgraded', 'pro', 'unknown', 'promax', 'Pro 500'],
+    ['active-max', 'unknown', 'unknown', 'promax', 'Pro 500'],
+    ['known-usage', 'unknown', 'prolite', 'promax', 'Pro 100'],
+    ['old-plan', 'promax', undefined, 'pro', 'Pro 500'],
+    ['known-without-auth', 'promax', 'unknown', null, 'Pro 500'],
+    ['no-plan', undefined, undefined, 'promax', 'Pro 500'],
+    ['wrong-identity', 'unknown', 'unknown', 'promax', 'Unknown'],
+    ['malformed-login', 'unknown', 'unknown', null, 'Unknown'],
+  ];
   const cases = [
     ['string', 'prolite', 'Pro 100', { balance: '12345.67890000' }, '12,345.68'],
     ['number', 'PRO', 'Pro 200', { balance: 4321.5 }, '4,321.5'],
@@ -22,6 +35,7 @@ try {
     ['boolean', 'free', 'Free', { balance: false }, '?'],
     ['negative', 'unknown', 'Unknown', { balance: -1 }, '?'],
     ['relay', 'promax', 'API', { balance: '999' }, '-'],
+    ...claimCases.map(([alias, plan, , , label]) => [alias, plan, label, undefined, '?']),
   ];
   const accounts = Object.fromEntries(cases.map(([alias, plan, , credits]) => [alias, {
     kind: alias === 'relay' ? 'api' : 'chatgpt',
@@ -36,10 +50,36 @@ try {
       reset_credits_available: 2,
     },
   }]));
+  const codexHome = path.join(temp, 'codex');
+  const snapshots = path.join(temp, 'accounts');
+  fs.mkdirSync(snapshots);
+  fs.mkdirSync(codexHome);
+  const login = (user, account, plan) => ({
+    auth_mode: 'chatgpt',
+    tokens: {
+      id_token: plan === null ? 1 : `fixture.${Buffer.from(JSON.stringify({
+        'https://api.openai.com/auth': { chatgpt_user_id: user, chatgpt_account_id: account, chatgpt_plan_type: plan },
+      })).toString('base64url')}.fixture`,
+    },
+  });
+  for (const [alias, , usagePlan, claim] of claimCases) {
+    const user = `user-${alias}`;
+    const account = `account-${alias}`;
+    const rec = accounts[alias];
+    rec.last_usage.plan_type = usagePlan;
+    rec.chatgpt_user_id = user;
+    rec.chatgpt_account_id = account;
+    rec.identity_hash = crypto.createHash('sha256').update(`${user}::${account}`).digest('hex');
+    const savedAccount = alias === 'wrong-identity' ? 'different-account' : account;
+    fs.writeFileSync(path.join(snapshots, alias + '.auth.json'), JSON.stringify(login(user, savedAccount, alias === 'active-max' ? 'pro' : claim)));
+    if (alias === 'active-max') {
+      fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify(login(user, account, claim)));
+    }
+  }
   const registry = path.join(temp, 'registry.json');
   fs.writeFileSync(registry, JSON.stringify({ accounts, active_alias: 'string' }));
   const before = fs.readFileSync(registry);
-  const env = { ...process.env, CODEX_AC_HOME: temp, CODEX_HOME: path.join(temp, 'codex') };
+  const env = { ...process.env, CODEX_AC_HOME: temp, CODEX_HOME: codexHome };
   const python = process.env.PYTHON_BIN || 'python3';
   const commands = [
     [process.execPath, [path.join(root, 'codex-auth/lib/list.mjs'), '--cached', '--alias', '--no-color']],
@@ -65,7 +105,7 @@ try {
       assert.equal(row.slice(start, end).trim(), expectedCredits, `${path.basename(args[0])}: ${alias} CREDITS`);
       assert.equal(row.length, lines[0].length, 'columns remain aligned');
     }
-    assert.deepEqual(fs.readFileSync(registry), before, 'cached list remains read-only');
+    assert(fs.readFileSync(registry).equals(before), 'cached list remains read-only');
   }
   const merge = spawnSync(python, ['-c', `
 import runpy, sys

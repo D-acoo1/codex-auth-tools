@@ -356,13 +356,14 @@ def sha256_bytes(data: bytes) -> str:
 def b64url_decode_to_json(segment: str) -> Optional[Dict[str, Any]]:
     try:
         segment += "=" * ((4 - len(segment) % 4) % 4)
-        return json.loads(base64.urlsafe_b64decode(segment.encode("utf-8")))
+        payload = json.loads(base64.urlsafe_b64decode(segment.encode("utf-8")))
+        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
 
 
 def decode_jwt_payload(token: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not token or token.count(".") < 2:
+    if not isinstance(token, str) or token.count(".") < 2:
         return None
     return b64url_decode_to_json(token.split(".")[1])
 
@@ -385,6 +386,11 @@ def first_str(*values: Any) -> Optional[str]:
     return None
 
 
+def known_plan(value: Any) -> Optional[str]:
+    plan = (first_str(value) or "").strip()
+    return plan if plan and plan.lower() != "unknown" else None
+
+
 def auth_info(path: Path) -> Dict[str, Any]:
     obj, data = read_auth(path)
     tokens = obj.get("tokens") if isinstance(obj.get("tokens"), dict) else {}
@@ -394,7 +400,7 @@ def auth_info(path: Path) -> Dict[str, Any]:
     email = first_str(obj.get("email"), payload.get("email"))
     user_id = first_str(auth_ns.get("chatgpt_user_id"), auth_ns.get("user_id"), payload.get("sub"))
     account_id = first_str(auth_ns.get("chatgpt_account_id"), obj.get("chatgpt_account_id"))
-    plan = first_str(auth_ns.get("chatgpt_plan_type"), obj.get("plan"))
+    plan = known_plan(auth_ns.get("chatgpt_plan_type")) or known_plan(obj.get("plan"))
     auth_mode = first_str(obj.get("auth_mode"))
     name = first_str(payload.get("name"))
 
@@ -933,8 +939,8 @@ def refresh_aliases(reg: Dict[str, Any], aliases: list[str], *, verbose: bool = 
             rec["last_reset_credits_at"] = rec["last_usage_at"]
             rec.pop("last_usage_error", None)
             rec.pop("last_reset_credits_error", None)
-            if snap.get("plan_type"):
-                rec["plan"] = snap.get("plan_type")
+            if plan := known_plan(snap.get("plan_type")):
+                rec["plan"] = plan
             changed = True
             if verbose:
                 print(f"✓ {alias}: refreshed")
@@ -1045,8 +1051,8 @@ def refresh_active_from_local_rollout(reg: Dict[str, Any]) -> bool:
     rec["last_usage_at"] = event_ms // 1000
     rec["last_local_rollout"] = {"path": str(path), "event_timestamp_ms": event_ms}
     rec.pop("last_usage_error", None)
-    if snapshot.get("plan_type"):
-        rec["plan"] = snapshot.get("plan_type")
+    if plan := known_plan(snapshot.get("plan_type")):
+        rec["plan"] = plan
     return True
 
 
@@ -1144,11 +1150,12 @@ def sync_usage_from_codex_auth_registry(reg: Dict[str, Any]) -> bool:
             if src_rec.get(k) is not None and dst.get(k) != src_rec.get(k):
                 dst[k] = src_rec.get(k)
                 changed = True
-        if accept_source_usage or not dst.get("plan"):
-            plan = first_str(source_usage.get("plan_type") if accept_source_usage else None, src_rec.get("plan"))
-            if plan and dst.get("plan") != plan:
-                dst["plan"] = plan
-                changed = True
+        plan = known_plan(source_usage.get("plan_type")) if accept_source_usage else None
+        if not plan and not known_plan(dst.get("plan")):
+            plan = known_plan(src_rec.get("plan"))
+        if plan and dst.get("plan") != plan:
+            dst["plan"] = plan
+            changed = True
         if accept_source_usage and dst.pop("last_usage_error", None) is not None:
             changed = True
     return changed
@@ -1206,14 +1213,39 @@ LIST_PLAN_LABELS = {
 }
 
 
+def list_plan_code(alias: str, reg: Dict[str, Any], usage: Optional[Dict[str, Any]], current: Optional[str]) -> str:
+    rec = reg["accounts"][alias]
+    stored = (first_str(rec.get("plan")) or "").strip()
+    reported = (first_str(usage.get("plan_type") if usage else None) or "").strip()
+    plan = known_plan(stored) or known_plan(reported)
+    # "unknown" is an explicit lack of a service answer, not a downgrade.
+    # A sparse usage snapshot that just omits the field keeps a known tier.
+    if plan and reported.lower() != "unknown":
+        return plan
+    paths = [DEFAULT_CODEX_HOME / "auth.json"] if alias == current else []
+    try:
+        paths.append(account_auth_file(alias, reg))
+    except (OSError, SystemExit):
+        pass
+    for path in paths:
+        try:
+            info = auth_info(path)
+        except (OSError, SystemExit):
+            continue
+        if info["plan"] and auth_info_matches_account(info, rec):
+            return info["plan"]
+    return plan or stored or reported
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     reg = load_registry()
     accounts = reg.get("accounts", {})
     if not accounts:
         print("暂无账号。先执行：codex-ac add <alias> 或 codex-ac import-codex-auth")
         return 0
+    cached = bool(getattr(args, "cached", False))
     api = bool(getattr(args, "api", False) or getattr(args, "refresh", False)) and not bool(getattr(args, "skip_api", False))
-    changed = sync_codex_auth_for_list(reg, api=api, cached=bool(getattr(args, "cached", False)))
+    changed = sync_codex_auth_for_list(reg, api=api, cached=cached)
     if changed:
         save_registry(reg)
         reg = load_registry()
@@ -1228,7 +1260,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         usage = rec.get("last_usage") if isinstance(rec.get("last_usage"), dict) else None
         err = rec.get("last_usage_error")
         is_api = rec.get("kind") == "api"
-        raw_plan = (first_str(rec.get("plan")) or "").strip()
+        raw_plan = "" if is_api else list_plan_code(alias, reg, usage, current)
         plan = "API" if is_api else LIST_PLAN_LABELS.get(raw_plan.lower(), raw_plan.capitalize() or "-")
         h5 = "-" if is_api else fmt_usage(usage, 300, True, err)
         weekly = "-" if is_api else fmt_usage(usage, 10080, False, err)
@@ -1242,7 +1274,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         updated_at = _as_int(rec.get("last_usage_at"))
         updated = fmt_last_activity(updated_at)
         refresh_failed = bool(rec.get("last_usage_error") or rec.get("last_reset_credits_error"))
-        if not bool(getattr(args, "cached", False)) and usage and updated_at and refresh_failed:
+        if not cached and usage and updated_at and refresh_failed:
             updated += "!"
         rows.append((marker, alias, email, plan, h5, weekly, credits, reset_credits, updated))
     headers = ("ALIAS", "ACCOUNT", "PLAN", "5H USAGE", "WEEKLY USAGE", "CREDITS", "RESET", "UPDATED")
@@ -1252,7 +1284,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     print("-" * len(header_line))
     for marker, *cells in rows:
         print(marker + " " + "  ".join(cell.ljust(width) for cell, width in zip(cells, widths)))
-    if not bool(getattr(args, "cached", False)):
+    if not cached:
         failed = [
             alias
             for alias, rec in accounts.items()
@@ -1266,9 +1298,9 @@ def cmd_list(args: argparse.Namespace) -> int:
             ]
             cache_note = "；已继续显示上次成功数据，UPDATED 后的 ! 表示本次刷新失败" if cached_failed else ""
             eprint(f"warning: usage refresh failed: {', '.join(failed)}{cache_note}。可稍后重试 ca ll，或用 ca ll --cached 仅查看缓存。")
-    if current and current != reg.get("active_alias"):
-        reg["active_alias"] = current
-        save_registry(reg)
+        if current and current != reg.get("active_alias"):
+            reg["active_alias"] = current
+            save_registry(reg)
     return 0
 
 
@@ -1954,8 +1986,8 @@ def refresh_usage_for_alias_in_registry(reg: Dict[str, Any], alias: str, *, time
         rec["last_reset_credits_at"] = rec["last_usage_at"]
         rec.pop("last_usage_error", None)
         rec.pop("last_reset_credits_error", None)
-        if snap.get("plan_type"):
-            rec["plan"] = snap.get("plan_type")
+        if plan := known_plan(snap.get("plan_type")):
+            rec["plan"] = plan
         save_registry(reg)
         return True, status
     if status in AUTH_EXPIRED_STATUSES:
@@ -2001,8 +2033,8 @@ def try_sync_current_auth_for_alias(alias: str, reg: Dict[str, Any], *, timeout:
     dst["last_reset_credits_at"] = dst["last_usage_at"]
     dst.pop("last_usage_error", None)
     dst.pop("last_reset_credits_error", None)
-    if snap.get("plan_type"):
-        dst["plan"] = snap.get("plan_type")
+    if plan := known_plan(snap.get("plan_type")):
+        dst["plan"] = plan
     save_registry(reg)
     return True, status_text
 

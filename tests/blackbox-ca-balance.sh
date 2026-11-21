@@ -126,7 +126,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = self.path.split("?", 1)[0]
-        if route == "/wham/usage":
+        if route in {"/wham/usage", "/wham/usage-unknown-plan"}:
             expected = {
                 "acct-demo": "Bearer fake-access-token",
                 "acct-other": "Bearer fake-other-token",
@@ -137,7 +137,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             body = {
-                "plan_type": "pro" if account_id == "acct-demo" else "prolite",
+                "plan_type": (
+                    "unknown" if route == "/wham/usage-unknown-plan" and account_id == "acct-demo"
+                    else "pro" if account_id == "acct-demo" else "prolite"
+                ),
                 "rate_limit_reset_credits": {
                     "available_count": 2 if account_id == "acct-demo" else 0,
                 },
@@ -793,6 +796,65 @@ run_ca ll --cached --alias --no-color > "$TMP/list-reordered-node.txt"
 run_ca_no_security list --cached > "$TMP/list-reordered-python.txt"
 assert_matches "$TMP/list-reordered-node.txt" 'Pro 500 +80% .* +40%'
 assert_matches "$TMP/list-reordered-python.txt" 'Pro 500 +80% .* +40%'
+
+# A Pro Max login can receive an otherwise valid usage response with no tier.
+# Preserve the raw observation without replacing the known plan with "unknown".
+"$PYTHON_BIN" - "$CODEX_HOME/auth.json" "$CODEX_AC_HOME/registry.json" <<'PY'
+import base64, json, sys
+from pathlib import Path
+
+auth, registry = map(Path, sys.argv[1:])
+obj = json.loads(auth.read_text())
+header, payload, signature = obj["tokens"]["id_token"].split(".")
+claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+claims["https://api.openai.com/auth"]["chatgpt_plan_type"] = "promax"
+payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+obj["tokens"]["id_token"] = ".".join((header, payload, signature))
+auth.write_text(json.dumps(obj))
+state = json.loads(registry.read_text())
+state["accounts"]["fox"]["plan"] = "pro"
+state["accounts"]["fox"]["last_usage_at"] = 0
+registry.write_text(json.dumps(state))
+PY
+NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="${WHAM_TEST_URL}-unknown-plan" PATH="$SAFE_PATH" \
+  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-promax-live.txt"
+assert_matches "$TMP/list-promax-live.txt" 'demo@example.com +Pro 500 +∞ +51% .* +12,345\.68 +2 +Now'
+run_ca_no_security list --cached > "$TMP/list-promax-cached-python.txt"
+assert_matches "$TMP/list-promax-cached-python.txt" 'fox +d\*\*\*o@example.com +Pro 500 +∞ +51% .* +12,345\.68 +2 +Now'
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" "$CODEX_HOME/accounts/registry.json" <<'PY'
+import json, sys, time
+from pathlib import Path
+
+registry, native = map(Path, sys.argv[1:])
+account = json.loads(registry.read_text())["accounts"]["fox"]
+assert account["last_usage"]["plan_type"] == "unknown"
+assert account["plan"] == "pro", "unknown cannot erase the last known plan"
+state = json.loads(native.read_text())
+record = state["accounts"][0]
+record["last_usage_at"] = int(time.time()) + 1
+record["plan"] = record["last_usage"]["plan_type"] = "unknown"
+record["last_usage"]["primary"]["used_percent"] = 60
+native.write_text(json.dumps(state))
+PY
+run_ca_no_security list --skip-api > "$TMP/list-promax-native-python.txt"
+assert_matches "$TMP/list-promax-native-python.txt" 'fox +d\*\*\*o@example.com +Pro 500 +∞ +40% .* +12,345\.68 +2 +Now'
+"$PYTHON_BIN" - "$CODEX_AC_HOME/registry.json" "$CODEX_HOME/accounts/registry.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+registry, native = map(Path, sys.argv[1:])
+state = json.loads(registry.read_text())
+assert state["accounts"]["fox"]["plan"] == "pro", "unknown native metadata cannot erase a known plan"
+state["accounts"]["fox"]["last_usage_at"] = 0
+registry.write_text(json.dumps(state))
+state = json.loads(native.read_text())
+state["accounts"][0]["last_usage_at"] = 0
+native.write_text(json.dumps(state))
+PY
+# A concrete service tier is still authoritative, even with a Pro Max claim.
+NODE_ENV=test CODEX_AC_TEST_WHAM_USAGE_URL="$WHAM_TEST_URL" PATH="$SAFE_PATH" \
+  "$NODE_EXE" "$CA_LIST" --skip-api --alias --no-color > "$TMP/list-known-plan-after-unknown.txt"
+assert_matches "$TMP/list-known-plan-after-unknown.txt" 'demo@example.com +Pro 200 +∞ +51%'
 
 bash "$ROOT/tests/balance-account-context.sh"
 CODEX_AUTH_TEST_TMPDIR="$TMP" "$NODE_EXE" "$ROOT/tests/list-credits.mjs"

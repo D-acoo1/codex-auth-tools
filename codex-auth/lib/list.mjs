@@ -56,17 +56,23 @@ function b64urlDecodeJson(seg) {
     return JSON.parse(Buffer.from(seg, 'base64url').toString('utf8'));
   } catch { return null; }
 }
+function knownPlan(value) {
+  const plan = typeof value === 'string' ? value.trim() : '';
+  return plan.toLowerCase() === 'unknown' ? '' : plan;
+}
 function authInfo(p) {
   const obj = readJson(p, {});
   const tok = obj?.tokens?.id_token;
   let payload = null;
   if (typeof tok === 'string' && tok.split('.').length >= 3) payload = b64urlDecodeJson(tok.split('.')[1]);
   const ns = payload?.['https://api.openai.com/auth'] || {};
-  const email = obj.email || payload?.email || null;
-  const user = ns.chatgpt_user_id || ns.user_id || payload?.sub || null;
-  const account = ns.chatgpt_account_id || obj.chatgpt_account_id || null;
+  const firstString = (...values) => values.find(value => typeof value === 'string' && value);
+  const email = firstString(obj?.email, payload?.email);
+  const user = firstString(ns.chatgpt_user_id, ns.user_id, payload?.sub);
+  const account = firstString(ns.chatgpt_account_id, obj?.chatgpt_account_id);
+  const plan = knownPlan(ns.chatgpt_plan_type) || knownPlan(obj?.plan);
   const identity = user && account ? `${user}::${account}` : (user || (email ? email.toLowerCase() : null));
-  return { email, user, account, identityHash: identity ? sha256(identity) : null };
+  return { email, user, account, plan, identityHash: identity ? sha256(identity) : null };
 }
 function currentModelProvider() {
   const p = path.join(codexHome, 'config.toml');
@@ -198,9 +204,13 @@ function authInfoMatchesRecord(info, rec) {
   return false;
 }
 
-function authTokenForSavedAccount(alias, rec) {
+function savedAuthPath(alias, rec) {
   const rel = rec?.auth_file || path.join('accounts', `${alias}.auth.json`);
-  const authPath = path.isAbsolute(rel) ? rel : path.join(acHome, rel);
+  return path.isAbsolute(rel) ? rel : path.join(acHome, rel);
+}
+
+function authTokenForSavedAccount(alias, rec) {
+  const authPath = savedAuthPath(alias, rec);
   if (!fs.existsSync(authPath)) return null;
   const info = authInfo(authPath);
   if (!authInfoMatchesRecord(info, rec)) return null;
@@ -349,8 +359,7 @@ async function syncCurrentAuthForAlias(alias, dst, nowSec) {
   const token = obj?.tokens?.access_token;
   if (!token) return false;
   const snap = await fetchWhamUsageWithToken(dst, token, 30000);
-  const rel = dst.auth_file || path.join('accounts', `${alias}.auth.json`);
-  const dstAuth = path.isAbsolute(rel) ? rel : path.join(acHome, rel);
+  const dstAuth = savedAuthPath(alias, dst);
   fs.mkdirSync(path.dirname(dstAuth), { recursive: true, mode: 0o700 });
   fs.copyFileSync(currentAuth, dstAuth);
   try { fs.chmodSync(dstAuth, 0o600); } catch {}
@@ -364,7 +373,8 @@ async function syncCurrentAuthForAlias(alias, dst, nowSec) {
   dst.last_usage = snap;
   dst.last_usage_at = nowSec;
   dst.last_reset_credits_at = nowSec;
-  if (snap.plan_type) dst.plan = snap.plan_type;
+  const plan = knownPlan(snap.plan_type);
+  if (plan) dst.plan = plan;
   delete dst.last_usage_error;
   delete dst.last_reset_credits_error;
   return true;
@@ -407,7 +417,8 @@ async function refreshStaleUsageDirect(reg, maxAgeSec=30) {
         dst.last_usage = snap;
         dst.last_usage_at = nowSec;
         dst.last_reset_credits_at = nowSec;
-        if (snap.plan_type) dst.plan = snap.plan_type;
+        const plan = knownPlan(snap.plan_type);
+        if (plan) dst.plan = plan;
         delete dst.last_usage_error;
         delete dst.last_reset_credits_error;
         changed = true;
@@ -471,12 +482,10 @@ function syncFromCodexAuth(reg) {
     for (const k of ['last_local_rollout','last_used_at']) {
       if (srcRec[k] !== undefined && JSON.stringify(dst[k]) !== JSON.stringify(srcRec[k])) { dst[k] = srcRec[k]; changed = true; }
     }
-    // Keep the plan tied to the accepted snapshot rather than an older native record.
-    if (acceptSourceUsage || !dst.plan) {
-      const usagePlan = acceptSourceUsage ? sourceUsage.plan_type : null;
-      const plan = typeof usagePlan === 'string' && usagePlan ? usagePlan : srcRec.plan;
-      if (typeof plan === 'string' && plan && dst.plan !== plan) { dst.plan = plan; changed = true; }
-    }
+    // An unspecified plan can fill a gap from native metadata, but cannot replace a known tier.
+    const plan = (acceptSourceUsage ? knownPlan(sourceUsage.plan_type) : '')
+      || (!knownPlan(dst.plan) ? knownPlan(srcRec.plan) : '');
+    if (plan && dst.plan !== plan) { dst.plan = plan; changed = true; }
     if (acceptSourceUsage && dst.last_usage_error !== undefined) { delete dst.last_usage_error; changed = true; }
   }
   if (changed) { reg.updated_at = new Date().toISOString(); writeJsonPrivate(path.join(acHome, 'registry.json'), reg); }
@@ -582,7 +591,8 @@ if (!cached) {
 }
 const accounts = reg.accounts || {};
 if (Object.keys(accounts).length === 0) { console.log('暂无账号。先执行：codex-ac add <alias> 或 codex-ac import-codex-auth'); process.exit(0); }
-const active = currentAlias(reg) || reg.active_alias;
+const current = currentAlias(reg);
+const active = current || reg.active_alias;
 const sorted = Object.entries(accounts).sort(([a],[b]) => (a===active?0:1)-(b===active?0:1) || a.localeCompare(b));
 const idxWidth = Math.max(2, String(sorted.length).length);
 const planLabels = new Map([
@@ -591,10 +601,23 @@ const planLabels = new Map([
   ['pro', 'Pro 200'],
   ['promax', 'Pro 500'],
 ]);
+function listPlanCode(alias, rec, usage) {
+  const stored = typeof rec.plan === 'string' ? rec.plan.trim() : '';
+  const reported = typeof usage?.plan_type === 'string' ? usage.plan_type.trim() : '';
+  const plan = knownPlan(stored) || knownPlan(reported);
+  if (plan && reported.toLowerCase() !== 'unknown') return plan;
+  const paths = alias === current ? [path.join(codexHome, 'auth.json')] : [];
+  paths.push(savedAuthPath(alias, rec));
+  for (const file of paths) {
+    const info = authInfo(file);
+    if (info.plan && authInfoMatchesRecord(info, rec)) return info.plan;
+  }
+  return plan || stored || reported;
+}
 const rows = sorted.map(([alias,rec], i) => {
   const usage = rec.last_usage || null;
   const isApi = rec.kind === 'api';
-  const rawPlan = typeof rec.plan === 'string' ? rec.plan.trim() : '';
+  const rawPlan = isApi ? '' : listPlanCode(alias, rec, usage);
   const email = isApi
     ? `api:${(rec.base_url || rec.provider_id || alias).replace(/^https?:\/\//,'')}`
     : (maskAccount ? (rec.email_masked || maskEmail(rec.email)) : (rec.email || rec.email_masked || '<unknown>'));
