@@ -54,7 +54,9 @@ ca s work                          # carry the latest local data into the next a
 ca local-data separate             # stop sharing; keep the existing projects
 ```
 
-Sharing is opt-in. It carries local projects, folder paths, project/chat membership, local pins, ordering and local chat UI metadata through `ca` ChatGPT-account switches. Current local data is authoritative on each switch, including removals; an old account cache cannot restore deleted projects. Recovery with `--from` preserves additions made in the current login. Conversation files and SQLite databases remain in place and are not copied.
+Sharing is opt-in. On desktop versions that store chat paths per account, a ChatGPT-account switch fills missing working-directory hints and output directories in the destination. Existing destinations (even for the same chat) and source entries are preserved. Filesystem grants and remote preferences are not shared in this format. With the older account-cache format, local project membership, pins and order follow the current account, including removals. Neither format copies conversation files, SQLite databases or project contents.
+
+A saved path cannot restore files removed from disk. To keep managed worktrees on this Mac across app restarts, turn off automatic worktree cleanup in the desktop app’s Worktrees settings. If a worktree was already removed, restore its snapshot rather than creating an empty directory at the old path. `ca` does not change worktree retention settings.
 
 On the default macOS Codex home, an open Codex/ChatGPT desktop app is closed before reading its final saved state and reopened after switching. Finish active turns before running the switch. A failed app quit stops the operation before login or desktop-state writes. The app bundle and its signature are unchanged. Cloud project caches, OAuth state and remote-control permissions are not copied between accounts. This mode applies to switches made through `ca`, not direct sign-in changes inside the desktop app or API/relay profiles.
 

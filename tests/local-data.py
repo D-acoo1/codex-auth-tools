@@ -176,6 +176,76 @@ class LocalDataTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual((self.codex / "auth.json").read_bytes(), auth)
 
+    def test_owner_scoped_paths_survive_recovery_and_round_trip(self):
+        a, b, c = (self.owners[k] for k in ("source", "current", "third"))
+        hints = "electron-owner-value:thread-workspace-root-hints:"
+        out = "electron-owner-value:thread-projectless-output-directories:"
+        writable = "electron-owner-value:thread-writable-roots:"
+        untouched = {writable+a: {"one": ["/private/grant"]}, hints+c: {"three": "/three"},
+                     "electron-account-remote-preference:host:"+a: True,
+                     "electron-persisted-atom-state": {"account-private": "private"}}
+        def save(state):
+            fixtures.write_json(self.path, state)
+        state = {**untouched, self.module.RENDERER_OWNER_KEY: b,
+                 hints+a: {"one": "/one", "same": "/old-location", "remote": "ssh://host/path"},
+                 hints+b: {"two": "/two", "same": "/new-location"}, out+a: {"loose": "/output"}}
+        save(state)
+        current = self.share()
+        self.assertEqual(current[hints+b], {"one": "/one", "two": "/two", "same": "/new-location"})
+        self.assertEqual(current[out+b], {"loose": "/output"})
+        self.assertEqual(current[hints+a], state[hints+a])
+        result = self.run_ca("switch", "source", "--skip-expiry-check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = fixtures.read_json(self.path)
+        self.assertEqual(saved[hints+a], {**state[hints+a], "two": "/two"})
+        self.assertEqual(saved[hints+b], current[hints+b])
+        self.assertNotIn(writable+b, saved)
+        for k, v in untouched.items():
+            self.assertEqual(saved[k], v)
+        saved[self.module.RENDERER_OWNER_KEY] = a
+        save(saved)
+        self.assertEqual(self.run_ca("switch", "current", "--skip-expiry-check").returncode, 0)
+        self.assertEqual(fixtures.read_json(self.path), saved)
+        self.assertEqual(self.run_ca("local-data", "separate").returncode, 0)
+        before = self.path.read_bytes()
+        self.assertEqual(self.run_ca("switch", "third", "--skip-expiry-check").returncode, 0)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_invalid_scoped_map_or_unidentified_owner_preserves_both_files(self):
+        self.share()
+        owner = self.owners["current"]
+        src = "electron-owner-value:thread-workspace-root-hints:" + owner
+        dst = "electron-owner-value:thread-workspace-root-hints:" + self.owners["third"]
+        for state in ({src: {"one": "/one"}}, {self.module.RENDERER_OWNER_KEY: owner, src: [], dst: {}},
+                      {self.module.RENDERER_OWNER_KEY: owner, src: {"one": "/one"}, dst: None}):
+            fixtures.write_json(self.path, state)
+            before, auth = self.path.read_bytes(), (self.codex / "auth.json").read_bytes()
+            self.assertNotEqual(self.run_ca("switch", "third", "--skip-expiry-check").returncode, 0)
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertEqual((self.codex / "auth.json").read_bytes(), auth)
+
+    def test_legacy_switch_keeps_target_only_chat_locations(self):
+        state = self.share()
+        locations = state[self.module.DESKTOP_STATE_KEY]["inactive"][self.owners["source"]]["globals"]
+        locations["thread-workspace-root-hints"] = {"old-chat": "/moved", "target-only": "/target-only"}
+        state["thread-workspace-root-hints"] = {"old-chat": "/previous", "new-chat": "/new"}
+        self.module.mirror_local_data(state, self.owners["source"])
+        self.assertEqual(locations["thread-workspace-root-hints"],
+                         {"old-chat": "/moved", "target-only": "/target-only", "new-chat": "/new"})
+
+    def test_merge_must_remain_readable_by_next_switch(self):
+        self.share()
+        a = self.owners["current"]
+        key = "electron-owner-value:thread-workspace-root-hints:"
+        fixtures.write_json(self.path, {self.module.RENDERER_OWNER_KEY: a, key+a: {"chat": "/"+"x"*1024}})
+        before, auth = self.path.read_bytes(), (self.codex / "auth.json").read_bytes()
+        with patch.object(self.module, "DESKTOP_STATE_LIMIT", len(before)+64):
+            with self.assertRaises(SystemExit):
+                with self.module.shared_local_data_switch({"shared_local_data": True}, self.module.load_registry()["accounts"]["third"]):
+                    self.fail("oversized merge must not switch credentials")
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual((self.codex / "auth.json").read_bytes(), auth)
+
 
 if __name__ == "__main__":
     unittest.main()

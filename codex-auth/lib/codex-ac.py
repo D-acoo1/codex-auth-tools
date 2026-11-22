@@ -31,7 +31,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.11"
+VERSION = "0.8.12"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
@@ -40,6 +40,9 @@ RESERVED = set()
 KEEPALIVE_THRESHOLD_SECONDS = 3 * 24 * 60 * 60
 KEEPALIVE_REFRESH_TIMEOUT_SECONDS = 45
 DESKTOP_STATE_KEY = "electron-account-renderer-state-v1"
+RENDERER_OWNER_KEY = "electron-renderer-content-owner"
+CHAT_DIRECTORY_KEYS = ("thread-workspace-root-hints", "thread-projectless-output-directories")
+DESKTOP_STATE_LIMIT = 16 * 1024 * 1024
 LOCAL_DATA_KEYS = (
     "active-workspace-roots", "electron-saved-workspace-roots", "electron-workspace-root-labels",
     "local-projects", "app-server-project-id-by-legacy-project-id-by-host",
@@ -65,8 +68,8 @@ def local_data_atom(key: str) -> bool:
 def read_desktop_state() -> Dict[str, Any]:
     path = DEFAULT_CODEX_HOME / ".codex-global-state.json"
     with path.open("rb") as stream:
-        raw = stream.read(16 * 1024 * 1024 + 1)
-    if len(raw) > 16 * 1024 * 1024:
+        raw = stream.read(DESKTOP_STATE_LIMIT + 1)
+    if len(raw) > DESKTOP_STATE_LIMIT:
         raise SystemExit("Codex 本地状态超过 16 MiB，未修改。")
     try:
         data = json.loads(raw)
@@ -82,6 +85,13 @@ def read_desktop_state() -> Dict[str, Any]:
     return data
 
 
+def write_desktop_state(state: dict) -> None:
+    data = (json.dumps(state, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+    if len(data) > DESKTOP_STATE_LIMIT:
+        raise SystemExit("合并后的本地状态超过 16 MiB，未修改。")
+    write_private(data, DEFAULT_CODEX_HOME / ".codex-global-state.json")
+
+
 def desktop_owner(info: Dict[str, Any]) -> str:
     identity = [info.get("chatgpt_user_id"), info.get("chatgpt_account_id")]
     if not all(isinstance(value, str) and value for value in identity):
@@ -89,14 +99,52 @@ def desktop_owner(info: Dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
+def copy_missing_chat_directories(source: dict, target: dict, source_owner=None, target_owner=None) -> bool:
+    found = False
+    for key in CHAT_DIRECTORY_KEYS:
+        src = f"electron-owner-value:{key}:{source_owner}" if source_owner else key
+        dst = f"electron-owner-value:{key}:{target_owner}" if target_owner else key
+        if src not in source:
+            continue
+        saved, existing = source[src], target.get(dst, {})
+        if not isinstance(saved, dict) or not isinstance(existing, dict):
+            raise SystemExit("聊天目录映射格式不兼容，未修改。")
+        found = True
+        # The destination may have moved a chat or gained chats not seen by the source.
+        # These are path hints, not filesystem grants, remote settings or chat content.
+        additions = {k: v for k, v in saved.items() if k not in existing
+                     and isinstance(v, str) and os.path.isabs(v)}
+        if additions:
+            target[dst] = {**existing, **additions}
+    return found
+
+
+def renderer_owner(state: dict) -> Optional[str]:
+    owner = state.get(RENDERER_OWNER_KEY)
+    if isinstance(owner, str) and re.fullmatch("[0-9a-f]{64}", owner):
+        return owner
+    if owner is not None or any(k.startswith("electron-owner-value:") for k in state):
+        raise SystemExit("无法确定桌面 App 的本地状态所属账号，未修改。请先在 App 中确认当前账号。")
+    return None
+
+
 def mirror_local_data(state: Dict[str, Any], target_owner: str) -> None:
+    if state.get(RENDERER_OWNER_KEY) == "signed-out":
+        return
+    if (owner := renderer_owner(state)) is not None:
+        if owner != target_owner:
+            copy_missing_chat_directories(state, state, owner, target_owner)
+        return
     marker = state.get(DESKTOP_STATE_KEY)
     if marker is None or marker.get("owner") == target_owner:
         return
     target = marker["inactive"].setdefault(target_owner, {"atoms": {}, "globals": {}})
     if not isinstance(target, dict) or not isinstance(target.get("atoms"), dict) or not isinstance(target.get("globals"), dict):
         raise SystemExit("目标账号本地状态格式不兼容，未修改。")
+    copy_missing_chat_directories(state, target["globals"])
     for key in LOCAL_DATA_KEYS:
+        if key in CHAT_DIRECTORY_KEYS:
+            continue
         target["globals"].pop(key, None)
         if key in state:
             target["globals"][key] = state[key]
@@ -114,6 +162,10 @@ def mirror_local_data(state: Dict[str, Any], target_owner: str) -> None:
 
 
 def restore_local_data(state: Dict[str, Any], source_owner: str) -> None:
+    if (owner := renderer_owner(state)) is not None:
+        if owner != source_owner and not copy_missing_chat_directories(state, state, source_owner, owner):
+            raise SystemExit("没有找到该账号保存的聊天目录，未修改。")
+        return
     marker = state.get(DESKTOP_STATE_KEY)
     source = marker.get("inactive", {}).get(source_owner) if isinstance(marker, dict) else None
     if marker is not None and marker.get("owner") == source_owner:
@@ -199,8 +251,7 @@ def shared_local_data_switch(reg: Dict[str, Any], rec: Dict[str, Any]):
         target = desktop_owner(rec) if rec.get("kind") != "api" else None
         if target is not None:
             mirror_local_data(state, target)
-        write_private((json.dumps(state, ensure_ascii=False, separators=(",", ":")) + "\n").encode(),
-                      DEFAULT_CODEX_HOME / ".codex-global-state.json")
+        write_desktop_state(state)
         yield app is not None
     finally:
         if app is not None:
@@ -233,8 +284,7 @@ def cmd_local_data(args: argparse.Namespace) -> int:
             restore_local_data(state, source_owner)
         current = desktop_owner(auth_info(DEFAULT_CODEX_HOME / "auth.json"))
         mirror_local_data(state, current)
-        write_private((json.dumps(state, ensure_ascii=False, separators=(",", ":")) + "\n").encode(),
-                      DEFAULT_CODEX_HOME / ".codex-global-state.json")
+        write_desktop_state(state)
         reg["shared_local_data"] = True
         save_registry(reg)
         print(f"已启用本地数据共用：{len(state.get('local-projects', {}))} 个项目；之后使用 ca s <别名>。")
