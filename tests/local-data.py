@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import importlib.util
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -126,6 +128,7 @@ class LocalDataTests(unittest.TestCase):
         result = self.run_ca("switch", "third", "--skip-expiry-check")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.path.read_bytes(), before)
+        self.module.copy_private(self.codex.parent / "current.json", self.codex / "auth.json")
         self.share()
         result = self.run_ca("local-data", "separate")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -176,6 +179,154 @@ class LocalDataTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual((self.codex / "auth.json").read_bytes(), auth)
 
+    def scoped_workspace(self, source, roots):
+        prefix = "electron-owner-value:"
+        return {prefix + key + ":" + source: value for key, value in {
+            "electron-saved-workspace-roots": roots, "active-workspace-roots": roots[:1],
+            "thread-workspace-root-hints": {p: p for p in roots},
+            "thread-projectless-output-directories": {}, "electron-workspace-root-labels": {p: p[1:] for p in roots},
+        }.items()}
+
+    def create_sqlite(self, state):
+        db = self.codex / ".codex-global-state.sqlite"
+        with contextlib.closing(sqlite3.connect(db)) as con, con:
+            con.execute("CREATE TABLE settings(scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,"
+                        "PRIMARY KEY(scope,key)) WITHOUT ROWID")
+            con.execute("PRAGMA user_version=1")
+            for k,v in state.items():
+                if k.startswith("electron-owner-atoms:"):
+                    con.executemany("INSERT INTO settings VALUES(?,?,?)", [(k,a,json.dumps(b)) for a,b in v.items()])
+                    v = {}
+                con.execute("INSERT INTO settings VALUES('global',?,?)",(k,json.dumps(v)))
+        return db
+
+    def test_sqlite_three_account_workspace(self):
+        a,b,c = (self.owners[k] for k in ("current","source","third"))
+        owner = self.module.RENDERER_OWNER_KEY
+        order = self.module.LOCAL_ORDER_ATOMS[0]
+        atom = "electron-owner-atoms:"
+        key = "electron-owner-value:electron-saved-workspace-roots:"
+        state = {owner:a, **self.scoped_workspace(a, ["/keep"]), **self.scoped_workspace(b, ["/deleted"]),
+                 atom+a:{order:["codex:project:keep","chatgpt:project:A"]},
+                 atom+b:{order:["codex:project:deleted","chatgpt:project:B"], "plugin-state":{"B":1}},
+                 "local-projects":{"keep":{}}, "thread-project-assignments":{"chat":"keep"}}
+        db = self.create_sqlite(state)
+        json_before = self.path.read_bytes()
+        chat = self.codex / "session.jsonl"
+        chat.write_bytes(b"chat content")
+        def set_current(con, owner_id):
+            con.execute("UPDATE settings SET value=? WHERE scope='global' AND key=?",(json.dumps(owner_id),owner))
+        def get(con,k,scope="global"):
+            return json.loads(con.execute("SELECT value FROM settings WHERE scope=? AND key=?",(scope,k)).fetchone()[0])
+        def switch(alias):
+            result=self.run_ca("switch",alias,"--skip-expiry-check")
+            self.assertEqual(result.returncode,0,result.stderr)
+        result = self.run_ca("local-data","share")
+        self.assertEqual(result.returncode,0,result.stderr)
+        switch("source")
+        with contextlib.closing(sqlite3.connect(db)) as con, con:
+            self.assertEqual(get(con,key+b),["/keep"])
+            self.assertEqual(get(con,order,atom+b),["codex:project:keep","chatgpt:project:B"])
+            self.assertEqual(get(con,"plugin-state",atom+b),{"B":1})
+            set_current(con,b)
+            for k,v in self.scoped_workspace(b, ["/keep","/new"]).items():
+                con.execute("UPDATE settings SET value=? WHERE scope='global' AND key=?",(json.dumps(v),k))
+        switch("third")
+        with contextlib.closing(sqlite3.connect(db)) as con, con:
+            self.assertEqual(get(con,key+c),["/keep","/new"])
+            set_current(con,c)
+        switch("current")
+        with contextlib.closing(sqlite3.connect(db)) as con, con:
+            self.assertEqual(get(con,key+a),["/keep","/new"])
+            self.assertEqual(get(con,"thread-project-assignments"),{"chat":"keep"})
+        self.assertEqual(self.path.read_bytes(),json_before)
+        self.assertEqual(chat.read_bytes(),b"chat content")
+
+    def test_scoped_membership_is_local_without_copying_runtime_roots(self):
+        a, b = self.owners["current"], self.owners["source"]
+        def record(project, path):
+            return {"revision":path, "project":project, "applied":{"cwd":path,"runtimeWorkspaceRoots":[path]},
+                    "pending":{"runtimeWorkspaceRoots":[path]}}
+        local = {"projectKind":"local", "projectId":"latest"}
+        old = {"projectKind":"local", "projectId":"removed"}
+        cloud = {"projectKind":"local","projectId":"cloud","projectOrigin":"chatgpt"}
+        prefix = self.module.THREAD_STATE
+        src = {prefix+"moved":record(local,"/a"),prefix+"new":record(local,"/a"),
+               prefix+"cloud":record(cloud,"/a"),prefix+"deleted":record(None,"/a")}
+        dst = {prefix+k:record(old,"/b") for k in ["moved","unassigned","deleted","cloud"]}
+        state = {**self.scoped_workspace(a, ["/Volumes/offline/project"]),
+                 **self.scoped_workspace(b, ["/old"]), "local-projects":{"latest":{}},
+                 "projectless-thread-ids":["unassigned"], self.module.ATOM_PREFIX+a:src, self.module.ATOM_PREFIX+b:dst}
+        self.module.sync_scoped_workspace(state,a,b)
+        updated = state[self.module.ATOM_PREFIX+b]
+        self.assertEqual(updated[prefix+"moved"],{**dst[prefix+"moved"],"project":local})
+        self.assertIsNone(updated[prefix+"new"]["pending"])
+        self.assertIsNone(updated[prefix+"new"]["applied"])
+        self.assertIsNone(updated[prefix+"unassigned"]["project"])
+        self.assertIsNone(updated[prefix+"deleted"]["project"])
+        self.assertEqual(updated[prefix+"cloud"],dst[prefix+"cloud"])
+        self.assertEqual(state[self.module.scoped_key(self.module.SCOPED_ROOTS,b)],["/Volumes/offline/project"])
+
+    def test_empty_partial_and_pending_workspaces(self):
+        a,b = self.owners["current"], self.owners["source"]
+        roots = self.module.scoped_key(self.module.SCOPED_ROOTS,a)
+        m = self.module
+        good = {m.RENDERER_OWNER_KEY:a,"local-projects":{},**self.scoped_workspace(a,[]),
+                **self.scoped_workspace(b,["/last-deleted"])}
+        m.sync_scoped_workspace(good,a,b)
+        self.assertEqual(good[m.scoped_key(m.SCOPED_ROOTS,b)],[])
+        base = {**good, **self.scoped_workspace(b,["/do-not-erase"])}
+        self.share()
+        auth = (self.codex / "auth.json").read_bytes()
+        for change in ({roots:None},{"local-projects":{"still-here":{}}},
+                       {m.scoped_key(m.PENDING_DELETIONS,a):{"local": {"x":{}}}},
+                       {m.scoped_key(m.PENDING_DELETIONS,b):{"local": {"x":{}}}},
+                       {m.RENDERER_OWNER_KEY:b},{m.RENDERER_OWNER_KEY:"signed-out"}):
+            with self.subTest(change=list(change)):
+                fixtures.write_json(self.path,{**base,**change})
+                before=self.path.read_bytes()
+                result=self.run_ca("switch","source","--skip-expiry-check")
+                self.assertNotEqual(result.returncode,0)
+                self.assertEqual(self.path.read_bytes(),before)
+                self.assertEqual((self.codex/"auth.json").read_bytes(),auth)
+
+    def test_unknown_sqlite_never_falls_back_to_json(self):
+        self.share()
+        db=self.create_sqlite({})
+        with contextlib.closing(sqlite3.connect(db)) as con, con:
+            con.execute("PRAGMA user_version=9")
+        before,auth=self.path.read_bytes(),(self.codex/"auth.json").read_bytes()
+        result=self.run_ca("switch","source","--skip-expiry-check")
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(self.path.read_bytes(),before)
+        self.assertEqual((self.codex/"auth.json").read_bytes(),auth)
+
+    def test_pre_auth_failure_restores_staged_workspace(self):
+        a,b=self.owners["current"],self.owners["source"]
+        self.share()
+        reg=self.module.load_registry()
+        state={self.module.RENDERER_OWNER_KEY:a,"local-projects":{"x":{}},
+               **self.scoped_workspace(a,["/new"]),**self.scoped_workspace(b,["/old"])}
+        fixtures.write_json(self.path,state)
+        auth=(self.codex/"auth.json").read_bytes()
+        for backend in ("json","sqlite"):
+            db = self.create_sqlite(state) if backend=="sqlite" else None
+            if db:
+                with contextlib.closing(sqlite3.connect(db)) as con, con:
+                    rows = list(con.execute("SELECT * FROM settings ORDER BY scope,key"))
+            before=self.path.read_bytes()
+            with self.assertRaisesRegex(RuntimeError,"fixture"):
+                with self.module.shared_local_data_switch(reg,reg["accounts"]["source"]):
+                    raise RuntimeError("fixture")
+            self.assertEqual(self.path.read_bytes(),before)
+            self.assertEqual((self.codex/"auth.json").read_bytes(),auth)
+            if db:
+                with contextlib.closing(sqlite3.connect(db)) as con, con:
+                    self.assertEqual(list(con.execute("SELECT scope,key,json(value) FROM settings ORDER BY scope,key")),
+                                     [(s,k,json.dumps(json.loads(v),separators=(",",":"))) for s,k,v in rows])
+        for backup in (self.ac/"backups"/"local-workspace").iterdir():
+            self.assertEqual(backup.stat().st_mode & 0o777,0o600)
+
     def test_owner_scoped_paths_survive_recovery_and_round_trip(self):
         a, b, c = (self.owners[k] for k in ("source", "current", "third"))
         hints = "electron-owner-value:thread-workspace-root-hints:"
@@ -186,7 +337,7 @@ class LocalDataTests(unittest.TestCase):
                      "electron-persisted-atom-state": {"account-private": "private"}}
         def save(state):
             fixtures.write_json(self.path, state)
-        state = {**untouched, self.module.RENDERER_OWNER_KEY: b,
+        state = {**self.scoped_workspace(a, ["/one"]), **self.scoped_workspace(b, ["/two"]), **untouched, self.module.RENDERER_OWNER_KEY: b,
                  hints+a: {"one": "/one", "same": "/old-location", "remote": "ssh://host/path"},
                  hints+b: {"two": "/two", "same": "/new-location"}, out+a: {"loose": "/output"}}
         save(state)
@@ -197,7 +348,7 @@ class LocalDataTests(unittest.TestCase):
         result = self.run_ca("switch", "source", "--skip-expiry-check")
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = fixtures.read_json(self.path)
-        self.assertEqual(saved[hints+a], {**state[hints+a], "two": "/two"})
+        self.assertEqual(saved[hints+a], {**current[hints+b], "remote": "ssh://host/path"})
         self.assertEqual(saved[hints+b], current[hints+b])
         self.assertNotIn(writable+b, saved)
         for k, v in untouched.items():
@@ -224,20 +375,20 @@ class LocalDataTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), before)
             self.assertEqual((self.codex / "auth.json").read_bytes(), auth)
 
-    def test_legacy_switch_keeps_target_only_chat_locations(self):
+    def test_legacy_switch_replaces_stale_locations(self):
         state = self.share()
         locations = state[self.module.DESKTOP_STATE_KEY]["inactive"][self.owners["source"]]["globals"]
         locations["thread-workspace-root-hints"] = {"old-chat": "/moved", "target-only": "/target-only"}
         state["thread-workspace-root-hints"] = {"old-chat": "/previous", "new-chat": "/new"}
         self.module.mirror_local_data(state, self.owners["source"])
         self.assertEqual(locations["thread-workspace-root-hints"],
-                         {"old-chat": "/moved", "target-only": "/target-only", "new-chat": "/new"})
+                         {"old-chat": "/previous", "new-chat": "/new"})
 
     def test_merge_must_remain_readable_by_next_switch(self):
         self.share()
         a = self.owners["current"]
         key = "electron-owner-value:thread-workspace-root-hints:"
-        fixtures.write_json(self.path, {self.module.RENDERER_OWNER_KEY: a, key+a: {"chat": "/"+"x"*1024}})
+        fixtures.write_json(self.path, {self.module.RENDERER_OWNER_KEY: a, **self.scoped_workspace(a, ["/root"]), key+a: {"chat": "/"+"x"*1024}})
         before, auth = self.path.read_bytes(), (self.codex / "auth.json").read_bytes()
         with patch.object(self.module, "DESKTOP_STATE_LIMIT", len(before)+64):
             with self.assertRaises(SystemExit):

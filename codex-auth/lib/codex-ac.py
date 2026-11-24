@@ -20,6 +20,7 @@ import re
 import select
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -31,7 +32,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-VERSION = "0.8.12"
+VERSION = "0.8.13"
 DEFAULT_AC_HOME = Path(os.environ.get("CODEX_AC_HOME", str(Path.home() / ".codex-ac"))).expanduser()
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
@@ -49,14 +50,14 @@ LOCAL_DATA_KEYS = (
     "app-server-projects-migration-by-host", "selected-project", "project-appearances",
     "pinned-thread-ids", "app-server-migrated-pinned-thread-ids-by-host", "pinned-project-ids",
     "sidebar-project-thread-orders", "thread-project-assignments", "thread-project-membership-host-ids",
-    "thread-writable-roots", "thread-workspace-root-hints", "thread-projectless-output-directories",
+    "thread-workspace-root-hints", "thread-projectless-output-directories",
     "projectless-thread-ids", "project-order",
 )
 LOCAL_ORDER_ATOMS = ("unified-sidebar-pinned-order-v1", "unified-sidebar-project-order-v1")
 
 
 def local_data_atom(key: str) -> bool:
-    return key.startswith(("sidebar-project-expanded-v1-codex:", "thread-workspace-state-v1:", "thread-client-id-v1:",
+    return key.startswith(("sidebar-project-expanded-v1-codex:", "thread-client-id-v1:",
                            "thread-tab-routes-v1:", "codex-writing-block-deleted-thread-v1:",
                            "composer-prompt-drafts-v")) or key in {
         "sidebar-collapsed-groups", "sidebar-collapsed-sections-v1", "sidebar-width", "sidebar-project-list-expanded-v1",
@@ -128,29 +129,287 @@ def renderer_owner(state: dict) -> Optional[str]:
     return None
 
 
-def mirror_local_data(state: Dict[str, Any], target_owner: str) -> None:
-    if state.get(RENDERER_OWNER_KEY) == "signed-out":
+SCOPED_ROOTS = "electron-saved-workspace-roots"
+PENDING_DELETIONS = "app-server-pending-project-deletions-by-host"
+SCOPED_KEYS = (SCOPED_ROOTS, "active-workspace-roots", "electron-workspace-root-labels",
+               *CHAT_DIRECTORY_KEYS, "selected-project")
+ATOM_PREFIX = "electron-owner-atoms:"
+
+
+def scoped_key(key, owner):
+    return f"electron-owner-value:{key}:{owner}"
+
+
+def workspace_unready():
+    raise SystemExit("无法确认当前本地工作区已完整保存，未切换。请在桌面 App 确认项目列表已加载后再试。")
+
+
+def list_of_strings(value):
+    return isinstance(value, list) and all(isinstance(x, str) for x in value)
+
+
+THREAD_STATE = "thread-workspace-state-v1:"
+
+
+def local_membership(ref):
+    return ref is None or (isinstance(ref, dict) and ref.get("projectKind") == "local"
+                           and isinstance(ref.get("projectId"), str) and "projectOrigin" not in ref)
+
+
+def sync_thread_memberships(state, src, dest, updated):
+    # Membership can override the shared project tables in the renderer. Runtime
+    # roots, pending changes, and write permissions must not travel with it.
+    loose = state.get("projectless-thread-ids", [])
+    assignments = state.get("thread-project-assignments", {})
+    if not list_of_strings(loose) or not isinstance(assignments, dict):
+        workspace_unready()
+    loose = set(loose)
+    for key in src.keys() | dest.keys():
+        if not key.startswith(THREAD_STATE):
+            continue
+        incoming, existing = src.get(key), dest.get(key)
+        for mapping in (src, dest):
+            if key in mapping:
+                record = mapping[key]
+                if not isinstance(record, dict) or "project" not in record or not isinstance(record.get("revision"), str):
+                    workspace_unready()
+        if existing and not all(local_membership(existing.get(k)) for k in ("project", "projectMembership")):
+            continue
+        thread = key[len(THREAD_STATE):]
+        if incoming:
+            ref = incoming.get("projectMembership", incoming["project"])
+        elif thread in loose:
+            ref = None
+        elif thread in assignments:
+            ref = assignments[thread]
+        elif existing and isinstance(state.get("local-projects"), dict):
+            old = existing.get("projectMembership", existing["project"])
+            if old is None or old["projectId"] in state["local-projects"]:
+                continue
+            # Missing from an older project cache alone is not a tombstone.
+            workspace_unready()
+        else:
+            continue
+        if not local_membership(ref):
+            continue
+        if existing and existing.get("projectMembership", existing["project"]) == ref:
+            continue
+        if ref is None and not existing:
+            continue
+        record = dict(existing) if existing else {"revision":incoming["revision"], "applied":None, "pending":None}
+        record["project"] = None if ref is None else {k:ref[k] for k in ("projectKind","projectId","path") if k in ref}
+        record.pop("projectMembership", None)
+        record.pop("projectMembershipRevision", None)
+        updated[key] = record
+
+
+def sync_scoped_workspace(state, owner, target):
+    for who in (owner, target):
+        if state.get(scoped_key(PENDING_DELETIONS, who)):
+            raise SystemExit("桌面 App 仍有待完成的项目删除，未切换。请先让删除完成。")
+    roots = state.get(scoped_key(SCOPED_ROOTS, owner))
+    if not list_of_strings(roots) or not all(os.path.isabs(p) for p in roots):
+        workspace_unready()
+    if not roots and state.get(scoped_key(SCOPED_ROOTS, target)):
+        if state.get("local-projects") != {} or state.get(scoped_key("active-workspace-roots", owner)) != []:
+            workspace_unready()
+    if owner == target:
         return
+    for key in SCOPED_KEYS:
+        src, dst = scoped_key(key, owner), scoped_key(key, target)
+        if src not in state:
+            # An absent field is not a deletion record.
+            if state.get(dst) and key != "selected-project":
+                workspace_unready()
+            if key == "selected-project" and isinstance(state.get(dst), dict) and state[dst].get("type") == "local":
+                workspace_unready()
+            continue
+        v = state[src]
+        old = state.get(dst)
+        if key == "selected-project":
+            if not (v is None or isinstance(v, dict) and isinstance(v.get("type"), str)):
+                workspace_unready()
+            if old is not None and (not isinstance(old, dict) or old.get("type") != "local"):
+                continue  # A remote/cloud selection belongs to its account.
+            if isinstance(v, dict) and v.get("type") == "local" and isinstance(v.get("projectId"), str):
+                state[dst] = {"type": "local", "projectId": v["projectId"]}
+            else:
+                state.pop(dst, None)
+        elif key in (SCOPED_ROOTS, "active-workspace-roots"):
+            if any(not list_of_strings(x) or not all(os.path.isabs(p) for p in x)
+                   for x in ([v, old] if dst in state else [v])):
+                workspace_unready()
+            state[dst] = v
+        else:
+            if any(not isinstance(x, dict) or not all(isinstance(p,str) for p in x.values())
+                   for x in ([v, old] if dst in state else [v])):
+                workspace_unready()
+            def local(k, p):
+                return os.path.isabs(k if key == "electron-workspace-root-labels" else p)
+            foreign = {k:p for k,p in (old or {}).items() if not local(k,p)}
+            incoming = {k:p for k,p in v.items() if local(k,p)}
+            if foreign.keys() & incoming.keys():
+                workspace_unready()
+            state[dst] = {**foreign, **incoming}
+
+    src_atoms, dst_atoms = (state.get(ATOM_PREFIX + who, {}) for who in (owner,target))
+    if not isinstance(src_atoms, dict) or not isinstance(dst_atoms, dict):
+        workspace_unready()
+    updated = dict(dst_atoms)
+    sync_thread_memberships(state, src_atoms, dst_atoms, updated)
+    for key in LOCAL_ORDER_ATOMS:
+        current, previous = src_atoms.get(key, []), dst_atoms.get(key, [])
+        if not list_of_strings(current) or not list_of_strings(previous):
+            workspace_unready()
+        def local_order(x):
+            return x.startswith(("codex:project:", "codex:thread:"))
+        if key not in src_atoms and any(map(local_order, previous)):
+            workspace_unready()
+        if key in src_atoms or key in dst_atoms:
+            updated[key] = [x for x in current if local_order(x)] + [x for x in previous if not local_order(x)]
+    if updated != dst_atoms:
+        state[ATOM_PREFIX + target] = updated
+
+
+def sqlite_workspace_rows(db, owners):
+    keys = [RENDERER_OWNER_KEY, "local-projects", "projectless-thread-ids", "thread-project-assignments"]
+    for who in owners:
+        keys.extend(scoped_key(k, who) for k in (*SCOPED_KEYS, PENDING_DELETIONS))
+        keys.append(ATOM_PREFIX + who)
+    params = ",".join("?" for _ in keys)
+    atoms = [ATOM_PREFIX + who for who in owners]
+    sql = (f"SELECT scope,key,value FROM settings WHERE (scope='global' AND key IN ({params}))"
+           f" OR (scope IN ({','.join('?' for _ in atoms)}) AND (key IN (?,?) OR key GLOB ?))")
+    rows = {}
+    size = 0
+    for scope, key, raw in db.execute(sql, [*keys,*atoms,*LOCAL_ORDER_ATOMS,THREAD_STATE + "*"]):
+        if not isinstance(raw, str):
+            workspace_unready()
+        size += len(raw.encode()) + len(key.encode()) + len(scope.encode())
+        if size > DESKTOP_STATE_LIMIT or len(rows) >= 50000:
+            workspace_unready()
+        rows[scope,key] = json.loads(raw)
+    return rows
+
+
+def sqlite_workspace_edit(path, owners, update, backup):
+    # The app reads this DB when present. Never import the abandoned JSON over it.
+    with contextlib.closing(sqlite3.connect(path.as_uri()+"?mode=rw", uri=True, timeout=2)) as db, db:
+        db.execute("PRAGMA trusted_schema=OFF")
+        db.execute("BEGIN IMMEDIATE")
+        if (db.execute("PRAGMA user_version").fetchone() != (1,)
+                or [r[1] for r in db.execute("PRAGMA table_info(settings)")] != ["scope", "key", "value"]
+                or db.execute("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND tbl_name='settings'").fetchone()):
+            workspace_unready()
+        rows = sqlite_workspace_rows(db, owners)
+        if any(k.startswith(ATOM_PREFIX) and v != {} for (s,k),v in rows.items() if s == "global"):
+            workspace_unready()
+        state = {k:copy.deepcopy(v) for (scope,k),v in rows.items() if scope == "global"}
+        for (scope,k),v in rows.items():
+            if scope != "global":
+                state.setdefault(scope,{})[k] = v
+        update(state)
+        after = {("global",k):v for k,v in state.items() if not k.startswith(ATOM_PREFIX)}
+        for k,atoms in state.items():
+            if k.startswith(ATOM_PREFIX):
+                after["global",k] = {}
+                after.update({(k,a):v for a,v in atoms.items()})
+        changed = sorted(k for k in rows.keys() | after.keys()
+                         if k not in rows or k not in after or rows[k] != after[k])
+        if not changed:
+            return
+        # The backup contains only previous values of rows about to change.
+        undo = {"format":"sqlite-rows-v1", "rows":[
+            {"scope":s,"key":k, **({"value":rows[s,k]} if (s,k) in rows else {})} for s,k in changed]}
+        backup.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        write_private(json.dumps(undo, ensure_ascii=False).encode(), backup)
+        write_workspace_rows(db, changed, after)
+
+    def undo_write():
+        with contextlib.closing(sqlite3.connect(path.as_uri()+"?mode=rw", uri=True, timeout=2)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            live = sqlite_workspace_rows(db, owners)
+            if any((k in live) != (k in after) or live.get(k) != after.get(k) for k in changed):
+                raise SystemExit(f"桌面状态已被其他进程修改，未覆盖。回退记录：{backup}")
+            write_workspace_rows(db, changed, rows)
+    return undo_write
+
+
+def write_workspace_rows(db, keys, rows):
+    for scope, key in keys:
+        if (scope,key) not in rows:
+            db.execute("DELETE FROM settings WHERE scope=? AND key=?", (scope,key))
+        else:
+            db.execute("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value",
+                       (scope,key,json.dumps(rows[scope,key],ensure_ascii=False,separators=(",",":"))))
+
+
+
+def edit_workspace(current, target, recovery=None):
+    def update(state):
+        owner = renderer_owner(state) or (state.get(DESKTOP_STATE_KEY) or {}).get("owner")
+        if owner != current:
+            workspace_unready()
+        if recovery is not None and recovery != current:
+            restore_local_data(state, recovery)
+        mirror_local_data(state, target)
+    backup = DEFAULT_AC_HOME / "backups" / "local-workspace" / target
+    db = DEFAULT_CODEX_HOME / ".codex-global-state.sqlite"
+    if db.exists() or db.is_symlink():
+        try:
+            return sqlite_workspace_edit(db, {current,target} | ({recovery} if recovery else set()), update, backup.with_suffix(".rows.json"))
+        except (sqlite3.Error, ValueError, RecursionError, TypeError) as exc:
+            raise SystemExit("无法读取或保存 Codex 桌面设置数据库，未切换；不会退回过期 JSON。") from exc
+    state = read_desktop_state()
+    before = copy.deepcopy(state)
+    update(state)
+    if before != state:
+        path = DEFAULT_CODEX_HOME / ".codex-global-state.json"
+        original = path.read_bytes()
+        checkpoint = backup.with_suffix(".state.json")
+        checkpoint.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        write_private(original, checkpoint)
+        write_desktop_state(state)
+
+        def undo_write():
+            if read_desktop_state() != state:
+                raise SystemExit(f"桌面状态已被其他进程修改，未覆盖。回退记录：{checkpoint}")
+            write_private(original, path)
+        return undo_write
+
+
+def mirror_local_data(state: Dict[str, Any], target_owner: str) -> None:
     if (owner := renderer_owner(state)) is not None:
-        if owner != target_owner:
-            copy_missing_chat_directories(state, state, owner, target_owner)
+        sync_scoped_workspace(state, owner, target_owner)
         return
     marker = state.get(DESKTOP_STATE_KEY)
-    if marker is None or marker.get("owner") == target_owner:
+    if marker is None or not isinstance(state.get("local-projects"), dict):
+        workspace_unready()
+    if state.get(PENDING_DELETIONS):
+        workspace_unready()
+    if marker.get("owner") == target_owner:
         return
     target = marker["inactive"].setdefault(target_owner, {"atoms": {}, "globals": {}})
     if not isinstance(target, dict) or not isinstance(target.get("atoms"), dict) or not isinstance(target.get("globals"), dict):
         raise SystemExit("目标账号本地状态格式不兼容，未修改。")
-    copy_missing_chat_directories(state, target["globals"])
+    if target["globals"].get(PENDING_DELETIONS):
+        workspace_unready()
+    if (not state["local-projects"] and target["globals"].get("local-projects")
+            and state.get("project-order") != [] and state.get(SCOPED_ROOTS) != []):
+        workspace_unready()
     for key in LOCAL_DATA_KEYS:
         if key in CHAT_DIRECTORY_KEYS:
-            continue
+            if key not in state and target["globals"].get(key):
+                workspace_unready()
+            if key in state and not isinstance(state[key], dict):
+                workspace_unready()
         target["globals"].pop(key, None)
         if key in state:
             target["globals"][key] = state[key]
     atoms = state.get("electron-persisted-atom-state", {})
     if not isinstance(atoms, dict):
         raise SystemExit("Codex 本地界面状态格式不兼容，未修改。")
+    sync_thread_memberships(state, atoms, target["atoms"], target["atoms"])
     for key in list(target["atoms"]):
         if local_data_atom(key):
             del target["atoms"][key]
@@ -247,12 +506,15 @@ def shared_local_data_switch(reg: Dict[str, Any], rec: Dict[str, Any]):
         return
     app = stop_desktop_app()
     try:
-        state = read_desktop_state()
-        target = desktop_owner(rec) if rec.get("kind") != "api" else None
-        if target is not None:
-            mirror_local_data(state, target)
-        write_desktop_state(state)
-        yield app is not None
+        current = desktop_owner(auth_info(DEFAULT_CODEX_HOME / "auth.json"))
+        undo = edit_workspace(current, desktop_owner(rec))
+        try:
+            yield app is not None
+        except BaseException:
+            # A failure after installing the target auth must keep its matching workspace.
+            if undo and desktop_owner(auth_info(DEFAULT_CODEX_HOME / "auth.json")) == current:
+                undo()
+            raise
     finally:
         if app is not None:
             subprocess.run(["open", "-a", str(app)], check=True)
@@ -279,15 +541,16 @@ def cmd_local_data(args: argparse.Namespace) -> int:
         source_owner = desktop_owner(rec)
     app = stop_desktop_app()
     try:
-        state = read_desktop_state()
-        if source_owner is not None:
-            restore_local_data(state, source_owner)
         current = desktop_owner(auth_info(DEFAULT_CODEX_HOME / "auth.json"))
-        mirror_local_data(state, current)
-        write_desktop_state(state)
+        undo = edit_workspace(current, current, recovery=source_owner)
         reg["shared_local_data"] = True
-        save_registry(reg)
-        print(f"已启用本地数据共用：{len(state.get('local-projects', {}))} 个项目；之后使用 ca s <别名>。")
+        try:
+            save_registry(reg)
+        except BaseException:
+            if undo:
+                undo()
+            raise
+        print("已启用本地工作区共用；之后使用 ca s <别名>。")
     finally:
         if app is not None:
             subprocess.run(["open", "-a", str(app)], check=True)
